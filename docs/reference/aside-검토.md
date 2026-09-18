@@ -1,0 +1,82 @@
+# Aside 브라우저 실물 검토 (v1.0.914.1, 2026-09-18)
+
+이 PC에 설치된 Aside를 직접 열어 화면·설정을 확인한 결과. 삼바브라우저에 가져올 것 / 우리가 더 해야 할 것 정리.
+
+## 1. 엔진·구조 (설치 폴더 분석)
+
+- **Chromium 소스 포크**(Electron 아님). 설치 파일 구성이 Microsoft Edge와 동일(`Microsoft.UI.Xaml`, `WebView2Loader`, `MRM.dll`, `aside_migrator.exe`) → Edge 코드베이스를 통째로 개조한 "자동차 공장" 방식. 개발 인력 많은 회사만 가능.
+- 별도 구성요소: `AsidePasswordManager`(Vault), `AsideAgentManager`(에이전트), `AsideDaemon`(백그라운드), `aside_proxy.exe`, `aside_migrator.exe`(타 브라우저 가져오기), `CaptchaProviders/`(캡차 처리 연동 흔적), PWA 런처.
+- 결론: 우리는 Electron이 맞음. 기능은 참고하되 구현 방식은 다름.
+
+## 2. 화면 구성
+
+| 영역 | 내용 |
+|---|---|
+| 왼쪽 사이드바 | 북마크 폴더 트리(작업 공간처럼 사용: 데이터분석·리셀·소싱처·쇼핑…), 아래 Chats 목록 + New Chat |
+| 상단 우측 아이콘 | 🔥 에이전트, 🔑 Vault 팝업, 🧩 확장 |
+| 새 탭 | 검색/URL 입력(Search ↔ Ask 전환), **Chats | Routines** 카드, "Show suggested tasks" |
+| 로고 메뉴 | Profiles(다중 프로필) · New profile · Bookmarks · Downloads · Extensions · History · Developers · Settings(Ctrl+,) · New Tab · Incognito |
+| Vault 팝업 | 계정 검색, "All accounts" 금고 선택, This Week 그룹, 오른쪽 상세(아이디·가려진 비밀번호·Website URL) |
+| Codex 연결 배너 | "Connect Aside to Codex — Use Aside's browsing agent directly from Codex" |
+
+## 3. 설정 메뉴 전체 지도
+
+```
+Personal   General · Appearance · Account · Plan & Usage · Security & Privacy
+Agent      Agents · Projects · Models · Plugins & MCPs · Memory(Overview/History) · Context Awareness(Configure)
+Features   Passwords · Routines · Channels · Developers · Mini popup · Lasso
+기타       Archived chats · Send feedback · Extensions · Docs · Community
+```
+
+### General
+기본 브라우저 설정, 계정(구글 로그인), 초대, 기본 검색엔진(네이버), 새 탭 모드(Search/Ask), PiP, 스크린샷, 언어, 맞춤법. **Import: "Import from another browser"(히스토리·쿠키·북마크·비밀번호) + "Import bookmarks"**. 이 PC에선 감지된 브라우저 목록이 비어 있었음(크롬·웨일 실행 중이라 잠긴 듯).
+
+### Models ★
+- Providers: **Aside(Free) · Claude(Subscription) · ChatGPT(Subscription) · + Connect**
+- **Task models — 작업 종류별 모델 지정**: Default(GPT-6 Astra) · Fast(Haiku 4.5: 빠르고 싼 작업) · Standard(Sonnet 5: 백그라운드·메모리) · Deep(GPT-5.6: 계획·판단·합성) · **Visual(Sonnet 5: 이미지·스크린샷·CAPTCHA·페이지 해석)** · Image generation
+
+### Agents
+작업 완료 알림(Everything), 완료 사운드, 후속 지시 처리(Queue: 실행 중이면 큐에 쌓음), 탭 전환 시 새 채팅, **에이전트가 연 탭 15분 후 자동 정리**, 샌드박스, 파일 권한(볼 수 있는 폴더 / 편집 가능 폴더).
+
+### Passwords(Vault) ★
+- 기본 비밀번호 관리자 사용 토글 / 외부 관리자 연결
+- 자동 잠금(1주) · **AI 에이전트 접근 정책: "While unlocked"**
+- Vaults(1개, 1,619 항목) · **Import: 1Password · Bitwarden · Proton Pass · Dashlane · LastPass · CSV** · Export CSV/JSON
+- Autofill 켜기 · **자동 제출(Auto-submit after autofill)** · 시크릿 모드 제외 · URL 매칭(Domain)
+
+### Security & Privacy
+방문 기록 삭제/보기, 광고·추적 차단 + 필터, 서드파티 쿠키, 사이트 권한, DNS/SSL/Safe Browsing.
+
+### Plan & Usage
+Free, 월 500 크레딧, 추가 구매, 자동 충전. 월별 사용량 표.
+
+### 기타
+- **Routines**: 반복 실행 작업("Every hour"). 우리 "자동화"와 동일 개념.
+- **Channels**(Pro): Slack·Discord·Telegram에서 원격 지시.
+- **Plugins & MCPs**: Skills 탭(내 스킬 + 내장 13개: Chrome, DOCX, Google Docs/Gmail/Sheets, Notion, PDF, PPTX, Slack, XLSX…) / MCPs 탭 / Import.
+- **Memory / Context Awareness**: 브라우징 활동을 기록해 나중에 에이전트가 참조.
+- Mini popup, Lasso(화면 영역 지정 질문), Developers.
+
+## 4. 삼바브라우저에 가져올 것 (채택)
+
+| 항목 | 반영 |
+|---|---|
+| 작업 종류별 모델 지정 (Fast/Standard/Deep/Visual) | 설정 → AI 제공자 + 작업별 모델. 재생 실패 복구=Fast, 계획=Deep, 폰 화면 읽기=Visual |
+| Vault 접근 정책 + 자동 잠금 + 자동 제출 | Vault 설정에 그대로 |
+| 비밀번호 가져오기 (CSV·1Password·Bitwarden·크롬/웨일 브라우저) | 계정 화면 Import. 1순위 크롬/웨일/엣지 직접, 2순위 CSV |
+| 브라우저 가져오기 (북마크·히스토리·쿠키) | 설정 → 가져오기. 첫 실행 마법사에도 |
+| 다중 프로필 | 이미 계획(계정=프로필) |
+| Routines = 자동화, Chats 목록 사이드바 | 이미 계획 |
+| 에이전트 탭 자동 정리, 완료 알림·사운드, 후속 지시 큐 | 작업 설정에 추가 |
+| Skills/MCP 플러그인 화면 | 추후(2차 버전) |
+| 광고 차단 | 추후 |
+| Channels(텔레그램에서 지시) | 추후 — 폰 알림 대체 가능 |
+
+## 5. 우리가 더 하는 것 (Aside에 없음)
+
+- 폰 3대 연동(화면·터치), 문자 인증 자동 입력, ARS 전화 인증
+- Vault에 **결제비밀번호·카드·여권·신분증** + 결제 흐름 학습 (Aside는 로그인 자격증명 위주)
+- 기록·재생(AI 호출 절감) — Aside Routines는 매번 AI 실행
+- 계정별 탭 배지·비교 흐름, 작업 예외 규칙(메모+다음)
+- PC/모바일 전환 버튼(웨일 방식)
+- 동일 계정 다중 PC 동기화 명시(Supabase)
