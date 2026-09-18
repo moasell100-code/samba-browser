@@ -49,9 +49,11 @@
 ## 7. 기술 구조 (요약)
 
 - Electron(Chromium) + TypeScript + React 19 + Tailwind + shadcn/ui + Zustand
-- AI: Claude Agent SDK (Claude Code 구독 로그인 재사용, API 키 대체 가능). 도구는 MCP로 등록
+- AI: 제공자 어댑터 — Claude 구독(Agent SDK) / ChatGPT 구독(Codex CLI) / API 키 / 로컬 AI. 도구는 MCP 공용
 - 폰: adb 1.0.41 + scrcpy 4.1 (PATH 미등록, 전체 경로)
-- 저장: SQLite 파일 1개, Vault는 Windows DPAPI 암호화(+마스터 비밀번호 선택)
+- 저장: 로컬 SQLite + **Supabase 동기화**(같은 계정으로 여러 PC에서 채팅·설정·계정·Vault·레시피·로그 공유)
+- Vault: 마스터 비밀번호 E2E 암호화(Supabase도 내용 못 봄) + 로컬 DPAPI
+- 상세: [기술스택.md](기술스택.md)
 - 모듈: Browser · Agent · Recorder · Phone · Vault · JobRunner · Store · Settings
 
 ## 8. 수동 · 자동 경계
@@ -68,7 +70,7 @@
 
 - 아이폰 (원격 터치 불가)
 - 인터넷 전화번호(Twilio 등) — 사이트 거부 위험
-- 서버·다중 사용자·동기화
+- 다중 사용자(팀) 기능. 동일 계정 다중 PC 동기화는 범위 안
 - 폰 푸시 알림
 - 삼바 주문 이행 자동화 세부 (부록 A, 브라우저 완성 후 진행)
 
