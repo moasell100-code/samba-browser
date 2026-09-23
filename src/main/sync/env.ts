@@ -54,7 +54,7 @@ const DIRECTORY_URL_KEY = 'SAMBA_DIRECTORY_URL'
 const DIRECTORY_ANON_KEY = 'SAMBA_DIRECTORY_ANON_KEY'
 
 export function readDirectoryEnv(): SupabaseEnv {
-  // 환경변수가 없으면 앱에 내장된 기본 중앙 프로젝트를 쓴다(다운받은 누구나 로그인 화면부터 본다)
+  // 자자 기본값은 로컬 전용이다. 명시적으로 지정한 중앙 프로젝트만 연결한다
   return {
     url: readEnv(DIRECTORY_URL_KEY).trim() || DEFAULT_DIRECTORY_URL,
     anonKey: readEnv(DIRECTORY_ANON_KEY).trim() || DEFAULT_DIRECTORY_ANON_KEY

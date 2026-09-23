@@ -1,5 +1,11 @@
 # SAMBA Browser (삼바브라우저)
 
+> 자자(JAJA) 포크: 기본 실행은 외부 계정 가입이 필요 없는 로컬 모드입니다.
+> 의존성 설치와 `pnpm build` 후 `scripts/launch-local.ps1`로 실행하면
+> `%LOCALAPPDATA%\JAJA-Samba-Browser`에 독립 프로필을 사용합니다.
+> 중앙 계정 연결은 `SAMBA_DIRECTORY_URL`과 `SAMBA_DIRECTORY_ANON_KEY`를 모두 지정할 때만 켜집니다.
+> 기존 자자 자동발주와의 실행 인계는 아직 연결되지 않았습니다.
+
 사람이 하는 웹 작업(로그인·인증·결제 포함)을 AI 가 대신 끝내주는 Chromium 기반 데스크톱 브라우저
 
 Electron 39 · React 19 · TypeScript · Tailwind CSS · MIT 라이선스 · Windows 11 검증
