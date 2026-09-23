@@ -24,6 +24,7 @@ vi.mock('electron', () => ({
 }))
 vi.mock('../src/main/jaja/store', () => ({
   JAJA_BACKEND: 'https://api.ja-ja.org',
+  defaultBackendOrigin: () => 'https://api.ja-ja.org',
   JajaStore: class {
     constructor() {
       if (state.failStore) throw new Error('private file detail and secret')

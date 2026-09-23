@@ -1,4 +1,5 @@
 import type { JajaAccount, JajaCookieResult, JajaSession, JajaSignal } from '../../shared/jaja'
+import { backendOrigin } from './store'
 
 export class JajaApiError extends Error {
   constructor(public status: number) {
@@ -20,7 +21,9 @@ export class JajaClient {
     private hostId: string,
     private key: () => string | null,
     private fetcher: typeof fetch = fetch
-  ) {}
+  ) {
+    this.origin = backendOrigin(origin)
+  }
 
   private async request<T>(path: string, body?: unknown): Promise<T> {
     const key = this.key()

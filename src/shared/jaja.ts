@@ -40,6 +40,7 @@ export interface JajaAccountView extends JajaAccount {
 }
 
 export interface JajaStatus {
+  validation?: boolean
   connected: boolean
   connecting: boolean
   backendOrigin: string

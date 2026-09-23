@@ -219,7 +219,7 @@ export function JajaAccountsPage(): React.JSX.Element {
           {status?.connected && (
             <div className="flex items-center gap-2">
               <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">
-                자자 연결됨
+                {status.validation ? '검증 서버 연결됨' : '자자 연결됨'}
               </span>
               <SecondaryButton
                 disabled={pending !== null}
@@ -230,6 +230,16 @@ export function JajaAccountsPage(): React.JSX.Element {
             </div>
           )}
         </header>
+
+        {status?.validation && (
+          <div className="rounded-xl border border-violet-200 bg-violet-50 p-4 text-[13px] text-violet-900">
+            <strong>검증 전용 · 운영 미연결</strong>
+            <p className="mt-1 text-[12px] leading-relaxed">
+              합성 계정과 별도 로컬 서버를 사용합니다. 기존 자자의 계정·쿠키·자동발주에는 연결하지
+              않습니다. 이 화면의 동기화와 전환도 검증 데이터에만 적용됩니다.
+            </p>
+          </div>
+        )}
 
         {!confirmation && (notice || status?.error) && (
           <div
@@ -244,7 +254,9 @@ export function JajaAccountsPage(): React.JSX.Element {
         {!status?.connected ? (
           <section className="rounded-2xl border border-[var(--line)] bg-white p-7">
             <UsersRound className="mb-4 h-8 w-8 text-[var(--text2)]" />
-            <h2 className="text-[16px] font-semibold">자자 계정을 연결하세요</h2>
+            <h2 className="text-[16px] font-semibold">
+              {status?.validation ? '검증 계정을 연결하세요' : '자자 계정을 연결하세요'}
+            </h2>
             <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-[var(--text2)]">
               연결하면 자자에 등록한 소싱 계정을 가져옵니다. 각 계정의 로그인 공간을 열어 로그인한
               뒤, 계정이 맞는지 확인할 수 있습니다.
@@ -267,7 +279,11 @@ export function JajaAccountsPage(): React.JSX.Element {
               >
                 <span className="flex items-center gap-2">
                   <Link2 className="h-4 w-4" />
-                  {status?.connecting ? '로그인 대기 중' : '자자 연결'}
+                  {status?.connecting
+                    ? '로그인 대기 중'
+                    : status?.validation
+                      ? '검증 서버 연결'
+                      : '자자 연결'}
                 </span>
               </PrimaryButton>
               {status?.connecting && (
@@ -300,7 +316,11 @@ export function JajaAccountsPage(): React.JSX.Element {
                 <input
                   aria-label="자자 개발 서버 주소"
                   type="url"
-                  placeholder="기본: https://api.ja-ja.org"
+                  placeholder={
+                    status?.validation
+                      ? '검증 전용: http://127.0.0.1:18300'
+                      : '기본: https://api.ja-ja.org'
+                  }
                   value={customOrigin}
                   onChange={(event) => setCustomOrigin(event.target.value)}
                   disabled={pending !== null || status?.connecting}

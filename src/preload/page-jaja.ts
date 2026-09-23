@@ -4,7 +4,9 @@ import type { IpcRenderer } from 'electron'
 // 실제 권한 검사는 main에서 페어링 탭·최상위 프레임·정확한 origin으로 다시 수행한다.
 export function installJajaConnection(ipc: Pick<IpcRenderer, 'invoke'>): void {
   const allowed =
-    location.origin === 'https://app.ja-ja.org' || location.origin === 'http://localhost:3000'
+    location.origin === 'https://app.ja-ja.org' ||
+    location.origin === 'http://localhost:3000' ||
+    location.origin === 'http://localhost:18301'
   if (!allowed || !location.pathname.startsWith('/samba') || window.self !== window.top) return
   let closed = false
   let timer: ReturnType<typeof setTimeout> | undefined

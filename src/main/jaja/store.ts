@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { isJajaValidation, VALIDATION_BACKEND, VALIDATION_FRONTEND } from './validation'
 
 export const JAJA_BACKEND = 'https://api.ja-ja.org'
 export const JAJA_WEB = 'https://app.ja-ja.org'
@@ -10,6 +11,14 @@ export function backendOrigin(value: string): string {
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
     throw new Error('자자 서버의 기본 주소를 입력하세요.')
   }
+  if (isJajaValidation()) {
+    if (url.origin !== VALIDATION_BACKEND) {
+      throw new Error(
+        '검증 모드에서는 전용 로컬 서버만 연결할 수 있습니다. 운영 서버는 차단됩니다.'
+      )
+    }
+    return url.origin
+  }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
   if (url.origin !== JAJA_BACKEND && !(local && url.protocol === 'http:')) {
     throw new Error('자자 서버 또는 로컬 개발 서버만 연결할 수 있습니다.')
@@ -18,7 +27,15 @@ export function backendOrigin(value: string): string {
 }
 
 export function frontendOrigin(backend: string): string {
+  if (isJajaValidation()) {
+    backendOrigin(backend)
+    return VALIDATION_FRONTEND
+  }
   return backend === JAJA_BACKEND ? JAJA_WEB : 'http://localhost:3000'
+}
+
+export function defaultBackendOrigin(): string {
+  return isJajaValidation() ? VALIDATION_BACKEND : JAJA_BACKEND
 }
 
 export interface SecretCipher {
@@ -83,7 +100,7 @@ export class JajaStore {
     this.value = {
       version: 1,
       hostId: saved.hostId || `jaja-browser-${randomUUID()}`,
-      backendOrigin: backendOrigin(saved.backendOrigin || JAJA_BACKEND),
+      backendOrigin: backendOrigin(saved.backendOrigin || defaultBackendOrigin()),
       sessionIds: { ...saved.sessionIds },
       autoLogin: { ...saved.autoLogin },
       ...(saved.keyCiphertext ? { keyCiphertext: saved.keyCiphertext } : {})

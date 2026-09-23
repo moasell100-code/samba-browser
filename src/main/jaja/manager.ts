@@ -12,6 +12,7 @@ import { JajaApiError, JajaClient } from './client'
 import { CaptureState, getSitePolicy, isKreamCookieExpired, type SitePolicy } from './policies'
 import { probeSession } from './probe'
 import { backendOrigin, frontendOrigin, JajaStore } from './store'
+import { isJajaValidation } from './validation'
 
 interface Context {
   account: JajaAccount
@@ -132,6 +133,7 @@ export class JajaManager {
       autoLoginBlockedReason: 'manual_login_required'
     }))
     return {
+      validation: isJajaValidation(),
       connected: !!this.client,
       connecting: !!this.pending && this.pending.expires > Date.now(),
       backendOrigin: this.store.origin,

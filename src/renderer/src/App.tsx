@@ -29,6 +29,15 @@ import { LoginGate } from '@renderer/components/layout/LoginGate'
 export default function App(): React.JSX.Element {
   // 진행 띠에 보여 줄 도구 호출 상한(설정값). 읽기 전까지는 기본값
   const [toolCap, setToolCap] = useState(DEFAULT_SETTINGS.maxToolCalls)
+  const [validation, setValidation] = useState(false)
+  useEffect(() => {
+    void window.samba.jaja?.status().then((result) => {
+      if (result.ok) {
+        setValidation(result.data.validation === true)
+        if (result.data.validation) useUiStore.getState().setView('jaja')
+      }
+    })
+  }, [])
   const { t } = useTranslation()
   const { refresh, setTabs } = useBrowserStore()
   const {
@@ -61,9 +70,9 @@ export default function App(): React.JSX.Element {
   // 창 제목 = 활성 탭 제목. 작업표시줄·알트탭에서 "네이버 - SAMBA Browser" 처럼 보인다
   const activeTitle = useBrowserStore((s) => s.activeTab?.title ?? '')
   useEffect(() => {
-    const name = t('app.name')
+    const name = validation ? 'JAJA Browser · 검증 전용' : t('app.name')
     document.title = activeTitle && view === 'browser' ? `${activeTitle} - ${name}` : name
-  }, [activeTitle, view, t])
+  }, [activeTitle, view, t, validation])
   // 저장된 패널 폭·사이드바 접힘 상태 복원(기기별 설정)
   useEffect(() => {
     void window.samba.settings.get().then((r) => {
@@ -115,6 +124,11 @@ export default function App(): React.JSX.Element {
   if (authState.account?.configured && !authState.account.signedIn) return <LoginGate />
   return (
     <div className="flex h-full bg-[var(--bg)]">
+      {validation && (
+        <div className="pointer-events-none fixed inset-x-0 top-1 z-50 text-center text-[11px] font-semibold text-violet-800">
+          검증 전용 · 운영 미연결
+        </div>
+      )}
       <Sidebar width={sidebarWidthOf(sidebarCollapsed, sidebarWidth)} />
       {/* 접힌 사이드바는 폭이 고정이라 손잡이를 숨긴다 */}
       {canResizeSidebar(sidebarCollapsed) && (

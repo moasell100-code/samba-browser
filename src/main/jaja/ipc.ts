@@ -5,7 +5,8 @@ import type { JajaStatus } from '../../shared/jaja'
 import type { TabManager } from '../browser/tab-manager'
 import { assertFromRenderer } from '../ipc/sender'
 import { JajaManager } from './manager'
-import { JAJA_BACKEND, JajaStore } from './store'
+import { defaultBackendOrigin, JajaStore } from './store'
+import { isJajaValidation } from './validation'
 
 export function registerJaja(win: BrowserWindow, tabs: TabManager): JajaManager | undefined {
   let manager: JajaManager | undefined
@@ -29,9 +30,10 @@ export function registerJaja(win: BrowserWindow, tabs: TabManager): JajaManager 
   }
   const status = (): JajaStatus =>
     manager?.status() ?? {
+      validation: isJajaValidation(),
       connected: false,
       connecting: false,
-      backendOrigin: JAJA_BACKEND,
+      backendOrigin: defaultBackendOrigin(),
       hostId: '',
       accounts: [],
       error: unavailable

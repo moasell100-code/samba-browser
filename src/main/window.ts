@@ -2,11 +2,12 @@ import { BrowserWindow, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { isHttpUrl } from '../shared/url'
+import { isJajaValidation } from './jaja/validation'
 
 // 메인 창 생성. 렌더러(React UI)가 전체를 덮고, 웹뷰는 그 위에 겹쳐 배치
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    title: 'SAMBA Browser',
+    title: isJajaValidation() ? 'JAJA Browser · 검증 전용' : 'SAMBA Browser',
     // 작업표시줄·알트탭에 삼바 로고가 보이게(개발 모드에서도 electron 기본 아이콘 대신)
     icon: join(__dirname, '../../resources/icon.ico'),
     width: 1440,
@@ -26,12 +27,13 @@ export function createMainWindow(): BrowserWindow {
   })
   win.on('ready-to-show', () => win.show())
   win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isJajaValidation()) return { action: 'deny' }
     // 외부 브라우저로 넘기는 건 http/https 만. file:/javascript: 등은 무시한다
     if (isHttpUrl(url)) void shell.openExternal(url)
     else console.warn(`외부 열기 차단: ${url}`)
     return { action: 'deny' }
   })
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+  if (!isJajaValidation() && is.dev && process.env['ELECTRON_RENDERER_URL']) {
     void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'))

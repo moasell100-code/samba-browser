@@ -100,6 +100,17 @@ describe('자자 소싱 계정 작업대', () => {
     container.remove()
     vi.unstubAllGlobals()
   })
+
+  it('clearly labels the isolated validation server and synthetic account actions', async () => {
+    current = { ...snapshot([]), validation: true, connected: false }
+    await act(async () => root.render(createElement(JajaAccountsPage)))
+    expect(container.textContent).toContain('검증 전용 · 운영 미연결')
+    expect(container.textContent).toContain('검증 데이터에만 적용')
+    await act(async () =>
+      fireEvent.click(getByRole(container, 'button', { name: '검증 서버 연결' }))
+    )
+    expect(api.connect).toHaveBeenCalledWith(undefined)
+  })
   const mount = async (): Promise<void> => {
     await act(async () => root.render(createElement(JajaAccountsPage)))
   }
