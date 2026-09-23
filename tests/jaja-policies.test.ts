@@ -42,6 +42,22 @@ describe('JAJA fixed site policies', () => {
     expect(getSitePolicy('https://example.com')).toBeNull()
   })
 
+  it.each(['GRANDSTAGE', '그랜드스테이지'])(
+    'opens %s on its own storefront while retaining the shared cookie capture policy',
+    (site) => {
+      const grand = getSitePolicy(site)!
+      const abc = getSitePolicy('ABCMART')!
+      expect(grand).toMatchObject({
+        site: 'ABCMART',
+        homeUrl: 'https://grandstage.a-rt.com/',
+        probe: { url: 'https://grandstage.a-rt.com/mypage', kind: 'page' }
+      })
+      expect(grand.capturePatterns).toEqual(abc.capturePatterns)
+      expect(abc.homeUrl).toBe('https://abcmart.a-rt.com/')
+      expect(abc.probe?.url).toBe('https://abcmart.a-rt.com/mypage')
+    }
+  )
+
   it('limits Naver capture to shopping and authentication domains', () => {
     expect(matchesCaptureUrl('NAVER', 'https://brand.naver.com/example')).toBe(true)
     expect(matchesCaptureUrl('NAVER', 'https://order.pay.naver.com/order')).toBe(true)

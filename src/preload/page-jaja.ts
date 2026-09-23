@@ -9,11 +9,13 @@ export function installJajaConnection(ipc: Pick<IpcRenderer, 'invoke'>): void {
   let closed = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let accepting = false
+  let submitted = false
 
   const announce = async (): Promise<void> => {
+    if (closed || submitted) return
     try {
       const reply = await ipc.invoke('jaja:pairStatus')
-      if (closed || !reply?.ok || !reply.data?.pending) return
+      if (closed || submitted || !reply?.ok || !reply.data?.pending) return
       accepting = true
       window.postMessage(
         { source: 'samba-extension', type: 'DEVICE_ID', deviceId: reply.data.hostId },
@@ -23,17 +25,27 @@ export function installJajaConnection(ipc: Pick<IpcRenderer, 'invoke'>): void {
         { source: 'samba-extension', type: 'API_KEY_STATUS', hasKey: false },
         location.origin
       )
-      timer = setTimeout(() => void announce(), 3000)
+      // The existing connection page waits at most three seconds for DEVICE_ID.
+      // React may attach its listener after the preload's first announcement.
+      timer = setTimeout(() => void announce(), 500)
     } catch {
       /* 이 탭은 연결용 탭이 아님 */
     }
   }
 
   window.addEventListener('message', (event: MessageEvent) => {
-    if (!accepting || event.source !== window || event.origin !== location.origin) return
+    if (
+      closed ||
+      submitted ||
+      !accepting ||
+      event.source !== window ||
+      event.origin !== location.origin
+    )
+      return
     const value = event.data
     if (!value || value.source !== 'samba-page' || value.type !== 'SAMBA_SET_API_KEY') return
     if (typeof value.apiKey !== 'string' || !/^[a-f0-9]{64}$/i.test(value.apiKey)) return
+    submitted = true
     accepting = false
     if (timer) clearTimeout(timer)
     void ipc.invoke('jaja:pairKey', value.apiKey).catch(() => {

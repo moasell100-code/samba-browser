@@ -195,6 +195,22 @@ export function normalizeSite(input: string): JajaSite | null {
 
 export function getSitePolicy(input: string): SitePolicy | null {
   const site = normalizeSite(input)
+  if (
+    site === 'ABCMART' &&
+    ['GRANDSTAGE', '그랜드스테이지'].includes(
+      input
+        .trim()
+        .replace(/[\s_-]/g, '')
+        .toUpperCase()
+    )
+  ) {
+    // Shared account/cookie conventions do not make the storefront login origins identical.
+    return {
+      ...SITE_POLICIES.ABCMART,
+      homeUrl: 'https://grandstage.a-rt.com/',
+      probe: { url: 'https://grandstage.a-rt.com/mypage', kind: 'page' }
+    }
+  }
   return site ? SITE_POLICIES[site] : null
 }
 
