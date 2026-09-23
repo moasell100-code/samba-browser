@@ -752,7 +752,7 @@ export function registerIpc(
     closeTab: (id) => tabs.close(id),
     reopenTab: () => {
       const last = closedTabs.pop()
-      if (last) tabs.create({ url: last.url, profile: last.profile, mobile: last.mobile })
+      if (last) tabs.restoreClosedTab(last)
     },
     toggleFullScreen: () => {
       if (!win.isDestroyed()) win.setFullScreen(!win.isFullScreen())

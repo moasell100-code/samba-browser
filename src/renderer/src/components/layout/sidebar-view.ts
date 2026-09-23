@@ -22,6 +22,7 @@ export type { SidebarSectionKey, SidebarSections }
 export const SIDEBAR_ITEMS = [
   { key: 'browser', view: 'browser' },
   { key: 'tasks', view: 'tasks' },
+  { key: 'jaja', view: 'jaja' },
   { key: 'logs', view: 'logs' }
 ] as const satisfies readonly { key: string; view: string }[]
 

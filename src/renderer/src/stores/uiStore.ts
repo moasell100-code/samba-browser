@@ -16,6 +16,7 @@ import { DEFAULT_SECTION_KEY, resolveSectionKey } from '@renderer/components/set
 export type MainView =
   | 'browser'
   | 'tasks'
+  | 'jaja'
   | 'personal'
   | 'bookmarks'
   | 'phones'

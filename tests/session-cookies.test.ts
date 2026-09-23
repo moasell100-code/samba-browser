@@ -46,6 +46,20 @@ describe('persistedCookie', () => {
     expect(persistedCookie(cookie({ domain: undefined }))).toBeNull()
   })
 
+  it('host-only 와 __Host- 쿠키는 domain 을 설정해 범위를 넓히지 않는다', () => {
+    const details = persistedCookie(
+      cookie({ name: '__Host-login', domain: 'accounts.example.com', hostOnly: true })
+    )
+    expect(details).toMatchObject({
+      url: 'https://accounts.example.com/',
+      name: '__Host-login',
+      secure: true,
+      path: '/'
+    })
+    expect(details).not.toHaveProperty('domain')
+    expect(persistedCookie(cookie({ hostOnly: false }))?.domain).toBe('.musinsa.com')
+  })
+
   it('cookieUrl 은 secure 여부와 경로를 따른다', () => {
     expect(cookieUrl({ domain: 'a.example', path: '/x', secure: false })).toBe('http://a.example/x')
     expect(cookieUrl({ domain: '.b.example', path: '/', secure: true })).toBe('https://b.example/')

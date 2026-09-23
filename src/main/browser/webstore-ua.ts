@@ -10,6 +10,7 @@
 
 import type { Session, WebContents } from 'electron'
 import { WEBSTORE_HOST } from '../../shared/extensions'
+import { transformSessionRequestHeaders } from './request-hooks'
 
 /** webRequest 필터 — 이 패턴에 걸리는 요청만 UA 를 갈아 끼운다 */
 export const WEBSTORE_URL_PATTERNS = [`https://${WEBSTORE_HOST}/*`]
@@ -38,13 +39,19 @@ export function chromeUserAgent(ua: string): string {
 
 /**
  * 세션에 웹스토어 전용 UA 교체를 건다.
- * onBeforeSendHeaders 는 세션당 리스너가 하나뿐이라 파티션마다 1회만 걸어야 한다
- * (호출부인 tab-manager 의 hardenSession 이 파티션 단위로 한 번만 부른다)
+ * 쿠키 관측자와 같은 dispatcher 를 사용한다. 직접 리스너를 붙이면 다른 기능을 덮어쓴다.
  */
 export function installWebstoreUserAgent(ses: Session): void {
   const ua = chromeUserAgent(ses.getUserAgent())
-  ses.webRequest.onBeforeSendHeaders({ urls: WEBSTORE_URL_PATTERNS }, (details, callback) => {
-    callback({ requestHeaders: { ...details.requestHeaders, 'User-Agent': ua } })
+  transformSessionRequestHeaders(ses, 'webstore-user-agent', (details) => {
+    if (!details.url.startsWith('https://') || !isWebstoreUrl(details.url)) return
+    const headers = { ...details.requestHeaders }
+    // 다른 대소문자의 UA 가 함께 남지 않도록 기존 헤더 이름을 먼저 지운다.
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'user-agent') delete headers[name]
+    }
+    headers['User-Agent'] = ua
+    return headers
   })
 }
 

@@ -86,7 +86,11 @@ describe('사이드바 이동 항목', () => {
   })
 
   it('폰은 사이드바에 두지 않는다(설정 → 폰 연동으로 옮겼다)', () => {
-    expect(SIDEBAR_ITEMS.map((i) => i.key)).toEqual(['browser', 'tasks', 'logs'])
+    expect(SIDEBAR_ITEMS.map((i) => i.key)).toEqual(['browser', 'tasks', 'jaja', 'logs'])
+  })
+
+  it('소싱 계정 항목은 자자 계정 관리 페이지로 간다', () => {
+    expect(SIDEBAR_ITEMS.find((i) => i.key === 'jaja')?.view).toBe('jaja')
   })
 
   it('항목 키가 겹치지 않는다', () => {

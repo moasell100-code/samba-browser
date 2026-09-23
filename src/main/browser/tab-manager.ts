@@ -48,6 +48,15 @@ export interface Tab {
  */
 type Popup = PopupEntry<BrowserWindow>
 
+interface CreateTabOptions {
+  url?: string
+  profile?: string
+  mobile?: boolean
+  openerId?: string
+  /** 확장 문서 탭. 앱이 직접 여는 경로에서만 허용한다. */
+  extension?: boolean
+}
+
 // 설정을 아직 못 읽었을 때의 기본 주소. 설정이 들어오면 setDefaultUrl 로 덮인다
 const DEFAULT_URL = NEW_TAB_URL
 
@@ -191,6 +200,7 @@ export class TabManager {
   private partitionPrefix = 'persist:'
   // 이 창이 실제로 만든 파티션 세션. 새 파티션이 생기면 확장 관리자에게 알려 준다
   private partitionSessions = new Map<string, Session>()
+  private tabPartitions = new Map<string, string>()
   private sessionHook: ((ses: Session, partition: string) => void) | null = null
   // 탭 우클릭 메뉴 설치 훅(번역 메뉴). 주입하지 않으면 메뉴를 붙이지 않는다
   private contextMenuHook: ((wc: WebContents) => void) | null = null
@@ -391,6 +401,7 @@ export class TabManager {
     this.closedListeners = []
     this.popupOpenedListeners = []
     this.tabs = []
+    this.tabPartitions.clear()
     this.activeId = null
     this.focusedPopupId = null
     // 부모 창이 사라졌는데 결제창만 남아 떠 있지 않게 팝업도 함께 파괴한다
@@ -563,20 +574,34 @@ export class TabManager {
     return null
   }
 
-  create(
-    opts: {
-      url?: string
-      profile?: string
-      mobile?: boolean
-      openerId?: string
-      /**
-       * 확장 문서(옵션 페이지) 탭인가. 앱이 스스로 여는 경로(툴바 액션)에서만 켠다 —
-       * 주소창 입력·웹페이지의 window.open·AI 도구는 이 값을 주지 않으므로
-       * `chrome-extension://` 은 그쪽으로는 여전히 열리지 않는다
-       */
-      extension?: boolean
-    } = {}
-  ): TabInfo {
+  create(opts: CreateTabOptions = {}): TabInfo {
+    // IPC/AI 가 호출하는 기존 경로는 명시적 partition 을 받지 않는다.
+    return this.createInPartition(opts, `${this.partitionPrefix}${opts.profile ?? 'default'}`)
+  }
+
+  /** 자자 계정 세션 등 메인 전용 경로. 작업공간을 바꿔도 같은 계정 저장소를 쓴다. */
+  createInSession(opts: {
+    url?: string
+    profile: string
+    partition: string
+    mobile?: boolean
+  }): TabInfo {
+    if (!/^persist:[A-Za-z0-9._:-]+$/.test(opts.partition)) {
+      throw new Error('A non-empty persistent session partition is required')
+    }
+    return this.createInPartition(
+      { url: opts.url, profile: opts.profile, mobile: opts.mobile },
+      opts.partition
+    )
+  }
+
+  /** 메인이 보관한 닫힌 탭만 복원한다. 현재 작업공간으로 세션을 바꾸지 않는다. */
+  restoreClosedTab(tab: ClosedTabRecord): TabInfo {
+    const opts = { url: tab.url, profile: tab.profile, mobile: tab.mobile }
+    return tab.partition ? this.createInPartition(opts, tab.partition) : this.create(opts)
+  }
+
+  private createInPartition(opts: CreateTabOptions, partition: string): TabInfo {
     if (this.disposed) throw new Error('window closed')
     // url 이 없으면(새 탭 버튼·첫 탭) 설정에서 계산된 기본 주소를 쓴다
     const url = opts.url ? opts.url : this.defaultUrl
@@ -586,7 +611,6 @@ export class TabManager {
       throw new Error(`${BLOCKED_URL_MESSAGE} (${url})`)
     }
     const profile = opts.profile ?? 'default'
-    const partition = `${this.partitionPrefix}${profile}`
     const ses = session.fromPartition(partition)
     hardenSession(ses, partition)
     // 파티션 세션에도 samba:// 핸들러를 붙인다(기본 세션 등록만으로는 탭에서 안 열림)
@@ -620,6 +644,7 @@ export class TabManager {
       ...(opts.openerId === undefined ? {} : { openerId: opts.openerId })
     }
     this.tabs.push(tab)
+    this.tabPartitions.set(tab.id, partition)
     const wc = view.webContents
     this.attachInputHandler(wc)
     this.contextMenuHook?.(wc)
@@ -689,7 +714,10 @@ export class TabManager {
       // (같은 profile 로 열어 로그인 세션·쿠키가 이어진다)
       if (disposition === 'foreground-tab' || disposition === 'background-tab') {
         try {
-          this.create({ url: target, profile, mobile: tab.mobile, openerId: tab.id })
+          this.createInPartition(
+            { url: target, profile, mobile: tab.mobile, openerId: tab.id },
+            partition
+          )
         } catch (e: unknown) {
           console.warn('새 탭 등록 실패', e instanceof Error ? e.message : String(e))
         }
@@ -705,7 +733,7 @@ export class TabManager {
         overrideBrowserWindowOptions: {
           autoHideMenuBar: true,
           // 팝업 창의 iframe 에도 preload 가 돌게 — 나머지 webPreferences 는 여는 창에서 물려받는다
-          webPreferences: { nodeIntegrationInSubFrames: true }
+          webPreferences: { session: ses, nodeIntegrationInSubFrames: true }
         }
       }
     })
@@ -782,7 +810,7 @@ export class TabManager {
         overrideBrowserWindowOptions: {
           autoHideMenuBar: true,
           // 팝업 창의 iframe 에도 preload 가 돌게 — 나머지 webPreferences 는 여는 창에서 물려받는다
-          webPreferences: { nodeIntegrationInSubFrames: true }
+          webPreferences: { session: wc.session, nodeIntegrationInSubFrames: true }
         }
       }
     })
@@ -818,10 +846,12 @@ export class TabManager {
       const record: ClosedTabRecord = {
         url: tab.view.webContents.getURL(),
         profile: tab.profile,
-        mobile: tab.mobile
+        mobile: tab.mobile,
+        partition: this.tabPartitions.get(tab.id)
       }
       for (const cb of this.closedListeners) cb(record)
     }
+    this.tabPartitions.delete(tab.id)
     if (!this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
     if (isTabAlive(tab)) tab.view.webContents.close()
     if (this.activeId === id) {

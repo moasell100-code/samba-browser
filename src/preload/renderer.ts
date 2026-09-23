@@ -66,6 +66,7 @@ import {
   type NotifySendResult
 } from '../shared/ipc'
 import type { AgentImage } from '../shared/agent-image'
+import type { JajaStatus } from '../shared/jaja'
 import type { AiUsage } from '../shared/ai'
 import type { AuthState, WorkspaceDto } from '../shared/sync'
 import type { ExportRequest, ExportResult } from '../shared/vault'
@@ -134,6 +135,26 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> {
 
 // React UI가 쓰는 API. 반환은 전부 IpcResult
 const api = {
+  jaja: {
+    status: (): Promise<IpcResult<JajaStatus>> => invoke(IPC.jajaStatus),
+    connect: (origin?: string): Promise<IpcResult<void>> => invoke(IPC.jajaConnect, origin),
+    disconnect: (): Promise<IpcResult<JajaStatus>> => invoke(IPC.jajaDisconnect),
+    refresh: (): Promise<IpcResult<JajaStatus>> => invoke(IPC.jajaRefresh),
+    open: (accountId: string): Promise<IpcResult<void>> => invoke(IPC.jajaOpen, accountId),
+    check: (accountId: string): Promise<IpcResult<JajaStatus>> => invoke(IPC.jajaCheck, accountId),
+    activate: (accountId: string): Promise<IpcResult<JajaStatus>> =>
+      invoke(IPC.jajaActivate, accountId),
+    pause: (accountId: string): Promise<IpcResult<JajaStatus>> => invoke(IPC.jajaPause, accountId),
+    release: (accountId: string): Promise<IpcResult<JajaStatus>> =>
+      invoke(IPC.jajaRelease, accountId),
+    setAutoLogin: (accountId: string, enabled: boolean): Promise<IpcResult<JajaStatus>> =>
+      invoke(IPC.jajaAutoLogin, accountId, enabled),
+    onChanged: (cb: (state: JajaStatus) => void): (() => void) => {
+      const listener = (_: unknown, state: JajaStatus): void => cb(state)
+      ipcRenderer.on(IPC.jajaChanged, listener)
+      return () => ipcRenderer.off(IPC.jajaChanged, listener)
+    }
+  },
   tabs: {
     list: (): Promise<IpcResult<TabInfo[]>> => invoke(IPC.tabList),
     create: (o: {

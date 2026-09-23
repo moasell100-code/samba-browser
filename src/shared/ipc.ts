@@ -2,6 +2,19 @@ import type { PageSnapshot } from './snapshot'
 
 // 렌더러 ↔ 메인 IPC 채널 이름. 문자열 하드코딩 금지
 export const IPC = {
+  jajaStatus: 'jaja:status',
+  jajaConnect: 'jaja:connect',
+  jajaDisconnect: 'jaja:disconnect',
+  jajaRefresh: 'jaja:refresh',
+  jajaOpen: 'jaja:open',
+  jajaCheck: 'jaja:check',
+  jajaActivate: 'jaja:activate',
+  jajaPause: 'jaja:pause',
+  jajaRelease: 'jaja:release',
+  jajaAutoLogin: 'jaja:autoLogin',
+  jajaChanged: 'jaja:changed',
+  jajaPairStatus: 'jaja:pairStatus',
+  jajaPairKey: 'jaja:pairKey',
   tabList: 'tab:list',
   tabCreate: 'tab:create',
   tabClose: 'tab:close',

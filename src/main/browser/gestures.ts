@@ -14,6 +14,8 @@ export interface ClosedTabRecord {
   url: string
   profile: string
   mobile: boolean
+  /** 메인 프로세스가 기록한 원래 세션. 렌더러·AI 입력으로 받지 않는다. */
+  partition?: string
 }
 
 /** 최근 닫힌 탭 스택(최대 10). 오래된 것부터 밀려난다 */

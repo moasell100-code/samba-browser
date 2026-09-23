@@ -6,6 +6,7 @@
 // 토큰만 사라져서다. 크롬의 "이전 세션 이어서" 와 같은 동작을 파티션에 준다:
 // 세션 쿠키가 생기면 같은 값에 만료만 얹어 다시 저장한다.
 //
+// 로컬 보관만 연장한다. 서버의 인증 만료·폐기·재로그인 요구를 연장하지 않는다.
 // 값은 읽어 그대로 되쓰기만 한다 — 로그·IPC·렌더러 어디에도 나가지 않는다.
 
 import type { Cookie, CookiesSetDetails, Session } from 'electron'
@@ -40,7 +41,8 @@ export function persistedCookie(
     url: cookieUrl(cookie),
     name: cookie.name,
     value: cookie.value,
-    domain: cookie.domain,
+    // domain 을 명시하면 Electron 이 서브도메인 쿠키로 바꾼다. host-only 는 URL 만 준다.
+    ...(cookie.hostOnly ? {} : { domain: cookie.domain }),
     path: cookie.path ?? '/',
     secure: cookie.secure ?? false,
     httpOnly: cookie.httpOnly ?? false,

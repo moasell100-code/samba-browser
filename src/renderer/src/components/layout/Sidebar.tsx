@@ -1,6 +1,6 @@
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Globe, ListChecks, PanelLeft, ScrollText, Settings } from 'lucide-react'
+import { Globe, ListChecks, PanelLeft, ScrollText, Settings, UsersRound } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import logo from '@renderer/assets/logo.png'
 import { useUiStore, type MainView } from '@renderer/stores/uiStore'
@@ -16,6 +16,7 @@ import { WorkspaceSwitcher } from '@renderer/components/workspace/WorkspaceSwitc
 const ICONS: Record<(typeof SIDEBAR_ITEMS)[number]['key'], typeof Globe> = {
   browser: Globe,
   tasks: ListChecks,
+  jaja: UsersRound,
   logs: ScrollText
 }
 
@@ -62,8 +63,8 @@ export function Sidebar({ width }: { width: number }): React.JSX.Element {
         <button
           key={key}
           type="button"
-          title={t(`sidebar.${key}`)}
-          aria-label={t(`sidebar.${key}`)}
+          title={key === 'jaja' ? '소싱 계정' : t(`sidebar.${key}`)}
+          aria-label={key === 'jaja' ? '소싱 계정' : t(`sidebar.${key}`)}
           onClick={() => setView(itemView)}
           className={cn(
             'flex cursor-pointer items-center rounded-[9px] text-left hover:bg-black/5',
@@ -72,7 +73,7 @@ export function Sidebar({ width }: { width: number }): React.JSX.Element {
           )}
         >
           <Icon className="h-4 w-4 shrink-0 text-[var(--text2)]" />
-          {!collapsed && t(`sidebar.${key}`)}
+          {!collapsed && (key === 'jaja' ? '소싱 계정' : t(`sidebar.${key}`))}
         </button>
       ))}
       {!collapsed && (

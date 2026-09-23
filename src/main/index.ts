@@ -11,6 +11,8 @@ import { openDatabase, type Db } from './db/client'
 import type { VaultService } from './vault/service'
 import type { SyncEngineHolder } from './sync/engine'
 import { runLoginHarness, writeVaultLocked } from './e2e/login-harness'
+import { registerJaja } from './jaja/ipc'
+import type { JajaManager } from './jaja/manager'
 
 // 브라우저 프로세스 크래시 덤프를 로컬에 남긴다(서버 업로드 없음). 원인 추적용
 crashReporter.start({ uploadToServer: false, compress: false })
@@ -56,6 +58,7 @@ process.on('unhandledRejection', (reason) => {
 let db: Db | undefined
 let vault: VaultService | undefined
 let sync: SyncEngineHolder | undefined
+let jaja: JajaManager | undefined
 
 // 종료 순서: vault.dispose()(lock 포함, DB 조회 발생) → db.close() 순으로 해야 한다.
 // 반대로 하면(예전 버그) db.close() 뒤에 창이 닫히며 vault.dispose() → lock() →
@@ -66,6 +69,7 @@ let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
+  jaja?.dispose()
   try {
     // 폴링·Realtime 구독을 먼저 끊는다 — 닫히는 DB 에 질의가 더 날아가지 않게
     sync?.current()?.stop()
@@ -106,6 +110,7 @@ app
     const ipc = registerIpc(win, tabs, db)
     vault = ipc.vault
     sync = ipc.sync
+    jaja = registerJaja(win, tabs)
     // 하네스 모드: 저장된 사이트를 순회하며 자동 로그인을 검증하고 끝나면 앱을 종료한다.
     // 환경변수 스위치는 개발 빌드에서만 인정한다 — 패키징된 앱에서는 무시한다
     const e2eTarget = app.isPackaged ? undefined : process.env.SAMBA_E2E_LOGIN
