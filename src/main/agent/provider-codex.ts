@@ -18,6 +18,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveCliBin } from '../ai/cli-bin'
+import { CODEX_DEFAULT_MODEL } from '../../shared/ai'
 
 /** codex 에 넘길 실행 입력 */
 export interface CodexInput {
@@ -129,7 +130,8 @@ export function buildCodexArgs(input: Pick<CodexInput, 'model' | 'mcpServer'>): 
     '-c',
     'web_search="disabled"'
   ]
-  if (input.model.trim()) args.push('-m', input.model.trim())
+  const model = input.model.trim()
+  if (model && model !== CODEX_DEFAULT_MODEL) args.push('-m', model)
   if (input.mcpServer) {
     const { name, url, bearerToken } = input.mcpServer
     let endpoint: URL

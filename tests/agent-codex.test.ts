@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, basename } from 'node:path'
+import { CODEX_DEFAULT_MODEL } from '../src/shared/ai'
 import {
   buildCodexArgs,
   CODEX_SUBSCRIPTION_REQUIRED,
@@ -46,6 +47,13 @@ describe('buildCodexArgs — 실제로 확인한 인자만 쓴다', () => {
 
   it('모델이 비어 있으면 -m 을 붙이지 않는다', () => {
     expect(buildCodexArgs({ model: '  ' })).not.toContain('-m')
+  })
+
+  it('Codex 기본 설정은 가짜 모델 이름으로 보내지 않고 CLI 기본값을 사용한다', () => {
+    const args = buildCodexArgs({ model: CODEX_DEFAULT_MODEL })
+    expect(args).not.toContain('-m')
+    expect(args.join(' ')).not.toContain(CODEX_DEFAULT_MODEL)
+    expect(args).toContain('forced_login_method="chatgpt"')
   })
 
   it('로컬 HTTP MCP 서버가 있을 때 토큰 값 대신 환경 이름만 인자로 전달한다', () => {

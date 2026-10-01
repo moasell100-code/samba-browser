@@ -300,6 +300,8 @@
     "delete": "Delete chat",
     "deleteConfirm": "Delete",
     "modelMenu": "Model",
+    "codexDefaultModel": "Codex default",
+    "codexDefaultModelHint": "Use the installed Codex default model",
     "effortMenu": "Reasoning effort",
     "effort": {
       "low": "Low",

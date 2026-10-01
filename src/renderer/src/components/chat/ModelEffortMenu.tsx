@@ -1,7 +1,7 @@
 import type React from 'react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { modelLabel, canonicalModel } from '@shared/ai'
+import { CODEX_DEFAULT_MODEL, modelLabel, canonicalModel } from '@shared/ai'
 import { Check, ChevronDown } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@renderer/lib/utils'
@@ -59,6 +59,8 @@ export function ModelEffortMenu(): React.JSX.Element {
   // 저장값이 별칭(sonnet)이면 정식 ID 항목과 같은 줄로 본다 — 같은 모델이 두 번 보이지 않게
   const current = canonicalModel(model)
   const choices = modelChoices.includes(current) ? modelChoices : [current, ...modelChoices]
+  const labelOf = (value: string): string =>
+    value === CODEX_DEFAULT_MODEL ? t('chat.codexDefaultModel') : modelLabel(value)
 
   const choose = (m: string): void => {
     setModelOpen(false)
@@ -78,7 +80,7 @@ export function ModelEffortMenu(): React.JSX.Element {
             title={t('chat.modelMenu')}
             className="min-w-0 rounded-l-full px-2.5 py-1 transition-colors hover:bg-black/[.03]"
           >
-            <span className="block max-w-[140px] truncate">{modelLabel(model)}</span>
+            <span className="block max-w-[140px] truncate">{labelOf(model)}</span>
           </button>
         </PopoverTrigger>
         <PopoverContent>
@@ -89,7 +91,8 @@ export function ModelEffortMenu(): React.JSX.Element {
             {choices.map((m) => (
               <OptionRow
                 key={m}
-                label={modelLabel(m)}
+                label={labelOf(m)}
+                desc={m === CODEX_DEFAULT_MODEL ? t('chat.codexDefaultModelHint') : undefined}
                 selected={m === current}
                 onClick={() => choose(m)}
               />

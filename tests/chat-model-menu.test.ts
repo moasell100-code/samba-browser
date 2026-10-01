@@ -112,7 +112,7 @@ describe('채팅 입력줄 모델·추론 강도', () => {
     expect(useChatStore.getState().model).toBe('claude-sonnet-5')
     await useAiStore.getState().setProvider('codex_subscription')
     expect(useChatStore.getState().model).toBe(taskModels.standard)
-    expect(useChatStore.getState().model).toBe('gpt-5.6')
+    expect(useChatStore.getState().model).toBe('codex-default')
     expect(useChatStore.getState().modelChoices).toEqual(taskModelChoices('codex_subscription'))
     expect(useChatStore.getState().effort).toBe('high')
     expect(setTaskModel).not.toHaveBeenCalled()

@@ -1,6 +1,11 @@
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { TASK_MODEL_KEYS, type TaskModelKey, type TaskModels } from '@shared/ai'
+import {
+  CODEX_DEFAULT_MODEL,
+  TASK_MODEL_KEYS,
+  type TaskModelKey,
+  type TaskModels
+} from '@shared/ai'
 
 interface Props {
   taskModels: TaskModels
@@ -91,9 +96,18 @@ export function TaskModelTable({
               />
               <datalist id={`task-model-choices-${key}`}>
                 {choices.map((c) => (
-                  <option key={c} value={c} />
+                  <option
+                    key={c}
+                    value={c}
+                    label={c === CODEX_DEFAULT_MODEL ? t('chat.codexDefaultModel') : c}
+                  />
                 ))}
               </datalist>
+              {taskModels[key] === CODEX_DEFAULT_MODEL && (
+                <p className="mt-1 text-[11px] leading-snug text-[var(--text2)]">
+                  {t('chat.codexDefaultModel')} · {t('chat.codexDefaultModelHint')}
+                </p>
+              )}
             </div>
             <div className="text-[11px] leading-snug text-[var(--text2)] sm:w-[32%]">
               {t(ROW_KEYS[key].usedIn)}

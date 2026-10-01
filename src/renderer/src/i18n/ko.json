@@ -300,6 +300,8 @@
     "delete": "대화 삭제",
     "deleteConfirm": "삭제",
     "modelMenu": "모델",
+    "codexDefaultModel": "Codex 기본",
+    "codexDefaultModelHint": "설치된 Codex가 제공하는 기본 모델 사용",
     "effortMenu": "추론 강도",
     "effort": {
       "low": "낮음",

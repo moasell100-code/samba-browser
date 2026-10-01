@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { AI_PROVIDERS, TASK_MODEL_KEYS, type TaskModels } from '../src/shared/ai'
+import {
+  AI_PROVIDERS,
+  CODEX_DEFAULT_MODEL,
+  TASK_MODEL_KEYS,
+  type TaskModels
+} from '../src/shared/ai'
 import {
   DEFAULT_TASK_MODELS,
   remapOnProviderChange,
@@ -30,12 +35,32 @@ describe('DEFAULT_TASK_MODELS', () => {
       visual: 'claude-sonnet-5'
     })
   })
+
+  it('Codex 새 기본값은 구독에서 사용할 수 없는 고정 모델을 지정하지 않는다', () => {
+    expect(Object.values(DEFAULT_TASK_MODELS.codex_subscription)).toEqual(
+      TASK_MODEL_KEYS.map(() => CODEX_DEFAULT_MODEL)
+    )
+    expect(taskModelChoices('codex_subscription')).toEqual([CODEX_DEFAULT_MODEL])
+    const saved = parseSettings({
+      aiProvider: 'codex_subscription',
+      taskModels: DEFAULT_TASK_MODELS.codex_subscription
+    })
+    expect(saved.taskModels.standard).toBe(CODEX_DEFAULT_MODEL)
+  })
 })
 
 describe('resolveModel', () => {
   it('설정된 값을 그대로 돌려준다', () => {
     const models: TaskModels = { fast: 'haiku', standard: 'opus', deep: 'opus', visual: 'sonnet' }
     expect(resolveModel(models, 'standard')).toBe('opus')
+  })
+
+  it('이미 저장된 Codex 모델은 기본 옵션을 추가해도 자동 변경하지 않는다', () => {
+    const existing = { ...DEFAULT_TASK_MODELS.codex_subscription, standard: 'my-existing-model' }
+    expect(resolveModel(existing, 'standard', 'codex_subscription')).toBe('my-existing-model')
+    expect(
+      remapOnProviderChange(existing, 'codex_subscription', 'codex_subscription').models
+    ).toEqual(existing)
   })
 
   it('빈 문자열·공백이면 기본값으로 대체한다', () => {

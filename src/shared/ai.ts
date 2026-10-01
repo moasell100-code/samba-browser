@@ -25,6 +25,9 @@ export const TASK_MODEL_KEYS = ['fast', 'standard', 'deep', 'visual'] as const
 export type TaskModelKey = (typeof TASK_MODEL_KEYS)[number]
 export type TaskModels = Record<TaskModelKey, string>
 
+// Persist a non-empty setting while allowing the installed Codex CLI to choose its default.
+export const CODEX_DEFAULT_MODEL = 'codex-default'
+
 /**
  * 제공자 카드 상태.
  * - connected: 사용자가 직접 연결했고 지금 쓸 수 있다

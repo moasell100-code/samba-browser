@@ -2,6 +2,7 @@
 // 순수 함수만 둔다(네트워크·파일 접근 없음)
 
 import {
+  CODEX_DEFAULT_MODEL,
   TASK_MODEL_KEYS,
   type AiProviderId,
   type TaskModelKey,
@@ -25,12 +26,13 @@ const API_KEY_MODELS: TaskModels = {
   visual: 'claude-sonnet-5'
 }
 
-// Codex 구독(= Codex CLI) 경로는 OpenAI 모델 이름을 그대로 넘긴다(codex exec -m)
+// Pinning an old model name breaks when subscription availability changes. The default
+// delegates selection to the installed CLI; explicit user-entered models are still preserved.
 const CODEX_MODELS: TaskModels = {
-  fast: 'gpt-5.6',
-  standard: 'gpt-5.6',
-  deep: 'gpt-5.6-pro',
-  visual: 'gpt-5.6'
+  fast: CODEX_DEFAULT_MODEL,
+  standard: CODEX_DEFAULT_MODEL,
+  deep: CODEX_DEFAULT_MODEL,
+  visual: CODEX_DEFAULT_MODEL
 }
 
 export const DEFAULT_TASK_MODELS: Record<AiProviderId, TaskModels> = {
@@ -51,7 +53,7 @@ const MODEL_CHOICES: Record<AiProviderId, string[]> = {
     'claude-haiku-4-5-20251001'
   ],
   api_key: ['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
-  codex_subscription: ['gpt-5.6', 'gpt-5.6-pro', 'gpt-5.1-codex-max', 'gpt-5.3-codex'],
+  codex_subscription: [CODEX_DEFAULT_MODEL],
   service_credit: [
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
