@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { FinancePageCapture } from '../src/shared/finance-capture'
+import type { FinanceListRow, FinancePageCapture } from '../src/shared/finance-capture'
 import {
   FinanceCaptureStore,
   FINANCE_CAPTURE_MAX_ITEMS,
@@ -55,6 +55,89 @@ describe('finance capture boundary', () => {
   it('recognizes only explicit status vocabulary', () => {
     expect(validateApprovalStatus('승인완료')).toBe('active')
     expect(validateApprovalStatus('취소완료')).toBe('cancelled')
+  })
+})
+
+describe('visible duplicate row review metadata', () => {
+  function row(approval: string, amount = '10,000'): FinanceListRow {
+    return {
+      head: [
+        { field: 'name', text: 'synthetic-merchant' },
+        { field: 'date', text: '2026.10.01' },
+        { field: 'time', text: '12:34:56' },
+        { field: 'card', text: 'synthetic-card 9876' },
+        { field: 'payment_type', text: '일시불' },
+        { field: 'amount', text: amount }
+      ],
+      details: [{ label: '승인번호', value: approval }],
+      detailsVisible: true,
+      sourceRowId: approval
+    }
+  }
+
+  function listPage(rows: FinanceListRow[]): FinancePageCapture {
+    return {
+      frames: [
+        {
+          origin: 'https://www.samsungcard.com',
+          pathname: '/personal/card/activity/UHPPRP0801M0.jsp',
+          tables: [],
+          lists: [
+            {
+              adapter: 'samsung_history_list_v1',
+              rows,
+              hiddenRows: 0,
+              unrecognizedRows: 0,
+              hasMore: false
+            }
+          ]
+        }
+      ],
+      failedFrames: 0,
+      skippedFrames: 0
+    }
+  }
+
+  it('flags repeated visible head tuples but retains every row including distinct approvals', () => {
+    const store = new FinanceCaptureStore()
+    const input = listPage([row('00112233'), row('00112234'), row('00112235')])
+    const receipt = store.save(input)
+    expect(receipt.listSummaries![0].duplicateVisibleRowCount).toBe(2)
+    expect(receipt.listRowCount).toBe(3)
+    expect(receipt.issues).toContain('duplicate_rows_review')
+    expect(
+      store
+        .readForReview(receipt.captureId)!
+        .page.frames[0].lists![0].rows.map((item) => item.sourceRowId)
+    ).toEqual(['00112233', '00112234', '00112235'])
+    expect(JSON.stringify(receipt)).not.toMatch(
+      /synthetic-merchant|synthetic-card|"00112233"|10,000|"head"|"digest"/
+    )
+    store.clear()
+  })
+
+  it('does not group rows with a different displayed amount or normalize the captured text', () => {
+    const store = new FinanceCaptureStore()
+    const receipt = store.save(
+      listPage([row('00112233'), row('00112234', '20,000'), row('00112235', '10,000 ')])
+    )
+    expect(receipt.listSummaries![0].duplicateVisibleRowCount).toBe(0)
+    expect(receipt.issues).not.toContain('duplicate_rows_review')
+    expect(receipt.listRowCount).toBe(3)
+    store.clear()
+  })
+
+  it('counts repeated rows within each list rather than matching unrelated list views', () => {
+    const input = listPage([row('00112233')])
+    input.frames[0].lists!.push(structuredClone(input.frames[0].lists![0]))
+    const store = new FinanceCaptureStore()
+    const receipt = store.save(input)
+    expect(receipt.listSummaries!.map((summary) => summary.duplicateVisibleRowCount)).toEqual([
+      0, 0
+    ])
+    expect(receipt.issues).not.toContain('duplicate_rows_review')
+    expect(receipt.listRowCount).toBe(2)
+    store.clear()
   })
 })
 

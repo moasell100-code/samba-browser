@@ -83,6 +83,7 @@ describe('Hyundai observed visible list adapter', () => {
         rowCount: 1,
         detailsVisibleCount: 0,
         sourceRowIdCount: 0,
+        duplicateVisibleRowCount: 0,
         nonemptyFields: ['name', 'card', 'date', 'time', 'payment_type', 'amount'].map((field) => ({
           field,
           count: 1

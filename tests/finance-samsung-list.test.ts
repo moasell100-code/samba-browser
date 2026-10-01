@@ -92,6 +92,7 @@ describe('Samsung visible history list adapter', () => {
         rowCount: 1,
         detailsVisibleCount: 1,
         sourceRowIdCount: 1,
+        duplicateVisibleRowCount: 0,
         nonemptyFields: ['name', 'date', 'time', 'card', 'payment_type', 'amount'].map((field) => ({
           field,
           count: 1

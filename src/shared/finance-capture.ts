@@ -79,6 +79,7 @@ export type FinanceCaptureIssue =
   | 'more_rows_available'
   | 'unrecognized_rows'
   | 'total_count_mismatch'
+  | 'duplicate_rows_review'
 
 // Safe to return to a model. No financial cells, page title, account names or URL queries.
 export interface FinanceCaptureReceipt {
@@ -95,6 +96,8 @@ export interface FinanceCaptureReceipt {
     rowCount: number
     detailsVisibleCount: number
     sourceRowIdCount: number
+    // Additional rows repeating an exact displayed head tuple; never auto-deduplicated.
+    duplicateVisibleRowCount: number
     displayedTotal?: number
     nonemptyFields: Array<{ field: FinanceListRow['head'][number]['field']; count: number }>
   }>

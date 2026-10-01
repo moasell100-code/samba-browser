@@ -20,6 +20,17 @@ interface StoredCapture {
   bytes: number
 }
 
+function duplicateVisibleRows(rows: FinanceListRow[]): number {
+  const seen = new Set<string>()
+  let duplicates = 0
+  for (const row of rows) {
+    const identity = JSON.stringify(row.head.map(({ field, text }) => [field, text]))
+    if (seen.has(identity)) duplicates += 1
+    else seen.add(identity)
+  }
+  return duplicates
+}
+
 /** Create one store per agent run. Never expose readForReview as an agent tool. */
 export class FinanceCaptureStore {
   private captures = new Map<string, StoredCapture>()
@@ -76,6 +87,7 @@ export class FinanceCaptureStore {
     }
     const tables = valid.data.frames.flatMap((frame) => frame.tables)
     const lists = valid.data.frames.flatMap((frame) => frame.lists ?? [])
+    const duplicateCounts = lists.map((list) => duplicateVisibleRows(list.rows))
     const issues: FinanceCaptureIssue[] = ['query_range_unverified', 'pagination_unverified']
     if (!lists.length || tables.length || lists.some((list) => list.unrecognizedRows))
       issues.unshift('site_adapter_unverified')
@@ -93,6 +105,7 @@ export class FinanceCaptureStore {
       )
     )
       issues.push('total_count_mismatch')
+    if (duplicateCounts.some((count) => count > 0)) issues.push('duplicate_rows_review')
     if (
       tables.some(
         (table) =>
@@ -114,7 +127,7 @@ export class FinanceCaptureStore {
         ? {
             listCount: lists.length,
             listRowCount: lists.reduce((count, list) => count + list.rows.length, 0),
-            listSummaries: lists.map((list) => {
+            listSummaries: lists.map((list, index) => {
               const fields = new Map<FinanceListRow['head'][number]['field'], number>()
               for (const row of list.rows)
                 for (const cell of row.head) {
@@ -125,6 +138,7 @@ export class FinanceCaptureStore {
                 rowCount: list.rows.length,
                 detailsVisibleCount: list.rows.filter((row) => row.detailsVisible).length,
                 sourceRowIdCount: list.rows.filter((row) => row.sourceRowId).length,
+                duplicateVisibleRowCount: duplicateCounts[index],
                 ...(list.displayedTotal !== undefined
                   ? { displayedTotal: list.displayedTotal }
                   : {}),
