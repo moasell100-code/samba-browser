@@ -7,7 +7,7 @@ import type { WebContents } from 'electron'
 import { isLoginSuccess } from './login-success'
 import type { VaultService } from '../vault/service'
 import { ISOLATED_WORLD_ID } from '../browser/page-bridge'
-import type { PendingUpdatePayload } from './vault-capture'
+import { canCaptureLoginPassword, type PendingUpdatePayload } from './vault-capture'
 
 // 로그인 성공 판정 대기 최대 시간(스펙: 20초)
 export const LOGIN_WATCH_TIMEOUT_MS = 20_000
@@ -71,6 +71,8 @@ export function watchLoginSuccess(
       cleanup()
       if (!success) return
       try {
+        // The user may have selected PIN login while this navigation was pending.
+        if (!canCaptureLoginPassword(vault, payload.accountId)) return
         const { undoToken } = vault.applyAutoPasswordUpdate({
           accountId: payload.accountId,
           username: payload.username,

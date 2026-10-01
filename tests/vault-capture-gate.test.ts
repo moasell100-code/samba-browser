@@ -24,6 +24,7 @@ function build(
     excludedHosts?: string[]
     sameSecret?: boolean
     accounts?: { id?: number; username: string }[]
+    items?: ReturnType<CaptureVaultLike['listItems']>
     autoUpdateEnabled?: boolean
     onPendingUpdate?: ReturnType<typeof vi.fn>
   } = {}
@@ -35,6 +36,7 @@ function build(
     state: () => opts.state ?? 'unlocked',
     hasSameSecret,
     listAccounts: () => opts.accounts ?? [],
+    listItems: () => opts.items ?? [],
     setPendingCapture
   }
   const gate = new VaultCaptureGate({
@@ -170,4 +172,39 @@ describe('VaultCaptureGate', () => {
     const outcome = b.gate.handle({}, FRAME, PAYLOAD)
     expect(JSON.stringify(outcome)).not.toContain(PASSWORD)
   })
+
+  it.each([false, true])(
+    'PIN-method accounts reject generic capture with auto-update %s',
+    (autoUpdateEnabled) => {
+      const onPendingUpdate = vi.fn()
+      const b = build({
+        accounts: [{ id: 7, username: 'alice' }],
+        items: [
+          {
+            type: 'login',
+            sections: [
+              {
+                key: 'main',
+                label: '로그인',
+                fields: [
+                  {
+                    key: 'login.method',
+                    kind: 'select',
+                    label: '로그인 방식',
+                    value: 'hyundai_pin'
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        autoUpdateEnabled,
+        onPendingUpdate
+      })
+      expect(b.gate.handle({}, FRAME, PAYLOAD)).toBe('login-method-protected')
+      expect(b.hasSameSecret).not.toHaveBeenCalled()
+      expect(b.setPendingCapture).not.toHaveBeenCalled()
+      expect(onPendingUpdate).not.toHaveBeenCalled()
+    }
+  )
 })

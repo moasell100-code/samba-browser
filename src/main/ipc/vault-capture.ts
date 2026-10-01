@@ -9,7 +9,9 @@
 
 import { z } from 'zod'
 import { normalizeHost, registrableDomain } from '../../shared/host'
-import type { VaultState } from '../../shared/vault'
+import { loginMethodOfSections } from '../../shared/login-method'
+import type { VaultItemMeta, VaultState } from '../../shared/vault'
+import type { PendingCapture, VaultService } from '../vault/service'
 
 export const captureSchema = z.object({
   host: z.string().min(1).max(512),
@@ -26,6 +28,7 @@ export interface CaptureVaultLike {
   state: () => VaultState
   hasSameSecret: (host: string, username: string, password: string) => boolean
   listAccounts: (host?: string) => { id?: number; username: string }[]
+  listItems: (accountId: number) => Pick<VaultItemMeta, 'type' | 'sections'>[]
   setPendingCapture: (capture: {
     host: string
     username: string
@@ -52,6 +55,7 @@ export type CaptureOutcome =
   | 'host-mismatch'
   | 'excluded'
   | 'duplicate'
+  | 'login-method-protected'
   // 기존 계정 + 다른 값 + 자동 갱신 활성화 → 저장 제안 없이 "로그인 성공 감지" 대기 상태로 보류
   | 'pending-update'
 
@@ -62,6 +66,40 @@ export interface PendingUpdatePayload {
   username: string
   password: string
   accountId: number
+}
+
+/** Generic password capture must never replace a credential for another login method. */
+export function canCaptureLoginPassword(
+  vault: Pick<CaptureVaultLike, 'listItems'>,
+  accountId: number
+): boolean {
+  return !vault
+    .listItems(accountId)
+    .some((item) => item.type === 'login' && loginMethodOfSections(item.sections) !== 'password')
+}
+
+/** Recheck after unlocking or waiting for user acceptance, before either account or item writes. */
+export function saveCapturedLoginPassword(
+  vault: Pick<VaultService, 'listAccounts' | 'listItems' | 'upsertAccount' | 'putItem'>,
+  capture: Pick<PendingCapture, 'host' | 'username' | 'password'>
+): boolean {
+  const host = normalizeHost(capture.host) || capture.host
+  const existing = vault.listAccounts(host).find((account) => account.username === capture.username)
+  if (existing && !canCaptureLoginPassword(vault, existing.id)) return false
+  // Retain the existing label and default-account setting.
+  const account = vault.upsertAccount({
+    id: existing?.id,
+    host,
+    ...(existing ? {} : { label: host }),
+    username: capture.username
+  })
+  vault.putItem({
+    accountId: account.id,
+    type: 'login',
+    label: '로그인 비밀번호',
+    value: capture.password
+  })
+  return true
 }
 
 export interface VaultCaptureGateDeps {
@@ -128,9 +166,15 @@ export class VaultCaptureGate {
 
     const vault = this.deps.vault
     if (vault.state() === 'unlocked') {
+      const existingAccount = vault.listAccounts(host).find((a) => a.username === username)
+      if (
+        existingAccount?.id !== undefined &&
+        !canCaptureLoginPassword(vault, existingAccount.id)
+      ) {
+        return 'login-method-protected'
+      }
       // 기존 값과 동일하면 제안하지 않는다
       if (vault.hasSameSecret(host, username, password)) return 'duplicate'
-      const existingAccount = vault.listAccounts(host).find((a) => a.username === username)
       const isNew = !existingAccount
 
       // 기존 계정 + 값이 다름 + 자동 갱신이 켜져 있으면: 저장 제안 카드를 띄우지 않고

@@ -45,7 +45,7 @@ import { SiteMemoryService } from '../agent/site-memory'
 import { ActivityRecorder } from '../activity/recorder'
 import { RecommendService } from '../activity/recommend'
 import { RECENT_CHAT_LIMIT, type AppendMessageInput } from '../../shared/chat'
-import { VaultCaptureGate } from './vault-capture'
+import { VaultCaptureGate, saveCapturedLoginPassword } from './vault-capture'
 import { watchLoginSuccess } from './login-watch'
 import { VaultPickerGate } from './vault-picker'
 import { autofillAccount, type AutofillDeps } from '../vault/autofill'
@@ -630,22 +630,7 @@ export function registerIpc(
       return
     }
     try {
-      const host = normalizeHost(capture.host) || capture.host
-      // 기존 계정이면 label/isDefault 를 넘기지 않는다 — 사용자가 붙여 둔 라벨과
-      // 기본 계정 지정을 자동 저장이 덮어쓰지 않게 한다
-      const existing = vault.listAccounts(host).find((a) => a.username === capture.username)
-      const account = vault.upsertAccount({
-        id: existing?.id,
-        host,
-        ...(existing ? {} : { label: host }),
-        username: capture.username
-      })
-      vault.putItem({
-        accountId: account.id,
-        type: 'login',
-        label: '로그인 비밀번호',
-        value: capture.password
-      })
+      saveCapturedLoginPassword(vault, capture)
     } catch (e: unknown) {
       // 실패 사유만 남긴다 — 값은 절대 로그에 넣지 않는다
       console.error('자격정보 저장 실패', e instanceof Error ? e.message : String(e))
