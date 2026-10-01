@@ -6,6 +6,8 @@ import { financeFrameCaptureSchema } from '../src/main/finance/capture-schema'
 import type { FinanceCaptureReceipt, FinanceFrameCapture } from '../src/shared/finance-capture'
 
 const path = '/personal/card/activity/UHPPRP0801M0.jsp'
+const historyMarker =
+  '<div class="ajax_sec"><ul><li id="li_dtOrder"><a id="dtOrder">일자순</a></li><li id="li_amOrder"><a id="amOrder">금액순</a></li></ul></div>'
 const windows: JSDOM[] = []
 function docAt(html: string, url = `https://www.samsungcard.com${path}`): Document {
   const dom = new JSDOM(html, { url })
@@ -37,7 +39,7 @@ function row(detailsStyle = ''): string {
 }
 
 function capture(html: string): FinanceFrameCapture {
-  return captureFinanceTables(docAt(`<style>.hide{display:none}</style>${html}`))
+  return captureFinanceTables(docAt(`<style>.hide{display:none}</style>${historyMarker}${html}`))
 }
 
 function receiptOf(frame: FinanceFrameCapture): FinanceCaptureReceipt {
@@ -84,10 +86,22 @@ describe('Samsung visible history list adapter', () => {
     expect(receipt.tableCount).toBe(0)
     expect(receipt.listCount).toBe(1)
     expect(receipt.listRowCount).toBe(1)
+    expect(receipt.listSummaries).toEqual([
+      {
+        adapter: 'samsung_history_list_v1',
+        rowCount: 1,
+        detailsVisibleCount: 1,
+        sourceRowIdCount: 1,
+        nonemptyFields: ['name', 'date', 'time', 'card', 'payment_type', 'amount'].map((field) => ({
+          field,
+          count: 1
+        }))
+      }
+    ])
     expect(receipt.issues).not.toContain('no_tables')
     expect(receipt.issues).not.toContain('site_adapter_unverified')
     expect(receipt.issues).toEqual(['query_range_unverified', 'pagination_unverified'])
-    expect(JSON.stringify(receipt)).not.toMatch(/합성상점|9876|00123456|12,345|취소/)
+    expect(JSON.stringify(receipt)).not.toMatch(/합성상점|테스트 9876|"00123456"|12,345|취소/)
   })
 
   it('omits collapsed details and never invents an approval number from hidden data', () => {
@@ -135,7 +149,7 @@ describe('Samsung visible history list adapter', () => {
 
   it.each([
     'https://www.samsungcard.com/personal/login/UHPPCO0301M0.jsp',
-    'https://www.samsungcard.com/personal/card/activity/UHPPRP0801D8.jsp',
+    'https://www.samsungcard.com/personal/card/activity/UHPPRP0801D1.jsp',
     'https://www.hyundaicard.com/personal/card/activity/UHPPRP0801M0.jsp',
     'https://www.lottecard.co.kr/personal/card/activity/UHPPRP0801M0.jsp'
   ])('does not apply the adapter on unverified routes or issuers: %s', (url) => {
@@ -174,5 +188,162 @@ describe('Samsung visible history list adapter', () => {
         `<ul id="inquire_append">${row().replace('합성상점', 'x'.repeat(FINANCE_CAPTURE_LIMITS.cellChars + 1))}</ul>`
       )
     ).toThrow('finance_capture_limit')
+  })
+})
+
+function cancellationMarker(kind: 'cancel' | 'refund'): string {
+  const labels =
+    kind === 'cancel'
+      ? [
+          ['fi_rd_all', '취소 전체'],
+          ['fi_rd_ing', '승인 취소'],
+          ['fi_rd_close', '결제 취소']
+        ]
+      : [
+          ['fi_rd_all', '취소 전체'],
+          ['fi_rd_subway', '일시불'],
+          ['fi_rd_bus', '할부']
+        ]
+  return `<div class="ajax_sec"><div class="box696"><div class="subtit_wrap"><div class="subtit_l">${labels
+    .map(
+      ([id, text]) =>
+        `<input type="radio" id="${id}" value="private-input-secret"><label for="${id}">${text}</label>`
+    )
+    .join('')}</div></div></div></div>`
+}
+
+function cancellationRow(kind: 'cancel' | 'refund'): string {
+  let html = row().replace(
+    '<p class="td second"><span class="hide">승인시간</span><span>12:34:56</span></p>',
+    ''
+  )
+  if (kind === 'cancel')
+    html = html
+      .replace('<span>일시불</span>', '<span>부분취소</span>')
+      .replace('-12,345', '12,345')
+      .replace('<li><span class="fl_l">취소여부</span><span class="fl_r">취소</span></li>', '')
+  else
+    html = html
+      .replace('승인일자', '매출일자')
+      .replace('<span>일시불</span>', '<span>일시불</span> / <span>취소완료</span>')
+      .replace(
+        '<li><span class="fl_l">취소여부</span><span class="fl_r">취소</span></li>',
+        '<li><span class="fl_l">환불일</span><span class="fl_r">2026.10.02 합성은행 ***1234</span></li>'
+      )
+  return html
+}
+
+describe('Samsung cancellation view semantics', () => {
+  it('uses visible cancellation captions on M0 and preserves full approval amount without inventing a time or payment type', () => {
+    const frame = captureFinanceTables(
+      docAt(
+        `${cancellationMarker('cancel')}<ul id="inquire_append">${cancellationRow('cancel')}</ul>`
+      )
+    )
+    const list = frame.lists![0]
+    expect(list.adapter).toBe('samsung_cancellation_list_v1')
+    expect(list.rows[0].head).toEqual([
+      { field: 'name', text: '합성상점' },
+      { field: 'date', text: '2026.10.01' },
+      { field: 'card', text: '테스트 9876' },
+      { field: 'cancellation_status', text: '부분취소' },
+      { field: 'amount', text: '12,345' }
+    ])
+    expect(list.rows[0].sourceRowId).toBe('00123456')
+    const receipt = receiptOf(frame)
+    expect(receipt.listRowCount).toBe(1)
+    expect(receipt.listSummaries![0].nonemptyFields).toEqual(
+      ['name', 'date', 'card', 'cancellation_status', 'amount'].map((field) => ({
+        field,
+        count: 1
+      }))
+    )
+    expect(JSON.stringify(receipt)).not.toMatch(/"00123456"|12,345|부분취소|테스트 9876/)
+    expect(JSON.stringify(frame)).not.toContain('private-input-secret')
+  })
+
+  it('preserves sales date, payment type, cancellation status and displayed negative refund amount separately', () => {
+    const frame = captureFinanceTables(
+      docAt(
+        `${cancellationMarker('refund')}<ul id="inquire_append">${cancellationRow('refund')}</ul>`
+      )
+    )
+    expect(frame.lists![0].adapter).toBe('samsung_refund_list_v1')
+    expect(frame.lists![0].rows[0].head).toEqual([
+      { field: 'name', text: '합성상점' },
+      { field: 'sales_date', text: '2026.10.01' },
+      { field: 'card', text: '테스트 9876' },
+      { field: 'payment_type', text: '일시불' },
+      { field: 'cancellation_status', text: '취소완료' },
+      { field: 'amount', text: '-12,345' }
+    ])
+    expect(frame.lists![0].rows[0].details).toContainEqual({
+      label: '환불일',
+      value: '2026.10.02 합성은행 ***1234'
+    })
+    const receipt = receiptOf(frame)
+    expect(receipt.listSummaries![0].detailsVisibleCount).toBe(1)
+    expect(JSON.stringify(receipt)).not.toMatch(/합성은행|\*\*\*1234|12,345/)
+  })
+
+  it.each([
+    ['cancel', 'UHPPRP0801D8.jsp', 'samsung_cancellation_list_v1'],
+    ['refund', 'UHPPRP0801DF.jsp', 'samsung_refund_list_v1']
+  ] as const)('accepts only the matching public fragment variant: %s', (kind, jsp, adapter) => {
+    const frame = captureFinanceTables(
+      docAt(
+        `<ul id="inquire_append">${cancellationRow(kind)}</ul>`,
+        `https://www.samsungcard.com/personal/card/activity/${jsp}`
+      )
+    )
+    expect(frame.lists![0].adapter).toBe(adapter)
+    expect(financeFrameCaptureSchema.safeParse(frame).success).toBe(true)
+    expect(
+      financeFrameCaptureSchema.safeParse({
+        ...frame,
+        pathname: '/personal/card/activity/UHPPRP0801D0.jsp'
+      }).success
+    ).toBe(false)
+  })
+
+  it('does not treat a missing approval-time cell as a cancellation view', () => {
+    const frame = capture(
+      `<ul id="inquire_append">${row().replace('<p class="td second"><span class="hide">승인시간</span><span>12:34:56</span></p>', '')}</ul>`
+    )
+    expect(frame.lists![0].adapter).toBe('samsung_history_list_v1')
+    expect(frame.lists![0].unrecognizedRows).toBe(1)
+    expect(frame.lists![0].rows).toEqual([])
+  })
+
+  it('does not guess a main-page view from rows, hidden captions, or contradictory captions', () => {
+    for (const marker of [
+      '',
+      `<div hidden>${cancellationMarker('cancel')}</div>`,
+      `${cancellationMarker('cancel')}${cancellationMarker('refund')}`
+    ]) {
+      const frame = captureFinanceTables(
+        docAt(`${marker}<ul id="inquire_append">${cancellationRow('cancel')}</ul>`)
+      )
+      expect(frame.lists).toBeUndefined()
+    }
+  })
+
+  it('does not claim a source identifier when refund details are absent or collapsed', () => {
+    const html = cancellationRow('refund').replace(
+      'class="desc_wrap ui_accord_content desc_banner_vin08"',
+      'class="desc_wrap ui_accord_content desc_banner_vin08" hidden'
+    )
+    const frame = captureFinanceTables(
+      docAt(
+        `${cancellationMarker('refund')}<ul id="inquire_append">${html}</ul><button id="btn_more">더보기</button>`
+      )
+    )
+    const receipt = receiptOf(frame)
+    expect(receipt.listSummaries![0].sourceRowIdCount).toBe(0)
+    expect(receipt.listSummaries![0].detailsVisibleCount).toBe(0)
+    expect(receipt.issues).toEqual(
+      expect.arrayContaining(['details_incomplete', 'more_rows_available', 'pagination_unverified'])
+    )
+    expect(frame.lists![0].rows[0].sourceRowId).toBeUndefined()
   })
 })

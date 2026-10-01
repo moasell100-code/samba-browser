@@ -34,16 +34,22 @@ const listRow = z
       .array(
         z
           .object({
-            field: z.enum(['name', 'date', 'time', 'card', 'payment_type', 'amount']),
+            field: z.enum([
+              'name',
+              'date',
+              'sales_date',
+              'time',
+              'card',
+              'payment_type',
+              'cancellation_status',
+              'amount'
+            ]),
             text: z.string().max(2000)
           })
           .strict()
       )
-      .length(6)
-      .refine(
-        (head) =>
-          head.map((cell) => cell.field).join(',') === 'name,date,time,card,payment_type,amount'
-      ),
+      .min(5)
+      .max(6),
     details: z
       .array(
         z
@@ -71,13 +77,31 @@ const listRow = z
 
 const list = z
   .object({
-    adapter: z.literal('samsung_history_list_v1'),
+    adapter: z.enum([
+      'samsung_history_list_v1',
+      'samsung_cancellation_list_v1',
+      'samsung_refund_list_v1',
+      'hyundai_history_list_v1'
+    ]),
     rows: z.array(listRow).max(1000),
     hiddenRows: z.number().int().nonnegative(),
     unrecognizedRows: z.number().int().nonnegative(),
-    hasMore: z.boolean()
+    hasMore: z.boolean(),
+    displayedTotal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional()
   })
   .strict()
+  .refine((list) =>
+    list.rows.every(
+      (row) =>
+        row.head.map((cell) => cell.field).join(',') ===
+        {
+          samsung_history_list_v1: 'name,date,time,card,payment_type,amount',
+          samsung_cancellation_list_v1: 'name,date,card,cancellation_status,amount',
+          samsung_refund_list_v1: 'name,sales_date,card,payment_type,cancellation_status,amount',
+          hyundai_history_list_v1: 'name,card,date,time,payment_type,amount'
+        }[list.adapter]
+    )
+  )
 
 const layoutDiagnostic = z
   .object({
@@ -154,16 +178,25 @@ export const financeFrameCaptureSchema = z
       !frame.layoutDiagnostic ||
       (financeCardIssuer(frame.origin) === 'hyundai_card' &&
         frame.pathname === '/cpa/cb/CPACB0101_01.hc' &&
-        frame.tables.length === 0)
+        frame.tables.length === 0 &&
+        !frame.lists?.length)
   )
   .refine(
     (frame) =>
       !frame.lists?.length ||
-      (financeCardIssuer(frame.origin) === 'samsung_card' &&
-        [
-          '/personal/card/activity/UHPPRP0801M0.jsp',
-          '/personal/card/activity/UHPPRP0801D0.jsp'
-        ].includes(frame.pathname))
+      frame.lists.every((list) =>
+        list.adapter === 'hyundai_history_list_v1'
+          ? financeCardIssuer(frame.origin) === 'hyundai_card' &&
+            frame.pathname === '/cpa/cb/CPACB0101_01.hc'
+          : financeCardIssuer(frame.origin) === 'samsung_card' &&
+            (frame.pathname === '/personal/card/activity/UHPPRP0801M0.jsp' ||
+              frame.pathname ===
+                {
+                  samsung_history_list_v1: '/personal/card/activity/UHPPRP0801D0.jsp',
+                  samsung_cancellation_list_v1: '/personal/card/activity/UHPPRP0801D8.jsp',
+                  samsung_refund_list_v1: '/personal/card/activity/UHPPRP0801DF.jsp'
+                }[list.adapter])
+      )
   )
 
 export const financePageCaptureSchema = z

@@ -5,6 +5,7 @@ import type {
   FinanceListRow,
   FinanceTableCell
 } from '../shared/finance-capture'
+import { captureHyundaiHistoryLists } from './page-finance-hyundai'
 
 // Kept in preload so this does not introduce a shared runtime chunk.
 export const FINANCE_CAPTURE_LIMITS = {
@@ -141,18 +142,58 @@ function visibleOne(root: Element, selector: string): Element | undefined {
   return matches.length === 1 ? matches[0] : undefined
 }
 
+function samsungHistoryVariant(doc: Document, url: URL): FinanceListCapture['adapter'] | null {
+  if (url.hostname !== 'www.samsungcard.com') return null
+  const fragments: Record<string, FinanceListCapture['adapter']> = {
+    '/personal/card/activity/UHPPRP0801D0.jsp': 'samsung_history_list_v1',
+    '/personal/card/activity/UHPPRP0801D8.jsp': 'samsung_cancellation_list_v1',
+    '/personal/card/activity/UHPPRP0801DF.jsp': 'samsung_refund_list_v1'
+  }
+  if (fragments[url.pathname]) return fragments[url.pathname]
+  if (url.pathname !== '/personal/card/activity/UHPPRP0801M0.jsp') return null
+  // The main page swaps fragments without changing its URL. Their public, visible
+  // captions disambiguate cancellation status and sales date from payment type
+  // and approval date; do not read radio/select values or hidden templates.
+  const captionsMatch = (labels: Array<[string, string]>): boolean =>
+    Array.from(doc.querySelectorAll('.ajax_sec > .box696 > .subtit_wrap > .subtit_l'))
+      .filter((group) => !isHidden(group))
+      .some((group) =>
+        labels.every(([id, caption]) => {
+          const label = visibleOne(group, `label[for="${id}"]`)
+          return Boolean(label && cellText(label).replace(/\s+/g, '') === caption)
+        })
+      )
+  const cancellation = captionsMatch([
+    ['fi_rd_all', '취소전체'],
+    ['fi_rd_ing', '승인취소'],
+    ['fi_rd_close', '결제취소']
+  ])
+  const refund = captionsMatch([
+    ['fi_rd_all', '취소전체'],
+    ['fi_rd_subway', '일시불'],
+    ['fi_rd_bus', '할부']
+  ])
+  if (cancellation && refund) return null
+  if (cancellation) return 'samsung_cancellation_list_v1'
+  if (refund) return 'samsung_refund_list_v1'
+  const dateSort = doc.querySelector('.ajax_sec #li_dtOrder > a#dtOrder')
+  const amountSort = doc.querySelector('.ajax_sec #li_amOrder > a#amOrder')
+  return dateSort &&
+    amountSort &&
+    !isHidden(dateSort) &&
+    !isHidden(amountSort) &&
+    cellText(dateSort) === '일자순' &&
+    cellText(amountSort) === '금액순'
+    ? 'samsung_history_list_v1'
+    : null
+}
+
 // These boundaries come from Samsung's public UHPPRP0801D0.jsp row template.
 // Read only displayed head columns and expanded detail label/value pairs; never
 // inspect the template, onclick data, hidden input values, or application state.
 function samsungHistoryLists(doc: Document, url: URL, budget: CaptureBudget): FinanceListCapture[] {
-  if (
-    url.hostname !== 'www.samsungcard.com' ||
-    ![
-      '/personal/card/activity/UHPPRP0801M0.jsp',
-      '/personal/card/activity/UHPPRP0801D0.jsp'
-    ].includes(url.pathname)
-  )
-    return []
+  const adapter = samsungHistoryVariant(doc, url)
+  if (!adapter) return []
   const roots = Array.from(
     doc.querySelectorAll('ul#inquire_append, ul#clnd_inquire_append')
   ).filter((root) => !isHidden(root))
@@ -162,7 +203,7 @@ function samsungHistoryLists(doc: Document, url: URL, budget: CaptureBudget): Fi
     if (!sourceRows.length) continue
     if (sourceRows.length > FINANCE_CAPTURE_LIMITS.rows) throw new Error('finance_capture_limit')
     const result: FinanceListCapture = {
-      adapter: 'samsung_history_list_v1',
+      adapter,
       rows: [],
       hiddenRows: 0,
       unrecognizedRows: 0,
@@ -177,18 +218,37 @@ function samsungHistoryLists(doc: Document, url: URL, budget: CaptureBudget): Fi
       }
       const selectors: Array<[FinanceListRow['head'][number]['field'], string]> = [
         ['name', ':scope > .head > .fl_l > p.name > span:not(.ico)'],
-        ['date', ':scope > .head > .fl_l > p.td.first > strong'],
-        ['time', ':scope > .head > .fl_l > p.td.second > span:not(.hide)'],
-        ['card', ':scope > .head > .fl_l > p.td.last > span:first-child'],
-        ['payment_type', ':scope > .head > .fl_l > p.td.last > span:last-child'],
-        ['amount', ':scope > .head > .fl_r > p.em > strong']
+        [
+          adapter === 'samsung_refund_list_v1' ? 'sales_date' : 'date',
+          ':scope > .head > .fl_l > p.td.first > strong'
+        ]
       ]
+      if (adapter === 'samsung_history_list_v1')
+        selectors.push(['time', ':scope > .head > .fl_l > p.td.second > span:not(.hide)'])
+      selectors.push(
+        ['card', ':scope > .head > .fl_l > p.td.last > span:first-child'],
+        [
+          adapter === 'samsung_cancellation_list_v1' ? 'cancellation_status' : 'payment_type',
+          ':scope > .head > .fl_l > p.td.last > span:nth-child(2)'
+        ]
+      )
+      if (adapter === 'samsung_refund_list_v1')
+        selectors.push([
+          'cancellation_status',
+          ':scope > .head > .fl_l > p.td.last > span:nth-child(3)'
+        ])
+      selectors.push(['amount', ':scope > .head > .fl_r > p.em > strong'])
       const head = selectors.map(([field, selector]) => ({
         field,
         el: visibleOne(sourceRow, selector)
       }))
       const cardColumns = sourceRow.querySelectorAll(':scope > .head > .fl_l > p.td.last > span')
-      if (head.some(({ el }) => !el) || cardColumns.length !== 2) {
+      if (
+        head.some(({ el }) => !el) ||
+        cardColumns.length !== (adapter === 'samsung_refund_list_v1' ? 3 : 2) ||
+        (adapter !== 'samsung_history_list_v1' &&
+          sourceRow.querySelector(':scope > .head > .fl_l > p.td.second'))
+      ) {
         result.unrecognizedRows += 1
         continue
       }
@@ -249,9 +309,34 @@ export function captureFinanceTables(doc: Document = document): FinanceFrameCapt
   const tables = Array.from(doc.querySelectorAll('table')).filter((table) => !isHidden(table))
   if (tables.length > FINANCE_CAPTURE_LIMITS.tables) throw new Error('finance_capture_limit')
   const budget: CaptureBudget = { rows: 0, cells: 0, chars: 0 }
-  const lists = samsungHistoryLists(doc, url, budget)
+  const lists = [
+    ...samsungHistoryLists(doc, url, budget),
+    ...captureHyundaiHistoryLists(doc, {
+      isHidden,
+      readCell: (el) => readCell(el, budget),
+      countRow: (columns) => countRow(budget, columns)
+    })
+  ]
+  if (lists.some((list) => list.adapter === 'hyundai_history_list_v1')) {
+    // The left caption reports record count. Never read the right-hand amount.
+    const totals = Array.from(
+      doc.querySelectorAll(
+        '#divHistoryUseRight .cel_total > .box_info01.clearfix > .fl > p.p1_m_lt_1ln'
+      )
+    ).filter((el) => !isHidden(el))
+    const match =
+      totals.length === 1 ? /^총\s*((?:\d+|\d{1,3}(?:,\d{3})+))건$/.exec(cellText(totals[0])) : null
+    if (match) {
+      const displayedTotal = Number(match[1].replace(/,/g, ''))
+      if (Number.isSafeInteger(displayedTotal))
+        for (const list of lists) {
+          if (list.adapter === 'hyundai_history_list_v1') list.displayedTotal = displayedTotal
+        }
+    }
+  }
   const layoutDiagnostic =
     tables.length === 0 &&
+    lists.length === 0 &&
     ['hyundaicard.com', 'www.hyundaicard.com'].includes(url.hostname) &&
     url.pathname === HISTORY_PATH
       ? historyLayout(doc)

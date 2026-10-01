@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type {
   FinanceCaptureIssue,
   FinanceCaptureReceipt,
+  FinanceListRow,
   FinancePageCapture
 } from '../../shared/finance-capture'
 import { financeCardIssuer, financePageCaptureSchema } from './capture-schema'
@@ -87,6 +88,12 @@ export class FinanceCaptureStore {
     if (lists.some((list) => list.hasMore)) issues.push('more_rows_available')
     if (lists.some((list) => list.unrecognizedRows)) issues.push('unrecognized_rows')
     if (
+      lists.some(
+        (list) => list.displayedTotal !== undefined && list.rows.length !== list.displayedTotal
+      )
+    )
+      issues.push('total_count_mismatch')
+    if (
       tables.some(
         (table) =>
           table.hasNestedTable ||
@@ -106,14 +113,31 @@ export class FinanceCaptureStore {
       ...(lists.length
         ? {
             listCount: lists.length,
-            listRowCount: lists.reduce((count, list) => count + list.rows.length, 0)
+            listRowCount: lists.reduce((count, list) => count + list.rows.length, 0),
+            listSummaries: lists.map((list) => {
+              const fields = new Map<FinanceListRow['head'][number]['field'], number>()
+              for (const row of list.rows)
+                for (const cell of row.head) {
+                  fields.set(cell.field, (fields.get(cell.field) ?? 0) + (cell.text.trim() ? 1 : 0))
+                }
+              return {
+                adapter: list.adapter,
+                rowCount: list.rows.length,
+                detailsVisibleCount: list.rows.filter((row) => row.detailsVisible).length,
+                sourceRowIdCount: list.rows.filter((row) => row.sourceRowId).length,
+                ...(list.displayedTotal !== undefined
+                  ? { displayedTotal: list.displayedTotal }
+                  : {}),
+                nonemptyFields: Array.from(fields, ([field, count]) => ({ field, count }))
+              }
+            })
           }
         : {}),
       frameCount: valid.data.frames.length,
       previewOnly: true,
       issues,
       // Only the main frame's tightly scoped structure may leave the capture store.
-      ...(tables.length === 0 && valid.data.frames[0].layoutDiagnostic
+      ...(tables.length === 0 && lists.length === 0 && valid.data.frames[0].layoutDiagnostic
         ? { layoutDiagnostic: valid.data.frames[0].layoutDiagnostic }
         : {})
     }

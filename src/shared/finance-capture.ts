@@ -18,7 +18,15 @@ export interface FinanceTableCapture {
 export interface FinanceListRow {
   // Selector-defined column names; each text value is retained exactly as displayed.
   head: Array<{
-    field: 'name' | 'date' | 'time' | 'card' | 'payment_type' | 'amount'
+    field:
+      | 'name'
+      | 'date'
+      | 'sales_date'
+      | 'time'
+      | 'card'
+      | 'payment_type'
+      | 'cancellation_status'
+      | 'amount'
     text: string
   }>
   details: Array<{ label: string; value: string }>
@@ -27,11 +35,16 @@ export interface FinanceListRow {
 }
 
 export interface FinanceListCapture {
-  adapter: 'samsung_history_list_v1'
+  adapter:
+    | 'samsung_history_list_v1'
+    | 'samsung_cancellation_list_v1'
+    | 'samsung_refund_list_v1'
+    | 'hyundai_history_list_v1'
   rows: FinanceListRow[]
   hiddenRows: number
   unrecognizedRows: number
   hasMore: boolean
+  displayedTotal?: number
 }
 
 // Structure only. No text, IDs, form values, URL queries, or arbitrary attributes.
@@ -65,6 +78,7 @@ export type FinanceCaptureIssue =
   | 'details_incomplete'
   | 'more_rows_available'
   | 'unrecognized_rows'
+  | 'total_count_mismatch'
 
 // Safe to return to a model. No financial cells, page title, account names or URL queries.
 export interface FinanceCaptureReceipt {
@@ -76,6 +90,14 @@ export interface FinanceCaptureReceipt {
   rowCount: number
   listCount?: number
   listRowCount?: number
+  listSummaries?: Array<{
+    adapter: FinanceListCapture['adapter']
+    rowCount: number
+    detailsVisibleCount: number
+    sourceRowIdCount: number
+    displayedTotal?: number
+    nonemptyFields: Array<{ field: FinanceListRow['head'][number]['field']; count: number }>
+  }>
   frameCount: number
   previewOnly: true
   issues: FinanceCaptureIssue[]
