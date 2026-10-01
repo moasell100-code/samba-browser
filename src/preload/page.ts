@@ -62,7 +62,7 @@ import { installJajaConnection } from './page-jaja'
 import { captureFinanceTables } from './page-finance'
 import { readCardSession } from './page-card-session'
 import { readLotteAuth, focusLottePassword, submitLotteLogin } from './page-lotte-auth'
-import { submitLotteKeypad } from './page-lotte-keypad'
+import { submitLotteKeypad, focusLotteKeypadPassword } from './page-lotte-keypad'
 
 // 이 preload 는 세션 단위(registerPreloadScript type:'frame')로 등록돼 모든 프레임에서 돈다.
 // 탭의 webPreferences.preload 로만 걸면 window.open 으로 열린 팝업(결제창 등)에는 붙지 않기 때문이다.
@@ -95,6 +95,7 @@ if (!isExtensionDocument) {
       pressLotteKeypad(id, expectedLength, layout),
     eraseLotteKeypadProbe: (layout: number) => eraseLotteKeypadProbe(layout),
     submitLotteKeypad: (expectedLength: number) => submitLotteKeypad(expectedLength),
+    focusLotteKeypadPassword: () => focusLotteKeypadPassword(),
     focusLottePassword: () => focusLottePassword(),
     submitLotteLogin: (expectedLength: number) => submitLotteLogin(expectedLength),
     hyundaiAuth: () => hyundaiAuth(),

@@ -597,6 +597,17 @@ export const pageBridge = {
       return false
     }
   },
+  focusLotteKeypadPassword: async (tab: Tab): Promise<boolean> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (!isLotteOrigin(url)) return false
+    try {
+      const result = await call(wc, '__samba.focusLotteKeypadPassword()', boolSchema)
+      return wc.getURL() === url && result
+    } catch {
+      return false
+    }
+  },
   submitLotteKeypad: async (tab: Tab, expectedLength: number): Promise<boolean> => {
     const wc = tab.view.webContents
     if (

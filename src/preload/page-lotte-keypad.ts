@@ -152,6 +152,17 @@ export function readLotteKeypad(
   }
 }
 
+export function focusLotteKeypadPassword(doc: Document = document): boolean {
+  const state = readLotteKeypad(() => 1, doc)
+  if (!['open', 'closed'].includes(state.state) || state.filled !== 0) return false
+  const input = lottePasswordField(doc)
+  if (!input) return false
+  // Normal focus invokes nProtect's own keypad handler, including readonly keypad mode.
+  // Do not toggle readonly, security options, encrypted fields, or the keypad's useYn.
+  input.focus()
+  return true
+}
+
 export function submitLotteKeypad(expectedLength: number, doc: Document = document): boolean {
   const state = readLotteKeypad(() => 1, doc)
   if (

@@ -15,6 +15,7 @@ const { pageBridge } = vi.hoisted(() => ({
     lotteAuth: vi.fn<() => Promise<LotteAuthSnapshot>>(),
     lotteKeypad: vi.fn<() => Promise<LotteKeypadSnapshot>>(),
     pressLotteKeypad: vi.fn(async () => true),
+    focusLotteKeypadPassword: vi.fn(async () => true),
     submitLotteKeypad: vi.fn(async () => true),
     focusLottePassword: vi.fn<() => Promise<LotteAuthSnapshot>>(),
     findLoginFields: vi.fn(async () => ({
@@ -158,6 +159,14 @@ describe('Lotte protected login agent integration', () => {
     expect(pageBridge.submitLotteKeypad).not.toHaveBeenCalled()
     expect(f.attempts.begin).not.toHaveBeenCalled()
     expect(f.attempts.clearSignedInProfile).not.toHaveBeenCalled()
+  })
+  it('focus-only probe cannot request credentials or enter any keys', async () => {
+    const f = fixture()
+    expect(await f.call('probe_lotte_keypad_focus')).toContain('not_ready')
+    expect(f.vault.getSecretForFill).not.toHaveBeenCalled()
+    expect(pageBridge.pressLotteKeypad).not.toHaveBeenCalled()
+    expect(pageBridge.submitLotteKeypad).not.toHaveBeenCalled()
+    expect(f.attempts.begin).not.toHaveBeenCalled()
   })
   it('reuses a verified signed-in session even when KeyMaster is locked', async () => {
     const f = fixture()

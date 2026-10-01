@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
-import { readLotteKeypad, submitLotteKeypad } from '../src/preload/page-lotte-keypad'
+import {
+  readLotteKeypad,
+  submitLotteKeypad,
+  focusLotteKeypadPassword
+} from '../src/preload/page-lotte-keypad'
 
 const key = (label: string): string =>
   `<img class="kpd-data" role="button" alt="${label}" aria-label="${label}" data-action="never-read">`
@@ -23,6 +27,31 @@ afterEach(() => {
   for (const dom of windows.splice(0)) dom.window.close()
 })
 describe('Lotte official public semantic keypad', () => {
+  it('focuses the empty readonly password through the official handler without changing security attributes', () => {
+    const doc = at()
+    const input = doc.querySelector<HTMLInputElement>('#mbrCtfEncV')!
+    const root = doc.querySelector<HTMLElement>('#nppfs-keypad-mbrCtfEncV')!
+    root.hidden = true
+    const focus = vi.fn(() => {
+      root.hidden = false
+    })
+    input.addEventListener('focus', focus)
+    expect(focusLotteKeypadPassword(doc)).toBe(true)
+    expect(focus).toHaveBeenCalledOnce()
+    expect(input.readOnly).toBe(true)
+    expect(input.getAttribute('npkencrypt')).toBe('on')
+    expect(readLotteKeypad(ids(), doc).state).toBe('open')
+  })
+  it('does not focus a protected field that already contains input', () => {
+    const doc = at()
+    const input = doc.querySelector<HTMLInputElement>('#mbrCtfEncV')!
+    input.value = '*'
+    const focus = vi.fn()
+    input.addEventListener('focus', focus)
+    expect(focusLotteKeypadPassword(doc)).toBe(false)
+    expect(focus).not.toHaveBeenCalled()
+    expect(input.value).toBe('*')
+  })
   it('retains both identical official special symbol keys and their public labels in DOM order', () => {
     const doc = at()
     const group = doc.querySelector('.kpd-group.lower')!

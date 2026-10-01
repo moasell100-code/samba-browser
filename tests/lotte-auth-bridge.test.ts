@@ -29,6 +29,15 @@ function fixture(result: unknown = { state: 'keyboard_ready', focused: true, fil
   }
 }
 describe('Lotte native keyboard bridge', () => {
+  it('focuses the official keypad field through a fixed call without native input or values', async () => {
+    const f = fixture(true)
+    expect(await pageBridge.focusLotteKeypadPassword(f.tab)).toBe(true)
+    expect(f.execute).toHaveBeenCalledWith(999, [{ code: '__samba.focusLotteKeypadPassword()' }])
+    expect(f.send).not.toHaveBeenCalled()
+    f.setUrl('https://evil.test')
+    expect(await pageBridge.focusLotteKeypadPassword(f.tab)).toBe(false)
+    expect(f.execute).toHaveBeenCalledOnce()
+  })
   it('passes only public numeric ids/count/revision to the official keypad bridge', async () => {
     const f = fixture('ok')
     expect(await pageBridge.pressLotteKeypad(f.tab, 10, 0, 7)).toBe(true)

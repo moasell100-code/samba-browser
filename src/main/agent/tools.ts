@@ -16,6 +16,7 @@ import { isLotteOrigin, lotteAttempts, LOTTE_USE_LOGIN } from '../finance/lotte-
 import { loginLotteKeypad, lotteKeypadAttempts } from '../finance/lotte-keypad-login'
 import { probeLotteKeypad } from '../finance/lotte-keypad-probe'
 import { probeLotteKeypadLayouts } from '../finance/lotte-keypad-layout-probe'
+import { probeLotteKeypadFocus } from '../finance/lotte-keypad-focus-probe'
 import { probeLotteKeyboard } from '../finance/lotte-keyboard-probe'
 import { serializeSnapshot } from '../../shared/snapshot'
 import type { PageOverlay, PageSnapshot } from '../../shared/snapshot'
@@ -1825,6 +1826,7 @@ overlays left: ${after.length}${kept}`
               bridge: {
                 url: () => currentUrl(tab),
                 read: () => pageBridge.lotteKeypad(tab),
+                focusPassword: () => pageBridge.focusLotteKeypadPassword(tab),
                 fillUsername: async () => {
                   const fields = await pageBridge.findLoginFields(tab)
                   if (fields.username === undefined || fields.iframe) return 'fields not found'
@@ -2183,6 +2185,27 @@ overlays left: ${after.length}${kept}`
     }
   )
 
+  const probeLotteFocus = tool(
+    'probe_lotte_keypad_focus',
+    'Check whether normal focus on the empty official Lotte password field reopens its secure keypad. Does not click any key or toggle, enter or clear input, read KeyMaster, submit, change security settings, or touch attempt protection. Returns a fixed result enum.',
+    {},
+    () =>
+      guard('롯데카드 공식 키패드 포커스 진단 (비밀번호 입력 없음)', async () => {
+        if (ctx.mode === 'read_only') return READ_ONLY_REFUSAL
+        const tab = activeOr(ctx)
+        if (!tab) return 'no active tab'
+        return {
+          result: await probeLotteKeypadFocus({
+            bridge: {
+              url: () => currentUrl(tab),
+              read: () => pageBridge.lotteKeypad(tab),
+              focusPassword: () => pageBridge.focusLotteKeypadPassword(tab)
+            },
+            tick: ctx.tick
+          })
+        }
+      })
+  )
   const probeLotteLayouts = tool(
     'probe_lotte_keypad_layouts',
     'Check only the public Lotte official keypad layouts in fixed lower/upper/special order, then restore lower. Requires an empty password field. Never reads KeyMaster, enters any password key, clears input, submits a login, or touches attempt protection. Returns fixed stage/reason enums only.',
@@ -2319,6 +2342,7 @@ overlays left: ${after.length}${kept}`
     probeLotteInput,
     probeLotteOfficialKeypad,
     probeLotteLayouts,
+    probeLotteFocus,
     ...(ctx.captureFinance ? [captureFinance] : []),
     findElements,
     screenshot,
@@ -2363,6 +2387,7 @@ export const SAMBA_TOOL_NAMES = [
   'probe_lotte_keyboard',
   'probe_lotte_keypad',
   'probe_lotte_keypad_layouts',
+  'probe_lotte_keypad_focus',
   'capture_finance_table',
   'find_elements',
   'screenshot',

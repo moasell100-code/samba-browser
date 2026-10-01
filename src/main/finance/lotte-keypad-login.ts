@@ -18,6 +18,7 @@ export interface LotteKeypadBridge {
   url: () => string
   read: () => Promise<LotteKeypadSnapshot>
   fillUsername: () => Promise<string>
+  focusPassword: () => Promise<boolean>
   press: (id: number, expectedLength: number, layout: number) => Promise<boolean>
   submit: (expectedLength: number) => Promise<boolean>
   navigate: (url: string) => Promise<void>
@@ -65,6 +66,7 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
     | 'navigate_login'
     | 'fill_username'
     | 'after_username'
+    | 'focus_keypad'
     | 'open_keypad'
     | 'preflight_lower'
     | 'preflight_upper'
@@ -163,6 +165,22 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
     }
     stage = 'after_username'
     state = await read()
+    if (state.state === 'closed' && state.filled === 0) {
+      stage = 'focus_keypad'
+      if (!(await bridge.focusPassword())) {
+        reason = 'focus_rejected'
+        return refused()
+      }
+      // Username focus may have hidden an already-enabled keypad. Normal password focus
+      // reopens it; clicking its toggle first can instead disable that active mode.
+      for (let poll = 0; poll < 20; poll++) {
+        await sleep(100)
+        state = await read()
+        if (state.state === 'open') break
+        if (state.state !== 'closed' && state.state !== 'unknown') return refused()
+        if (state.state === 'closed' && state.filled !== 0) return refused()
+      }
+    }
     if (state.state === 'closed') {
       stage = 'open_keypad'
       await press(state.openId, state, 0)
@@ -172,7 +190,10 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
         if (state.state !== 'closed') break
       }
     }
-    if (state.state !== 'open' || state.filled !== 0) return refused()
+    if (state.state !== 'open' || state.filled !== 0) {
+      if (state.state === 'closed') reason = 'keypad_remained_closed'
+      return refused()
+    }
     // Inspect every public layout in a fixed order before touching KeyMaster. This neither
     // types a secret nor tells the page which modes/characters the saved password needs.
     const available = new Map<string, LotteKeypadMode[]>()

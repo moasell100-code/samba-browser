@@ -3,6 +3,7 @@ import type { LotteKeypadMode, LotteKeypadSnapshot } from '../src/shared/lotte-k
 import { loginLotteKeypad } from '../src/main/finance/lotte-keypad-login'
 import { probeLotteKeypad } from '../src/main/finance/lotte-keypad-probe'
 import { probeLotteKeypadLayouts } from '../src/main/finance/lotte-keypad-layout-probe'
+import { probeLotteKeypadFocus } from '../src/main/finance/lotte-keypad-focus-probe'
 import { LOTTE_LOGIN_URL } from '../src/main/finance/lotte-login'
 
 // Entirely synthetic public layouts and test password. No profile or credentials are loaded.
@@ -52,6 +53,11 @@ function fixture() {
     url: () => url,
     read,
     fillUsername: vi.fn(async () => 'ok'),
+    focusPassword: vi.fn(async () => {
+      open = true
+      revision++
+      return true
+    }),
     press: vi.fn(async (id: number, count: number, layout: number) => {
       if (count !== filled || layout !== revision) return false
       if (id === 1) open = true
@@ -104,6 +110,10 @@ function fixture() {
     deps,
     bridge,
     events,
+    setOpen: (value: boolean) => {
+      open = value
+      revision++
+    },
     setFilled: (count: number) => {
       filled = count
     },
@@ -113,6 +123,25 @@ function fixture() {
   }
 }
 describe('Lotte dedicated official keypad login', () => {
+  it('restores a keypad hidden by username focus without toggling its enabled mode off', async () => {
+    const f = fixture()
+    f.setOpen(true)
+    f.bridge.fillUsername.mockImplementation(async () => {
+      f.setOpen(false)
+      return 'ok'
+    })
+    expect(await loginLotteKeypad(f.deps)).toContain('session verified')
+    expect(f.bridge.focusPassword).toHaveBeenCalledOnce()
+    expect(f.bridge.press.mock.calls.filter(([id]) => id === 1)).toHaveLength(0)
+    expect(f.bridge.submit).toHaveBeenCalledOnce()
+  })
+  it('uses the opener once only when normal focus leaves an empty keypad closed', async () => {
+    const f = fixture()
+    f.bridge.focusPassword.mockResolvedValue(true)
+    expect(await loginLotteKeypad(f.deps)).toContain('session verified')
+    expect(f.bridge.focusPassword).toHaveBeenCalledOnce()
+    expect(f.bridge.press.mock.calls.filter(([id]) => id === 1)).toHaveLength(1)
+  })
   it('selects only the first currently verified identical official duplicate symbol key', async () => {
     const f = fixture()
     const original = f.bridge.read.getMockImplementation()!
@@ -243,6 +272,26 @@ describe('Lotte dedicated official keypad login', () => {
   })
 })
 describe('Lotte official keypad harmless diagnostic', () => {
+  it('diagnoses normal focus without keys, toggle clicks, credentials or attempts', async () => {
+    const f = fixture()
+    expect(await probeLotteKeypadFocus(f.deps)).toBe('opened')
+    expect(f.bridge.focusPassword).toHaveBeenCalledOnce()
+    expect(f.bridge.press).not.toHaveBeenCalled()
+    expect(f.bridge.erase).not.toHaveBeenCalled()
+    expect(f.bridge.submit).not.toHaveBeenCalled()
+    expect(f.deps.readSavedPassword).not.toHaveBeenCalled()
+    expect(f.deps.attempts.begin).not.toHaveBeenCalled()
+  })
+  it('focus probe stops before nonempty input and reports a closed keypad without toggling it', async () => {
+    const nonempty = fixture()
+    nonempty.setFilled(1)
+    expect(await probeLotteKeypadFocus(nonempty.deps)).toBe('nonempty')
+    expect(nonempty.bridge.focusPassword).not.toHaveBeenCalled()
+    const closed = fixture()
+    closed.bridge.focusPassword.mockResolvedValue(true)
+    expect(await probeLotteKeypadFocus(closed.deps)).toBe('remained_closed')
+    expect(closed.bridge.press).not.toHaveBeenCalled()
+  })
   it('inspects every public layout with no password keys, Vault access or latch mutations', async () => {
     const f = fixture()
     expect(await probeLotteKeypadLayouts(f.deps)).toEqual({ stage: 'complete', reason: 'verified' })
