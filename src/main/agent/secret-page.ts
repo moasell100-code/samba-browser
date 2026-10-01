@@ -10,6 +10,8 @@
 import { pageBridge } from '../browser/page-bridge'
 import type { Tab } from '../browser/tab-manager'
 import type { KeypadSignals } from '../../shared/snapshot'
+import type { HyundaiAuthSnapshot } from '../../shared/hyundai-auth'
+import { isHyundaiLoginUrl } from '../finance/hyundai-login'
 
 export type { KeypadSignals }
 
@@ -63,7 +65,7 @@ export function mergeKeypadSignals(signals: readonly KeypadSignals[]): KeypadSig
 }
 
 // 판정 근거. 로그·넘김 카드 문구에만 쓰고 모델에게는 넘기지 않는다
-export type SecretKeypadReason = 'digit-keypad' | 'pin-url' | 'pin-field'
+export type SecretKeypadReason = 'digit-keypad' | 'pin-url' | 'pin-field' | 'hyundai-pin'
 
 /**
  * 비밀 키패드 화면 판정(순수 함수).
@@ -93,6 +95,7 @@ export interface SecretKeypadGateDeps {
   read: (tab: Tab) => Promise<KeypadSignals>
   // 페이지를 읽지 못했을 때 주소만으로 판정하기 위한 통로
   urlOf: (tab: Tab) => string
+  readHyundaiAuth?: (tab: Tab) => Promise<HyundaiAuthSnapshot>
   now?: () => number
   cacheMs?: number
 }
@@ -116,6 +119,23 @@ export function createSecretKeypadGate(deps: SecretKeypadGateDeps): SecretKeypad
 
   return {
     check: async (tab, opts) => {
+      // Hyundai's closed PIN pad and the site's "간편번호" label evade generic payment detection.
+      // Always read it fresh: it can open in-place between model tools without changing URL.
+      let url = ''
+      try {
+        url = deps.urlOf(tab)
+      } catch {
+        /* closed tab */
+      }
+      if (deps.readHyundaiAuth && isHyundaiLoginUrl(url)) {
+        try {
+          const auth = await deps.readHyundaiAuth(tab)
+          if (auth.state === 'pin_ready' || auth.state === 'pin_error') return 'hyundai-pin'
+          if (auth.state === 'signed_in') return null
+        } catch {
+          return 'hyundai-pin'
+        }
+      }
       const key = tab.id
       if (!opts?.fresh) {
         const hit = cache.get(key)
@@ -144,6 +164,7 @@ export function createSecretKeypadGate(deps: SecretKeypadGateDeps): SecretKeypad
 
 /** 앱에서 쓰는 스캐너 하나(도구들이 공유해 캐시도 함께 쓴다) */
 export const secretKeypadGate = createSecretKeypadGate({
+  readHyundaiAuth: (tab) => pageBridge.hyundaiAuth(tab),
   // iframe 안 보안 키패드(페이코 등)까지 보려면 프레임 전체를 읽어 합쳐야 한다.
   // keypadSignalsAll 을 갖추지 않은 대역(옛 테스트 스텁)은 메인 프레임만 읽는다
   read: async (tab) =>
@@ -153,6 +174,6 @@ export const secretKeypadGate = createSecretKeypadGate({
   // 닫힌 탭은 view.webContents 가 undefined 다 — isDestroyed() 를 바로 부르면 메인 프로세스가 죽는다
   urlOf: (tab) => {
     const wc = tab.view.webContents as typeof tab.view.webContents | undefined
-    return wc && !wc.isDestroyed() ? wc.getURL() : ''
+    return wc && !wc.isDestroyed?.() ? wc.getURL() : ''
   }
 })

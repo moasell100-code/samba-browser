@@ -4,6 +4,13 @@ import type { TabManager, Tab } from '../browser/tab-manager'
 import { pageBridge } from '../browser/page-bridge'
 import type { LoginFieldsResult } from '../browser/page-bridge'
 import type { FinanceCaptureReceipt } from '../../shared/finance-capture'
+import { isHyundaiCardHost, loginMethodOfSections } from '../../shared/login-method'
+import {
+  HYUNDAI_PIN_USE_LOGIN,
+  isHyundaiLoginUrl,
+  loginHyundaiCard
+} from '../finance/hyundai-login'
+import { hyundaiAttempts, type HyundaiAttempts } from '../finance/hyundai-attempts'
 import { serializeSnapshot } from '../../shared/snapshot'
 import type { PageOverlay, PageSnapshot } from '../../shared/snapshot'
 import { diffLines } from '../../shared/snapshot-diff'
@@ -390,6 +397,8 @@ export async function withToolTimeout<T>(
 export interface ToolContext {
   tabs: TabManager
   captureFinance?: (tab: Tab) => Promise<FinanceCaptureReceipt>
+  // Optional test/runtime override; the default store persists failed PIN attempts across restarts.
+  hyundaiAttempts?: HyundaiAttempts
   dangerWords: string[]
   // 사용 권한 모드. read_only 는 조작 도구를 실행하지 않고, full 은 위험 단어 확인을 생략한다
   mode: PermissionMode
@@ -976,8 +985,10 @@ ${handoffToolResult(result)}`
    * 대상 탭이 웹 결제 비밀번호 키패드 화면이면 거부 문구를, 아니면 null 을 돌려준다.
    * 스캔은 도구 호출당 1회다(secret-page 의 500ms 캐시)
    */
-  const keypadRefusal = async (tab: Tab, refusal: string): Promise<string | null> =>
-    (await secretKeypadGate.check(tab)) === null ? null : refusal
+  const keypadRefusal = async (tab: Tab, refusal: string): Promise<string | null> => {
+    const reason = await secretKeypadGate.check(tab)
+    return reason === null ? null : reason === 'hyundai-pin' ? HYUNDAI_PIN_USE_LOGIN : refusal
+  }
 
   /**
    * 화면을 덮고 있는 레이어 목록. 페이지를 못 읽으면 빈 목록으로 본다
@@ -1648,7 +1659,9 @@ overlays left: ${after.length}${kept}`
         if (!tab) return 'no active tab'
         // 웹 결제 키패드: 입력칸이 아니라 숫자 버튼이다 — 앱이 키마스터 값을 눌러 넣는다.
         // 결제 비밀번호가 아닌 항목을 키패드 화면에서 부르면 넘긴다(넣을 곳이 없다)
-        if (await secretKeypadGate.check(tab)) {
+        const keypadReason = await secretKeypadGate.check(tab)
+        if (keypadReason === 'hyundai-pin') return HYUNDAI_PIN_USE_LOGIN
+        if (keypadReason) {
           if (itemType !== 'password') return await keypadHandoff(tab)
           return await keypadEnter(tab, accountLabel, provider, dryRunDigits)
         }
@@ -1676,6 +1689,13 @@ overlays left: ${after.length}${kept}`
         )
         if (typeof gate === 'string') return gate
         const v = gate
+        if (
+          itemType === 'login' &&
+          loginMethodOfSections(
+            v.listItems?.(account.id).find((item) => item.type === 'login')?.sections ?? []
+          ) === 'hyundai_pin'
+        )
+          return HYUNDAI_PIN_USE_LOGIN
         // 비밀번호류는 대상 요소가 실제 비밀 입력칸(type=password)일 때만 채운다.
         // 최신 스냅샷을 신뢰하지 않고, 매번 페이지에서 직접 확인한다
         // 기본 필드(value = 비밀번호 자체)만 해당한다 — 결제 항목의 부가 필드(payment.phone·payment.birth)는
@@ -1737,7 +1757,7 @@ overlays left: ${after.length}${kept}`
 
   const login = tool(
     'login',
-    'Sign in to the current site with a saved account. Never ask the user for a password.',
+    'Sign in to the current site with a saved account. Hyundai Card simple PIN is entered by the app from KeyMaster, never by the model. Never ask the user for a password or PIN.',
     { accountLabel: z.string().optional() },
     ({ accountLabel }) => {
       let label = '로그인'
@@ -1751,13 +1771,69 @@ overlays left: ${after.length}${kept}`
           // 평문(http) 로그인 페이지에는 비밀번호를 채우지 않는다
           const blocked = gateRefusal(currentUrl(tab))
           if (blocked) return blocked
+          // Hyundai PIN is not an ordinary password form: its sixth digit submits immediately.
+          // Reuse a verified session before requiring any vault state or account selection.
+          const hyundai = isHyundaiCardHost(host)
+          if (hyundai && !isHyundaiLoginUrl(currentUrl(tab))) {
+            return 'refused: Hyundai Card PIN requires the exact secure Hyundai Card origin'
+          }
+          const hyundaiAuth = hyundai ? await pageBridge.hyundaiAuth(tab) : null
+          if (hyundaiAuth?.state === 'signed_in') {
+            try {
+              ;(ctx.hyundaiAttempts ?? hyundaiAttempts()).clearSignedInProfile(tab.profile)
+            } catch {
+              /* keep latches on storage failure */
+            }
+            label = `이미 로그인됨: ${host}`
+            return ALREADY_SIGNED_IN
+          }
           const available = vaultAvailable()
           if (typeof available === 'string') return available
           label = `로그인: ${host}`
+          if (hyundai) {
+            const account = resolveAccount(available.listAccounts(host), accountLabel, tab.profile)
+            if (!account) return ACCOUNT_NOT_FOUND
+            const gate = await applyPolicy(
+              available,
+              effectiveAccess(account.agentAccess, globalPolicy())
+            )
+            if (typeof gate === 'string') return gate
+            const loginItem = gate.listItems(account.id).find((item) => item.type === 'login')
+            if (loginMethodOfSections(loginItem?.sections ?? []) === 'hyundai_pin') {
+              const revision = gate.loginSecretRevision(account.id)
+              if (!loginItem || !revision)
+                return 'not found: save Hyundai Card simple PIN in the KeyMaster login item'
+              label = `현대카드 간편번호 로그인 (${account.label})`
+              return loginHyundaiCard({
+                bridge: {
+                  url: () => currentUrl(tab),
+                  read: () => pageBridge.hyundaiAuth(tab),
+                  navigate: (url) => ctx.tabs.navigate(tab.id, url),
+                  pressOnce: (id) => pageBridge.pressOnce(tab, id),
+                  waitForLoad: () => pageBridge.waitForLoad(tab)
+                },
+                attempts: ctx.hyundaiAttempts ?? hyundaiAttempts(),
+                attempt: {
+                  accountId: account.id,
+                  itemId: loginItem.id,
+                  revision,
+                  profile: tab.profile
+                },
+                readSavedPin: () =>
+                  gate.getSecretForFill(account.id, 'login', DEFAULT_FIELD_KEY, ctx.jobId),
+                autoSubmit: ctx.vaultAutoSubmit !== false,
+                tick: ctx.tick,
+                verifyTarget: () => verifyFillTarget(account, tab)
+              })
+            }
+            if (hyundaiAuth?.state === 'pin_ready') {
+              return 'needs_user: save Hyundai Card simple PIN as the login method in KeyMaster before using this PIN login screen'
+            }
+          }
           // 이미 로그인돼 있으면 다시 로그인하지 않는다 — 재로그인은 세션을 새로 만들어
           // 캡차·추가 인증을 불러오기 때문이다. 폼이 없을 때만 상태 힌트를 본다
           const first = await pageBridge.findLoginFields(tab)
-          if (first.stage === 'none') {
+          if (first.stage === 'none' && !hyundai) {
             try {
               const hint = await pageBridge.signedInHint(tab)
               if (hint.signedIn) {
@@ -1794,6 +1870,13 @@ overlays left: ${after.length}${kept}`
           if (typeof gate === 'string') return gate
           const v = gate
           label = `로그인: ${loginHost} (${account.label})`
+          if (
+            loginMethodOfSections(
+              v.listItems?.(account.id).find((item) => item.type === 'login')?.sections ?? []
+            ) === 'hyundai_pin'
+          ) {
+            return HYUNDAI_PIN_USE_LOGIN
+          }
           // 2단계 로그인 1단계(아이디 화면): 아이디만 채워 제출한 뒤 비밀번호 화면을 다시 탐지한다
           if (fields.stage === 'username-only' && fields.username !== undefined) {
             const idFilled = await pageBridge.fillValue(tab, fields.username, account.username)
@@ -2054,6 +2137,11 @@ overlays left: ${after.length}${kept}`
         const tab = activeOr(ctx)
         if (!tab) return 'no active tab'
         if (!ctx.captureFinance) return 'error: finance capture unavailable'
+        if (!isHyundaiLoginUrl(currentUrl(tab)))
+          return 'refused: Hyundai Card secure page required for finance capture'
+        if ((await pageBridge.hyundaiAuth(tab)).state !== 'signed_in') {
+          return 'refused: login required; use login to restore the Hyundai Card session, then capture the requested table'
+        }
         return ctx.captureFinance(tab)
       })
   )
