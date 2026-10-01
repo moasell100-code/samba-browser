@@ -12,6 +12,12 @@ import {
   loginHyundaiCard
 } from '../finance/hyundai-login'
 import { hyundaiAttempts, type HyundaiAttempts } from '../finance/hyundai-attempts'
+import {
+  isLotteOrigin,
+  loginLotteCard,
+  lotteAttempts,
+  LOTTE_USE_LOGIN
+} from '../finance/lotte-login'
 import { serializeSnapshot } from '../../shared/snapshot'
 import type { PageOverlay, PageSnapshot } from '../../shared/snapshot'
 import { diffLines } from '../../shared/snapshot-diff'
@@ -400,6 +406,7 @@ export interface ToolContext {
   captureFinance?: (tab: Tab) => Promise<FinanceCaptureReceipt>
   // Optional test/runtime override; the default store persists failed PIN attempts across restarts.
   hyundaiAttempts?: HyundaiAttempts
+  lotteAttempts?: HyundaiAttempts
   dangerWords: string[]
   // 사용 권한 모드. read_only 는 조작 도구를 실행하지 않고, full 은 위험 단어 확인을 생략한다
   mode: PermissionMode
@@ -1658,6 +1665,7 @@ overlays left: ${after.length}${kept}`
         if (ctx.mode === 'read_only') return READ_ONLY_REFUSAL
         const tab = activeOr(ctx)
         if (!tab) return 'no active tab'
+        if (itemType === 'login' && isLotteOrigin(currentUrl(tab))) return LOTTE_USE_LOGIN
         // 웹 결제 키패드: 입력칸이 아니라 숫자 버튼이다 — 앱이 키마스터 값을 눌러 넣는다.
         // 결제 비밀번호가 아닌 항목을 키패드 화면에서 부르면 넘긴다(넣을 곳이 없다)
         const keypadReason = await secretKeypadGate.check(tab)
@@ -1772,6 +1780,15 @@ overlays left: ${after.length}${kept}`
           // 평문(http) 로그인 페이지에는 비밀번호를 채우지 않는다
           const blocked = gateRefusal(currentUrl(tab))
           if (blocked) return blocked
+          const lotte = isLotteOrigin(currentUrl(tab))
+          if (lotte && (await pageBridge.lotteAuth(tab)).state === 'signed_in') {
+            try {
+              ;(ctx.lotteAttempts ?? lotteAttempts()).clearSignedInProfile(tab.profile)
+            } catch {
+              /* retain failed latches on storage failure */
+            }
+            return ALREADY_SIGNED_IN
+          }
           // Hyundai PIN is not an ordinary password form: its sixth digit submits immediately.
           // Reuse a verified session before requiring any vault state or account selection.
           const hyundai = isHyundaiCardHost(host)
@@ -1791,6 +1808,45 @@ overlays left: ${after.length}${kept}`
           const available = vaultAvailable()
           if (typeof available === 'string') return available
           label = `로그인: ${host}`
+          if (lotte) {
+            const account = resolveAccount(available.listAccounts(host), accountLabel, tab.profile)
+            if (!account) return ACCOUNT_NOT_FOUND
+            const gate = await applyPolicy(
+              available,
+              effectiveAccess(account.agentAccess, globalPolicy())
+            )
+            if (typeof gate === 'string') return gate
+            const item = gate.listItems(account.id).find((candidate) => candidate.type === 'login')
+            const revision = gate.loginSecretRevision(account.id)
+            if (!item || !revision || !account.username)
+              return 'not found: save the Lotte Card username and login password in KeyMaster'
+            return loginLotteCard({
+              bridge: {
+                url: () => currentUrl(tab),
+                read: () => pageBridge.lotteAuth(tab),
+                focusPassword: () => pageBridge.focusLottePassword(tab),
+                fillUsername: async () => {
+                  const fields = await pageBridge.findLoginFields(tab)
+                  if (fields.username === undefined || fields.iframe) return 'fields not found'
+                  const moved = verifyFillTarget(account, tab)
+                  if (moved) return moved
+                  return pageBridge.fillValue(tab, fields.username, account.username)
+                },
+                pressCharacter: (character, expectedLength) =>
+                  pageBridge.pressLotteCharacter(tab, character, expectedLength),
+                submit: (expectedLength) => pageBridge.submitLotteLogin(tab, expectedLength),
+                navigate: (url) => ctx.tabs.navigate(tab.id, url),
+                waitForLoad: () => pageBridge.waitForLoad(tab)
+              },
+              attempts: ctx.lotteAttempts ?? lotteAttempts(),
+              attempt: { accountId: account.id, itemId: item.id, revision, profile: tab.profile },
+              readSavedPassword: () =>
+                gate.getSecretForFill(account.id, 'login', DEFAULT_FIELD_KEY, ctx.jobId),
+              autoSubmit: ctx.vaultAutoSubmit !== false,
+              tick: ctx.tick,
+              verifyTarget: () => verifyFillTarget(account, tab)
+            })
+          }
           if (hyundai) {
             const account = resolveAccount(available.listAccounts(host), accountLabel, tab.profile)
             if (!account) return ACCOUNT_NOT_FOUND

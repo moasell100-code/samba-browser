@@ -1,4 +1,4 @@
-import type { WebContents, WebFrameMain } from 'electron'
+import { BrowserWindow, type WebContents, type WebFrameMain } from 'electron'
 import { z } from 'zod'
 import type {
   KeypadLayoutDto,
@@ -26,6 +26,8 @@ import {
   isFinanceCaptureUrl
 } from '../finance/capture-schema'
 import type { CardSessionSnapshot } from '../../shared/card-session'
+import type { LotteAuthSnapshot } from '../../shared/lotte-auth'
+import { isLotteOrigin } from '../finance/lotte-login'
 
 // preload 가 실행되는 격리 월드 id. Electron 의 WorldId.ISOLATED_WORLD = 999
 export const ISOLATED_WORLD_ID = 999
@@ -126,6 +128,19 @@ const cardSessionSchema = z
     state: z.enum(['signed_in', 'signed_out', 'unknown', 'unsupported'])
   })
   .strict()
+const lotteAuthSchema = z.object({
+  state: z.enum([
+    'signed_in',
+    'keyboard_ready',
+    'keypad_required',
+    'initializing',
+    'input_error',
+    'unknown',
+    'unsupported'
+  ]),
+  focused: z.boolean().optional(),
+  filled: z.number().int().min(0).max(20).optional()
+})
 
 const hyundaiAuthSchema = z.object({
   state: z.enum([
@@ -478,6 +493,85 @@ export const pageBridge = {
       return { issuer, state: 'unknown' }
     }
     return snapshot
+  },
+  lotteAuth: async (tab: Tab): Promise<LotteAuthSnapshot> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (!isLotteOrigin(url)) return { state: 'unsupported' }
+    try {
+      const result = await call(wc, '__samba.lotteAuth()', lotteAuthSchema)
+      return wc.getURL() === url ? result : { state: 'unknown' }
+    } catch {
+      return { state: 'unknown' }
+    }
+  },
+  focusLottePassword: async (tab: Tab): Promise<LotteAuthSnapshot> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (!isLotteOrigin(url)) return { state: 'unsupported' }
+    try {
+      if (!BrowserWindow.fromWebContents(wc)?.isFocused()) return { state: 'unknown' }
+      wc.focus()
+      const result = await call(wc, '__samba.focusLottePassword()', lotteAuthSchema)
+      return wc.getURL() === url && wc.isFocused() ? result : { state: 'unknown' }
+    } catch {
+      return { state: 'unknown' }
+    }
+  },
+  // Password never enters an evaluated source string or model-facing argument. Use the normal
+  // browser keyboard path only when the official field permits keyboard input and has focus.
+  pressLotteCharacter: async (
+    tab: Tab,
+    character: string,
+    expectedLength: number
+  ): Promise<boolean> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (!isLotteOrigin(url) || character.length !== 1 || !/^[\x20-\x7e]$/.test(character))
+      return false
+    if (!Number.isInteger(expectedLength) || expectedLength < 0 || expectedLength >= 20)
+      return false
+    try {
+      const state = await call(wc, '__samba.lotteAuth()', lotteAuthSchema)
+      if (
+        wc.getURL() !== url ||
+        state.state !== 'keyboard_ready' ||
+        !state.focused ||
+        state.filled !== expectedLength ||
+        !wc.isFocused() ||
+        !BrowserWindow.fromWebContents(wc)?.isFocused()
+      )
+        return false
+      const shifted = '~!@#$%^&*()_+{}|:"<>?'
+      const plain = "`1234567890-=[]\\;',./"
+      const index = shifted.indexOf(character)
+      const shift = index >= 0 || /[A-Z]/.test(character)
+      const keyCode =
+        index >= 0 ? plain[index] : character === ' ' ? 'Space' : character.toUpperCase()
+      const modifiers: Array<'shift'> = shift ? ['shift'] : []
+      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+      wc.sendInputEvent({ type: 'char', keyCode: character, modifiers })
+      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+      return true
+    } catch {
+      return false
+    }
+  },
+  submitLotteLogin: async (tab: Tab, expectedLength: number): Promise<boolean> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (
+      !isLotteOrigin(url) ||
+      !Number.isInteger(expectedLength) ||
+      expectedLength < 1 ||
+      expectedLength > 20
+    )
+      return false
+    try {
+      return await call(wc, `__samba.submitLotteLogin(${expectedLength})`, boolSchema)
+    } catch {
+      return false
+    }
   },
   hyundaiAuth: async (tab: Tab): Promise<HyundaiAuthSnapshot> => {
     const url = tab.view.webContents.getURL()
