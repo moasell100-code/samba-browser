@@ -87,9 +87,35 @@ const list = z
     hiddenRows: z.number().int().nonnegative(),
     unrecognizedRows: z.number().int().nonnegative(),
     hasMore: z.boolean(),
-    displayedTotal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional()
+    displayedTotal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    unrecognizedDiagnostics: z
+      .array(
+        z
+          .object({
+            rowIndex: z.number().int().min(0).max(999),
+            reason: z.enum(['link_count', 'field_count', 'empty_fields']),
+            linkCount: z.number().int().min(0).max(1000),
+            nameCount: z.number().int().min(0).max(1000).optional(),
+            metadataCount: z.number().int().min(0).max(1000).optional(),
+            amountCount: z.number().int().min(0).max(1000).optional(),
+            emptyFields: z
+              .array(z.enum(['name', 'card', 'date', 'time', 'payment_type', 'amount']))
+              .min(1)
+              .max(6)
+              .optional()
+          })
+          .strict()
+      )
+      .max(5)
+      .optional()
   })
   .strict()
+  .refine(
+    (list) =>
+      !list.unrecognizedDiagnostics?.length ||
+      (list.adapter === 'hyundai_history_list_v1' &&
+        list.unrecognizedDiagnostics.length <= list.unrecognizedRows)
+  )
   .refine((list) =>
     list.rows.every(
       (row) =>

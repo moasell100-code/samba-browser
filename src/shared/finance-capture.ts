@@ -45,6 +45,16 @@ export interface FinanceListCapture {
   unrecognizedRows: number
   hasMore: boolean
   displayedTotal?: number
+  unrecognizedDiagnostics?: Array<{
+    // Zero-based DOM row index. Only the first five failed rows are reported.
+    rowIndex: number
+    reason: 'link_count' | 'field_count' | 'empty_fields'
+    linkCount: number
+    nameCount?: number
+    metadataCount?: number
+    amountCount?: number
+    emptyFields?: FinanceListRow['head'][number]['field'][]
+  }>
 }
 
 // Structure only. No text, IDs, form values, URL queries, or arbitrary attributes.
@@ -99,6 +109,7 @@ export interface FinanceCaptureReceipt {
     // Additional rows repeating an exact displayed head tuple; never auto-deduplicated.
     duplicateVisibleRowCount: number
     displayedTotal?: number
+    unrecognizedDiagnostics?: FinanceListCapture['unrecognizedDiagnostics']
     nonemptyFields: Array<{ field: FinanceListRow['head'][number]['field']; count: number }>
   }>
   frameCount: number

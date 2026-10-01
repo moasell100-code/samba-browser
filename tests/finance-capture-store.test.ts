@@ -141,6 +141,87 @@ describe('visible duplicate row review metadata', () => {
   })
 })
 
+describe('unrecognized row diagnostic privacy boundary', () => {
+  function diagnosticPage(diagnostics: unknown[]): FinancePageCapture {
+    return {
+      frames: [
+        {
+          origin: 'https://www.hyundaicard.com',
+          pathname: '/cpa/cb/CPACB0101_01.hc',
+          tables: [],
+          lists: [
+            {
+              adapter: 'hyundai_history_list_v1',
+              rows: [],
+              hiddenRows: 0,
+              unrecognizedRows: 6,
+              hasMore: false,
+              unrecognizedDiagnostics: diagnostics
+            }
+          ]
+        }
+      ],
+      failedFrames: 0,
+      skippedFrames: 0
+    } as FinancePageCapture
+  }
+
+  const safe = {
+    rowIndex: 4,
+    reason: 'empty_fields',
+    linkCount: 1,
+    nameCount: 1,
+    metadataCount: 4,
+    amountCount: 1,
+    emptyFields: ['time']
+  }
+
+  it('returns only bounded fixed diagnostic metadata and preserves the incomplete capture issue', () => {
+    const store = new FinanceCaptureStore()
+    const receipt = store.save(diagnosticPage([safe]))
+    expect(receipt.listSummaries![0].unrecognizedDiagnostics).toEqual([safe])
+    expect(receipt.issues).toContain('unrecognized_rows')
+    expect(receipt.listRowCount).toBe(0)
+    expect(receipt.listSummaries![0].sourceRowIdCount).toBe(0)
+    store.clear()
+  })
+
+  it('rejects diagnostic messages, text, values, identifiers and fields outside the fixed vocabulary', () => {
+    const store = new FinanceCaptureStore()
+    const invalid = [
+      { ...safe, text: 'private-merchant' },
+      { ...safe, value: 'private-amount' },
+      { ...safe, id: 'private-approval' },
+      { ...safe, message: 'private-error' },
+      { ...safe, reason: 'private-merchant' },
+      { ...safe, emptyFields: ['private-merchant'] },
+      { ...safe, linkCount: 'private-card' }
+    ]
+    for (const bad of invalid) {
+      expect(() => store.save(diagnosticPage([bad]))).toThrow('finance_capture_invalid')
+    }
+    store.clear()
+  })
+
+  it('rejects unbounded indices/counts, more than five diagnostics, and another issuer adapter', () => {
+    const store = new FinanceCaptureStore()
+    for (const bad of [
+      { ...safe, rowIndex: -1 },
+      { ...safe, rowIndex: 1000 },
+      { ...safe, linkCount: 1001 },
+      { ...safe, metadataCount: 0.5 }
+    ])
+      expect(() => store.save(diagnosticPage([bad]))).toThrow('finance_capture_invalid')
+    expect(() => store.save(diagnosticPage(Array(6).fill(safe)))).toThrow('finance_capture_invalid')
+    const other = diagnosticPage([safe])
+    other.frames[0].origin = 'https://www.samsungcard.com'
+    other.frames[0].pathname = '/personal/card/activity/UHPPRP0801M0.jsp'
+    other.frames[0].lists![0].adapter = 'samsung_history_list_v1'
+    expect(() => store.save(other)).toThrow('finance_capture_invalid')
+    store.clear()
+  })
+})
+
 describe('finance capture in-memory store', () => {
   it('erases expired captures on a timer even when no later read happens', () => {
     vi.useFakeTimers()

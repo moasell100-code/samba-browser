@@ -142,6 +142,9 @@ export class FinanceCaptureStore {
                 ...(list.displayedTotal !== undefined
                   ? { displayedTotal: list.displayedTotal }
                   : {}),
+                ...(list.unrecognizedDiagnostics?.length
+                  ? { unrecognizedDiagnostics: list.unrecognizedDiagnostics }
+                  : {}),
                 nonemptyFields: Array.from(fields, ([field, count]) => ({ field, count }))
               }
             })
