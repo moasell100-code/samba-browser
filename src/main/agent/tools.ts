@@ -4,6 +4,7 @@ import type { TabManager, Tab } from '../browser/tab-manager'
 import { pageBridge } from '../browser/page-bridge'
 import type { LoginFieldsResult } from '../browser/page-bridge'
 import type { FinanceCaptureReceipt } from '../../shared/finance-capture'
+import { financeCardIssuer } from '../finance/capture-schema'
 import { isHyundaiCardHost, loginMethodOfSections } from '../../shared/login-method'
 import {
   HYUNDAI_PIN_USE_LOGIN,
@@ -2128,20 +2129,30 @@ overlays left: ${after.length}${kept}`
 
   const captureFinance = tool(
     'capture_finance_table',
-    'Read the visible Hyundai Card tables into temporary local memory. Returns only capture metadata, ' +
+    'Read visible Hyundai, Samsung, or Lotte Card transaction tables or supported lists into temporary local memory. Returns only capture metadata, ' +
       'never transaction cells. Preview only: this does NOT import transactions, prove complete pagination, ' +
       'or synchronize the finance app. Never claim that the ledger was updated.',
     {},
     () =>
-      guard('현대카드 표 확인 (장부 반영 전)', async () => {
+      guard('카드 이용내역 확인 (장부 반영 전)', async () => {
         const tab = activeOr(ctx)
         if (!tab) return 'no active tab'
         if (!ctx.captureFinance) return 'error: finance capture unavailable'
-        if (!isHyundaiLoginUrl(currentUrl(tab)))
-          return 'refused: Hyundai Card secure page required for finance capture'
-        if ((await pageBridge.hyundaiAuth(tab)).state !== 'signed_in') {
-          return 'refused: login required; use login to restore the Hyundai Card session, then capture the requested table'
+        const url = currentUrl(tab)
+        const issuer = financeCardIssuer(url)
+        if (!issuer)
+          return 'refused: supported card issuer secure page required for finance capture'
+        const verified =
+          issuer === 'hyundai_card'
+            ? (await pageBridge.hyundaiAuth(tab)).state === 'signed_in'
+            : await pageBridge
+                .cardSession(tab)
+                .then((session) => session.issuer === issuer && session.state === 'signed_in')
+        if (!verified) {
+          return 'refused: login required; use login to restore the card session, then capture the requested transactions'
         }
+        if (currentUrl(tab) !== url)
+          return 'refused: card page changed before capture; verify the current page first'
         return ctx.captureFinance(tab)
       })
   )

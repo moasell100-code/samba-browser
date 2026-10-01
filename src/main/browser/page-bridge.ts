@@ -20,7 +20,12 @@ import {
 import type { Tab } from './tab-manager'
 import type { FinancePageCapture } from '../../shared/finance-capture'
 import type { HyundaiAuthSnapshot } from '../../shared/hyundai-auth'
-import { financeFrameCaptureSchema, isFinanceCaptureUrl } from '../finance/capture-schema'
+import {
+  financeFrameCaptureSchema,
+  financeCardIssuer,
+  isFinanceCaptureUrl
+} from '../finance/capture-schema'
+import type { CardSessionSnapshot } from '../../shared/card-session'
 
 // preload 가 실행되는 격리 월드 id. Electron 의 WorldId.ISOLATED_WORLD = 999
 export const ISOLATED_WORLD_ID = 999
@@ -115,6 +120,12 @@ export type LoginFieldsResult = z.infer<typeof loginFieldsSchema>
 
 // 로그인 상태 힌트 — matched 는 페이지에서 온 문자열이라 길이를 잘라 쓴다
 const signedInHintSchema = z.object({ signedIn: z.boolean(), matched: z.string() })
+const cardSessionSchema = z
+  .object({
+    issuer: z.enum(['hyundai_card', 'samsung_card', 'lotte_card']).nullable(),
+    state: z.enum(['signed_in', 'signed_out', 'unknown', 'unsupported'])
+  })
+  .strict()
 
 const hyundaiAuthSchema = z.object({
   state: z.enum([
@@ -343,6 +354,7 @@ export const pageBridge = {
     const wc = tab.view.webContents
     const before = wc.getURL()
     if (!isFinanceCaptureUrl(before)) throw new Error('finance_origin_not_allowed')
+    const issuer = financeCardIssuer(before)
     const main = await call(wc, '__samba.financeTables()', financeFrameCaptureSchema)
     if (
       wc.getURL() !== before ||
@@ -356,7 +368,7 @@ export const pageBridge = {
     await Promise.all(
       frames.map(async (frame) => {
         const beforeFrame = frameUrl(frame)
-        if (!isFinanceCaptureUrl(beforeFrame)) {
+        if (financeCardIssuer(beforeFrame) !== issuer) {
           result.skippedFrames += 1
           return
         }
@@ -457,9 +469,19 @@ export const pageBridge = {
   // 이미 로그인된 상태인지 힌트(로그인 폼을 못 찾았을 때만 쓴다)
   signedInHint: (tab: Tab): Promise<SignedInHintResult> =>
     call(tab.view.webContents, '__samba.signedInHint()', signedInHintSchema),
+  cardSession: async (tab: Tab): Promise<CardSessionSnapshot> => {
+    const url = tab.view.webContents.getURL()
+    const issuer = financeCardIssuer(url)
+    if (!issuer) return { issuer: null, state: 'unsupported' }
+    const snapshot = await call(tab.view.webContents, '__samba.cardSession()', cardSessionSchema)
+    if (tab.view.webContents.getURL() !== url || snapshot.issuer !== issuer) {
+      return { issuer, state: 'unknown' }
+    }
+    return snapshot
+  },
   hyundaiAuth: async (tab: Tab): Promise<HyundaiAuthSnapshot> => {
     const url = tab.view.webContents.getURL()
-    if (!isFinanceCaptureUrl(url)) return { state: 'unsupported' }
+    if (financeCardIssuer(url) !== 'hyundai_card') return { state: 'unsupported' }
     const snapshot = await call(tab.view.webContents, '__samba.hyundaiAuth()', hyundaiAuthSchema)
     if (tab.view.webContents.getURL() !== url) return { state: 'unknown' }
     return snapshot

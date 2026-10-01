@@ -69,4 +69,19 @@ describe('finance capture bridge', () => {
     expect(receipt.previewOnly).toBe(true)
     expect(receipt.issues).toContain('frame_incomplete')
   })
+  it('does not combine another card issuer frame with the active issuer', async () => {
+    const { tab } = fakeTab('https://www.hyundaicard.com/history', [
+      {
+        url: 'https://www.samsungcard.com/history',
+        result: {
+          origin: 'https://www.samsungcard.com',
+          pathname: '/history',
+          tables: []
+        }
+      }
+    ])
+    const captured = await pageBridge.financeTables(tab)
+    expect(captured.frames).toHaveLength(1)
+    expect(captured.skippedFrames).toBe(1)
+  })
 })

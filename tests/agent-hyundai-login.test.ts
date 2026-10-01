@@ -14,6 +14,7 @@ const { pageBridge, runLogin } = vi.hoisted(() => ({
   runLogin: vi.fn(),
   pageBridge: {
     hyundaiAuth: vi.fn(),
+    cardSession: vi.fn(),
     findLoginFields: vi.fn(async () => ({ stage: 'password', password: 2, username: 3 })),
     signedInHint: vi.fn(async () => ({ signedIn: false })),
     keypadSignals: vi.fn(async () => ({ url: '', text: '', digitButtons: 0, pinField: false })),
@@ -145,6 +146,36 @@ describe('Hyundai login agent integration', () => {
     pageBridge.hyundaiAuth.mockResolvedValue({ state: 'signed_in' })
     expect(await f.call('capture_finance_table')).toContain('synthetic-capture')
     expect(f.captureFinance).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['https://www.samsungcard.com/personal/card/activity/UHPPRP0801M0.jsp', 'samsung_card'],
+    ['https://www.lottecard.co.kr/app/LPMCDAA_V100.lc', 'lotte_card']
+  ])('requires a verified matching session to capture %s', async (url, issuer) => {
+    const f = fixture({ url })
+    pageBridge.cardSession.mockResolvedValue({ issuer, state: 'signed_out' })
+    expect(await f.call('capture_finance_table')).toContain('login required')
+    expect(f.captureFinance).not.toHaveBeenCalled()
+    pageBridge.cardSession.mockResolvedValue({ issuer, state: 'signed_in' })
+    expect(await f.call('capture_finance_table')).toContain('synthetic-capture')
+    expect(f.captureFinance).toHaveBeenCalledOnce()
+    expect(pageBridge.hyundaiAuth).not.toHaveBeenCalled()
+  })
+
+  it('does not collect another issuer session or a page changed after verification', async () => {
+    const options = {
+      url: 'https://www.samsungcard.com/personal/card/activity/UHPPRP0801M0.jsp'
+    }
+    const f = fixture(options)
+    pageBridge.cardSession.mockResolvedValue({ issuer: 'lotte_card', state: 'signed_in' })
+    expect(await f.call('capture_finance_table')).toContain('login required')
+    expect(f.captureFinance).not.toHaveBeenCalled()
+    pageBridge.cardSession.mockImplementationOnce(async () => {
+      options.url = 'https://www.samsungcard.com/personal/login/UHPPCO0301M0.jsp'
+      return { issuer: 'samsung_card', state: 'signed_in' }
+    })
+    expect(await f.call('capture_finance_table')).toContain('page changed before capture')
+    expect(f.captureFinance).not.toHaveBeenCalled()
   })
 
   it('checks a verified Hyundai session before touching a locked or unconfigured vault', async () => {
