@@ -37,6 +37,9 @@ function visible(el: Element): boolean {
 }
 
 const ACTIONS = 'a,button,[role="link"],[role="button"]'
+// Samsung's authenticated header uses this public, no-argument logout action.
+// Match its spelling only; never execute or accept adjacent/quoted script.
+const SAMSUNG_LOGOUT_LINK = /^(?:javascript:\s*)?scard\.gnb\.logout_popup\s*\(\s*\)\s*;?$/
 const LOTTE_LOGOUT_CALL =
   /^(?:javascript:\s*)?(?:return\s+)?fnDoLogout\s*\(\s*\)\s*;?\s*(?:return\s+false\s*;?)?$/
 
@@ -65,7 +68,12 @@ export function readCardSession(doc: Document = document): CardSessionSnapshot {
 
   const logout = Array.from(doc.querySelectorAll(ACTIONS)).some((el) => {
     if (!visible(el) || el.textContent?.trim() !== '로그아웃') return false
-    if (issuer === 'samsung_card') return el.id === 'logoutBtn'
+    if (issuer === 'samsung_card') {
+      return (
+        el.id === 'logoutBtn' ||
+        (el.tagName === 'A' && SAMSUNG_LOGOUT_LINK.test((el.getAttribute('href') ?? '').trim()))
+      )
+    }
     if (issuer === 'lotte_card') {
       return ['href', 'onclick'].some((name) => LOTTE_LOGOUT_CALL.test(el.getAttribute(name) ?? ''))
     }

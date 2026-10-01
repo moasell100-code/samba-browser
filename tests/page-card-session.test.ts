@@ -102,6 +102,45 @@ describe('fixed card session reader', () => {
     expect(readCardSession(doc).state).toBe('unknown')
   })
 
+  it.each([
+    'javascript:scard.gnb.logout_popup()',
+    'javascript: scard.gnb.logout_popup();',
+    'scard.gnb.logout_popup( );'
+  ])('recognizes the exact visible Samsung header logout link: %s', (href) => {
+    const html = `<a href="${href}"><span>로그아웃</span></a>`
+    expect(readCardSession(at(sites[1].url, html))).toEqual({
+      issuer: 'samsung_card',
+      state: 'signed_in'
+    })
+    expect(readCardSession(at(sites[1].url, `<div hidden>${html}</div>`)).state).toBe('unknown')
+    expect(readCardSession(at(sites[1].url, sites[1].login + html)).state).toBe('signed_out')
+  })
+
+  it.each([
+    "javascript:show('scard.gnb.logout_popup()')",
+    'javascript:other.scard.gnb.logout_popup()',
+    'javascript:scard.gnb.logout_popup_preview()',
+    'javascript:scard.gnb.logout_popup(1)',
+    'javascript:scard.gnb.logout_popup();runMore()',
+    'javascript:scard.gnb.logout_popup();return false;',
+    'https://evil.test/?action=scard.gnb.logout_popup()'
+  ])('rejects unverified Samsung link actions: %s', (href) => {
+    const doc = at(sites[1].url, '<a>로그아웃</a>')
+    doc.querySelector('a')!.setAttribute('href', href)
+    expect(readCardSession(doc).state).toBe('unknown')
+  })
+
+  it('does not accept a Samsung logout function on an unrelated control or with a different label', () => {
+    expect(
+      readCardSession(
+        at(
+          sites[1].url,
+          '<button onclick="scard.gnb.logout_popup()">로그아웃</button><a href="javascript:scard.gnb.logout_popup()">로그인</a>'
+        )
+      ).state
+    ).toBe('unknown')
+  })
+
   it('requires a real Lotte logout call rather than quoted text or a related function', () => {
     for (const onclick of [
       "show('fnDoLogout()')",
