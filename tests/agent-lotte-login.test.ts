@@ -95,6 +95,31 @@ beforeEach(() => {
 })
 
 describe('Lotte protected login agent integration', () => {
+  it('inspects fixed state without credential access, field focus, or attempt-store changes', async () => {
+    const f = fixture()
+    pageBridge.lotteAuth.mockResolvedValue({ state: 'keyboard_ready', focused: false, filled: 7 })
+    const raw = await f.call('inspect_card_login')
+    expect(JSON.parse(raw!)).toEqual({
+      issuer: 'lotte_card',
+      state: 'keyboard_ready',
+      passwordFocus: 'not_focused',
+      passwordBuffer: 'nonempty',
+      attemptProtection: 'unchanged'
+    })
+    expect(raw).not.toContain('filled')
+    expect(f.vault.getSecretForFill).not.toHaveBeenCalled()
+    expect(pageBridge.focusLottePassword).not.toHaveBeenCalled()
+    expect(f.attempts.begin).not.toHaveBeenCalled()
+    expect(f.attempts.clearSignedInProfile).not.toHaveBeenCalled()
+  })
+  it('probe refuses mandatory keypad without credentials, submit, or latch mutation', async () => {
+    const f = fixture()
+    expect(await f.call('probe_lotte_keyboard')).toContain('keypad_required')
+    expect(f.vault.getSecretForFill).not.toHaveBeenCalled()
+    expect(pageBridge.submitLotteLogin).not.toHaveBeenCalled()
+    expect(f.attempts.begin).not.toHaveBeenCalled()
+    expect(f.attempts.clearSignedInProfile).not.toHaveBeenCalled()
+  })
   it('diagnoses mandatory keypad without reading or filling a password', async () => {
     const f = fixture()
     expect(await f.call('login')).toContain('keypad_required')

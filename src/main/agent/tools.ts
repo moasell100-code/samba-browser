@@ -18,6 +18,7 @@ import {
   lotteAttempts,
   LOTTE_USE_LOGIN
 } from '../finance/lotte-login'
+import { probeLotteKeyboard } from '../finance/lotte-keyboard-probe'
 import { serializeSnapshot } from '../../shared/snapshot'
 import type { PageOverlay, PageSnapshot } from '../../shared/snapshot'
 import { diffLines } from '../../shared/snapshot-diff'
@@ -2183,6 +2184,65 @@ overlays left: ${after.length}${kept}`
     }
   )
 
+  const probeLotteInput = tool(
+    'probe_lotte_keyboard',
+    'Diagnose Lotte Card normal keyboard support with exactly one fixed noncredential character in its empty official password field, then Backspace cleanup. Never accesses KeyMaster, submits a login, disables security, or resets failed-attempt protection. Returns one fixed result code only. Do not repeat without a relevant environment change.',
+    {},
+    () =>
+      guard('롯데카드 일반 키보드 입력 진단 (로그인 제출 없음)', async () => {
+        if (ctx.mode === 'read_only') return READ_ONLY_REFUSAL
+        const tab = activeOr(ctx)
+        if (!tab) return 'no active tab'
+        return {
+          result: await probeLotteKeyboard({
+            bridge: {
+              url: () => currentUrl(tab),
+              read: () => pageBridge.lotteAuth(tab),
+              focusPassword: () => pageBridge.focusLottePassword(tab),
+              pressCharacter: (character, expectedLength) =>
+                pageBridge.pressLotteCharacter(tab, character, expectedLength),
+              eraseCharacter: () => pageBridge.eraseLotteProbeCharacter(tab)
+            },
+            tick: ctx.tick
+          })
+        }
+      })
+  )
+
+  const inspectCardLogin = tool(
+    'inspect_card_login',
+    'Read fixed card login diagnostics only. Does not access KeyMaster, focus inputs, type, submit, or clear failed-attempt protection. Never returns page text, password length, or credential values.',
+    {},
+    () =>
+      guard('카드 로그인 입력 상태 확인', async () => {
+        const tab = activeOr(ctx)
+        if (!tab) return 'no active tab'
+        const url = currentUrl(tab)
+        const issuer = financeCardIssuer(url)
+        if (!issuer) return 'refused: supported card issuer secure page required'
+        if (issuer !== 'lotte_card') return pageBridge.cardSession(tab)
+        const state = await pageBridge.lotteAuth(tab)
+        if (currentUrl(tab) !== url) return { issuer, state: 'unknown' }
+        return {
+          issuer,
+          state: state.state,
+          passwordFocus:
+            state.state === 'keyboard_ready'
+              ? state.focused
+                ? 'focused'
+                : 'not_focused'
+              : 'unavailable',
+          passwordBuffer:
+            state.state === 'keyboard_ready'
+              ? state.filled === 0
+                ? 'empty'
+                : 'nonempty'
+              : 'unavailable',
+          attemptProtection: 'unchanged'
+        }
+      })
+  )
+
   const captureFinance = tool(
     'capture_finance_table',
     'Read visible Hyundai, Samsung, or Lotte Card transaction tables or supported lists into temporary local memory. Returns only capture metadata, ' +
@@ -2215,6 +2275,8 @@ overlays left: ${after.length}${kept}`
 
   const tools = [
     getPage,
+    inspectCardLogin,
+    probeLotteInput,
     ...(ctx.captureFinance ? [captureFinance] : []),
     findElements,
     screenshot,
@@ -2255,6 +2317,8 @@ overlays left: ${after.length}${kept}`
 
 export const SAMBA_TOOL_NAMES = [
   'get_page',
+  'inspect_card_login',
+  'probe_lotte_keyboard',
   'capture_finance_table',
   'find_elements',
   'screenshot',

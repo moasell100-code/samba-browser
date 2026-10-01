@@ -59,6 +59,12 @@ function fixture() {
   return {
     deps,
     bridge,
+    setFilled: (value: number) => {
+      filled = value
+    },
+    setFocused: (value: boolean) => {
+      focused = value
+    },
     setState: (value: LotteAuthSnapshot['state']) => {
       state = value
     },
@@ -69,6 +75,37 @@ function fixture() {
 }
 
 describe('Lotte keyboard login', () => {
+  it('waits for asynchronous security processing without retransmitting a character', async () => {
+    const f = fixture()
+    let pending = 0
+    let polls = 0
+    f.bridge.pressCharacter.mockImplementation(async (_character, expected) => {
+      pending = expected + 1
+      polls = 0
+      return true
+    })
+    f.deps.sleep.mockImplementation(async () => {
+      if (++polls === 3) f.setFilled(pending)
+    })
+    expect(await loginLotteCard(f.deps)).toContain('session verified')
+    expect(f.bridge.pressCharacter).toHaveBeenCalledTimes(dummy.length)
+    expect(f.bridge.submit).toHaveBeenCalledOnce()
+  })
+  it('classifies rejected native input without reporting any password lengths', async () => {
+    const stalled = fixture()
+    stalled.bridge.pressCharacter.mockResolvedValue(true)
+    expect(await loginLotteCard(stalled.deps)).toContain('lotte_input_not_accepted')
+    expect(stalled.bridge.pressCharacter).toHaveBeenCalledOnce()
+    expect(stalled.bridge.submit).not.toHaveBeenCalled()
+    expect(stalled.deps.attempts.failed).toHaveBeenCalledOnce()
+    const blurred = fixture()
+    blurred.bridge.pressCharacter.mockImplementation(async () => {
+      blurred.setFocused(false)
+      return true
+    })
+    expect(await loginLotteCard(blurred.deps)).toContain('lotte_input_focus_lost')
+    expect(blurred.bridge.submit).not.toHaveBeenCalled()
+  })
   it('types through the guarded native path once and verifies signed-in state', async () => {
     const f = fixture()
     expect(await loginLotteCard(f.deps)).toContain('session verified')

@@ -62,6 +62,15 @@ function notice(state: LotteAuthSnapshot['state']): string {
   return 'refused: Lotte Card login input could not be verified; no further input'
 }
 
+function inputNotice(state: LotteAuthSnapshot, expectedLength: number): string {
+  if (state.state !== 'keyboard_ready')
+    return `refused: lotte_input_mode_changed (${state.state}); no submit or retry`
+  if (!state.focused) return 'refused: lotte_input_focus_lost; no submit or retry'
+  if (state.filled === expectedLength)
+    return 'refused: lotte_input_not_accepted; the official keyboard security client did not accept the keyboard event; no submit or retry'
+  return 'refused: lotte_input_count_mismatch; no submit or retry'
+}
+
 export async function loginLotteCard(deps: LotteLoginDeps): Promise<string> {
   const { bridge, attempts, attempt } = deps
   const sleep =
@@ -126,16 +135,31 @@ export async function loginLotteCard(deps: LotteLoginDeps): Promise<string> {
       if (blocked) return blocked
       state = await read()
       if (state.state !== 'keyboard_ready') return notice(state.state)
-      if (!state.focused || state.filled !== index)
-        return 'refused: Lotte Card input state changed; do not retry'
+      if (!state.focused || state.filled !== index) return inputNotice(state, index)
       if (!begun) {
         if (!attempts.begin(attempt))
           return 'refused: Lotte Card login was already attempted; do not retry'
         begun = true
       }
       if (!(await bridge.pressCharacter(password[index], index)))
-        return 'refused: Lotte Card keyboard input could not be verified; no submit or retry'
-      await sleep(100)
+        return 'refused: lotte_native_input_rejected; no submit or retry'
+      // The supported security client may update its input asynchronously. Observe only;
+      // never resend the character, edit readonly, or manufacture encryption state.
+      let accepted = false
+      for (let poll = 0; poll < 20; poll++) {
+        await sleep(100)
+        blocked = gate()
+        if (blocked) return blocked
+        state = await read()
+        if (state.state === 'signed_in') return success()
+        if (state.state !== 'keyboard_ready') return inputNotice(state, index)
+        if (state.focused && state.filled === index + 1) {
+          accepted = true
+          break
+        }
+        if (state.filled !== index && state.filled !== index + 1) return inputNotice(state, index)
+      }
+      if (!accepted) return inputNotice(state, index)
     }
     blocked = gate()
     if (blocked) return blocked

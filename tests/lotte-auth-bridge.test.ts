@@ -29,6 +29,17 @@ function fixture(result: unknown = { state: 'keyboard_ready', focused: true, fil
   }
 }
 describe('Lotte native keyboard bridge', () => {
+  it('erases only one focused probe character with a normal Backspace key event', async () => {
+    const f = fixture({ state: 'keyboard_ready', focused: true, filled: 1 })
+    expect(await pageBridge.eraseLotteProbeCharacter(f.tab)).toBe(true)
+    expect(f.send.mock.calls.map(([event]) => event)).toEqual([
+      { type: 'keyDown', keyCode: 'Backspace' },
+      { type: 'keyUp', keyCode: 'Backspace' }
+    ])
+    const unrelated = fixture({ state: 'keyboard_ready', focused: true, filled: 2 })
+    expect(await pageBridge.eraseLotteProbeCharacter(unrelated.tab)).toBe(false)
+    expect(unrelated.send).not.toHaveBeenCalled()
+  })
   it('sends one keyboard event triplet without embedding its character in evaluated source', async () => {
     const f = fixture()
     expect(await pageBridge.pressLotteCharacter(f.tab, '!', 0)).toBe(true)

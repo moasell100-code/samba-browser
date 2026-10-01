@@ -573,6 +573,28 @@ export const pageBridge = {
       return false
     }
   },
+  eraseLotteProbeCharacter: async (tab: Tab): Promise<boolean> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (!isLotteOrigin(url)) return false
+    try {
+      const state = await call(wc, '__samba.lotteAuth()', lotteAuthSchema)
+      if (
+        wc.getURL() !== url ||
+        state.state !== 'keyboard_ready' ||
+        !state.focused ||
+        state.filled !== 1 ||
+        !wc.isFocused() ||
+        !BrowserWindow.fromWebContents(wc)?.isFocused()
+      )
+        return false
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+      return true
+    } catch {
+      return false
+    }
+  },
   hyundaiAuth: async (tab: Tab): Promise<HyundaiAuthSnapshot> => {
     const url = tab.view.webContents.getURL()
     if (financeCardIssuer(url) !== 'hyundai_card') return { state: 'unsupported' }
