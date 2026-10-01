@@ -57,6 +57,7 @@ import type { NewTabInitDto } from '../shared/newtab'
 import { installPageTranslate, type ImageOverlayDto } from './page-translate'
 import { installJajaConnection } from './page-jaja'
 import { captureFinanceTables } from './page-finance'
+import { readCardSession } from './page-card-session'
 
 // 이 preload 는 세션 단위(registerPreloadScript type:'frame')로 등록돼 모든 프레임에서 돈다.
 // 탭의 webPreferences.preload 로만 걸면 window.open 으로 열린 팝업(결제창 등)에는 붙지 않기 때문이다.
@@ -82,6 +83,7 @@ if (!isExtensionDocument) {
   // → 적대 페이지가 __samba 를 가로채거나 프로토타입 오염으로 결과를 왜곡할 수 없다.
   const api = {
     financeTables: () => captureFinanceTables(),
+    cardSession: () => readCardSession(),
     hyundaiAuth: () => hyundaiAuth(),
     // query 를 주면 일치하는 요소만 나열한다(find_elements). id 는 언제나 문서 순서다
     // selector 를 주면 그 CSS 선택자 안쪽 요소만 나열한다(registry·id 는 그대로)
