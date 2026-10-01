@@ -182,6 +182,37 @@ describe('Hyundai observed visible list adapter', () => {
     expect(read.readCell).not.toHaveBeenCalled()
   })
 
+  it('retains the verified row with a fifth textless metadata cell without inventing a status', () => {
+    const trailingEmpty = row().replace(
+      '</span><span class="price">',
+      '<li class="p2_m_lt_1ln divr_txt"> </li></span><span class="price">'
+    )
+    const frame = captureFinanceTables(docAt(root(trailingEmpty)))
+    expect(frame.lists![0].rows).toEqual(captureFinanceTables(docAt(root(row()))).lists![0].rows)
+    expect(frame.lists![0].unrecognizedRows).toBe(0)
+    expect(frame.lists![0].unrecognizedDiagnostics).toBeUndefined()
+    const report = receipt(root(trailingEmpty))
+    expect(report.listRowCount).toBe(1)
+    expect(report.issues).toContain('details_incomplete')
+    expect(report.issues).not.toContain('unrecognized_rows')
+  })
+
+  it('continues to reject a nonempty fifth metadata cell or more than five cells', () => {
+    for (const extra of [
+      '<li class="p2_m_lt_1ln divr_txt">unknown-status-fixture</li>',
+      '<li class="p2_m_lt_1ln divr_txt"></li><li class="p2_m_lt_1ln divr_txt"></li>'
+    ]) {
+      const html = root(
+        row().replace('</span><span class="price">', `${extra}</span><span class="price">`)
+      )
+      const frame = captureFinanceTables(docAt(html))
+      expect(frame.lists![0].rows).toEqual([])
+      expect(frame.lists![0].unrecognizedRows).toBe(1)
+      expect(frame.lists![0].unrecognizedDiagnostics![0].reason).toBe('field_count')
+      expect(JSON.stringify(receipt(html))).not.toContain('unknown-status-fixture')
+    }
+  })
+
   it('does not read hidden or duplicate roots, hidden fields, or ambiguous links', () => {
     for (const html of [
       root(row()).replace('id="divHistoryUseRight"', 'id="divHistoryUseRight" hidden'),

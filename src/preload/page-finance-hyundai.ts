@@ -85,7 +85,18 @@ export function captureHyundaiHistoryLists(
       metadataCount: metadata.length,
       amountCount: amount.length
     }
-    if (name.length !== 1 || metadata.length !== 4 || amount.length !== 1) {
+    // The verified page may append a fifth, textless metadata cell. Ignore only
+    // that exact empty trailing cell; extra visible content still needs review.
+    const emptyTrailingMetadata =
+      name.length === 1 &&
+      amount.length === 1 &&
+      metadata.length === 5 &&
+      readers.readCell(metadata[4]) === ''
+    if (
+      name.length !== 1 ||
+      (metadata.length !== 4 && !emptyTrailingMetadata) ||
+      amount.length !== 1
+    ) {
       recordUnrecognized({ ...counts, reason: 'field_count' })
       continue
     }
@@ -98,7 +109,7 @@ export function captureHyundaiHistoryLists(
       'payment_type',
       'amount'
     ]
-    const head = [name[0], ...metadata, amount[0]].map((element, index) => ({
+    const head = [name[0], ...metadata.slice(0, 4), amount[0]].map((element, index) => ({
       field: fields[index],
       text: readers.readCell(element)
     }))
