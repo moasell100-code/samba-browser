@@ -21,7 +21,9 @@ function deps(over: Partial<CliResolveDeps> & { files?: string[] } = {}): CliRes
       APPDATA: 'C:\\Users\\u\\AppData\\Roaming'
     },
     exists: over.exists ?? ((p) => files.has(p.toLowerCase())),
-    readFile: over.readFile ?? (() => SHIM)
+    readFile: over.readFile ?? (() => SHIM),
+    directories: over.directories,
+    modified: over.modified
   }
 }
 
@@ -53,6 +55,72 @@ describe('resolveCliBin', () => {
       })
     )
     expect(r).toEqual({ command: 'C:\\Users\\u\\.local\\bin\\claude.exe', prefixArgs: [] })
+  })
+
+  it('Codex는 앞선 구형 npm 셔틀보다 PATH 뒤쪽의 데스크톱 native CLI를 우선한다', () => {
+    const native = 'C:\\Users\\u\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe'
+    const r = resolveCliBin(
+      'codex',
+      deps({
+        env: { PATH: `${NPM};C:\\Users\\u\\AppData\\Local\\OpenAI\\Codex\\bin\\new` },
+        files: [
+          `${NPM}\\codex.cmd`,
+          `${NPM}\\node_modules\\@openai\\codex\\bin\\codex.js`,
+          native,
+          NODE
+        ]
+      })
+    )
+    expect(r).toEqual({ command: native, prefixArgs: [] })
+  })
+
+  it('Codex 앱에서 시작하지 않은 바로가기도 기존 per-user CLI 중 최신 파일을 찾는다', () => {
+    const root = 'C:\\Users\\u\\AppData\\Local\\OpenAI\\Codex\\bin'
+    const native = `${root}\\new\\codex.exe`
+    const r = resolveCliBin(
+      'codex',
+      deps({
+        env: { PATH: NPM, LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' },
+        files: [
+          `${NPM}\\codex.cmd`,
+          `${NPM}\\node_modules\\@openai\\codex\\bin\\codex.js`,
+          `${root}\\old\\codex.exe`,
+          native
+        ],
+        directories: () => ['old', 'new', '../invalid'],
+        modified: (path) => (path === native ? 2 : 1)
+      })
+    )
+    expect(r).toEqual({ command: native, prefixArgs: [] })
+  })
+
+  it('데스크톱 CLI 폴더를 읽지 못하면 기존 npm 경로로 돌아간다', () => {
+    const r = resolveCliBin(
+      'codex',
+      deps({
+        env: { PATH: NPM, LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' },
+        files: [`${NPM}\\codex.cmd`, `${NPM}\\node_modules\\@openai\\codex\\bin\\codex.js`],
+        directories: () => {
+          throw new Error('unavailable')
+        }
+      })
+    )
+    expect(r.prefixArgs).toEqual([`${NPM}\\node_modules\\@openai\\codex\\bin\\codex.js`])
+  })
+
+  it('Claude의 기존 PATH 우선순위는 바꾸지 않는다', () => {
+    const r = resolveCliBin(
+      'claude',
+      deps({
+        env: { PATH: `${NPM};C:\\native` },
+        files: [
+          `${NPM}\\claude.cmd`,
+          `${NPM}\\node_modules\\@openai\\codex\\bin\\codex.js`,
+          'C:\\native\\claude.exe'
+        ]
+      })
+    )
+    expect(r.prefixArgs).toHaveLength(1)
   })
 
   it('아무것도 못 찾으면 이름 그대로(예전과 같은 실패)', () => {

@@ -3,7 +3,7 @@
 // 셸(shell: true)로 돌리면 인자에 든 문자열이 명령줄 해석을 타므로 쓰지 않고,
 // 셔틀이 부르는 .js 를 읽어 node 로 직접 실행한다(인자는 그대로 배열로 전달 — 명령줄 해석 없음)
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { delimiter, dirname, join } from 'node:path'
 
 export interface ResolvedCli {
@@ -18,13 +18,20 @@ export interface CliResolveDeps {
   env: Record<string, string | undefined>
   exists: (path: string) => boolean
   readFile: (path: string) => string
+  directories?: (path: string) => string[]
+  modified?: (path: string) => number
 }
 
 const defaultDeps: CliResolveDeps = {
   platform: process.platform,
   env: process.env,
   exists: existsSync,
-  readFile: (p) => readFileSync(p, 'utf8')
+  readFile: (p) => readFileSync(p, 'utf8'),
+  directories: (p) =>
+    readdirSync(p, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name),
+  modified: (p) => statSync(p).mtimeMs
 }
 
 /** PATH 폴더들 + npm 전역 폴더(앱이 바로가기로 떠서 PATH 에 npm 폴더가 없을 때 대비) */
@@ -52,6 +59,29 @@ function findNode(dir: string, deps: CliResolveDeps): string {
   return 'node'
 }
 
+/** The desktop app's CLI can be newer than an earlier npm shim in PATH. */
+function findNativeCodex(deps: CliResolveDeps): string | undefined {
+  for (const dir of searchDirs(deps)) {
+    const exe = join(dir, 'codex.exe')
+    if (deps.exists(exe)) return exe
+  }
+  // Desktop shortcuts do not always inherit the Codex app's injected PATH. Inspect only
+  // its existing per-user CLI directory; never copy binaries or change a global install.
+  const localData = deps.env.LOCALAPPDATA
+  if (!localData || !deps.directories) return undefined
+  const root = join(localData, 'OpenAI', 'Codex', 'bin')
+  try {
+    return deps
+      .directories(root)
+      .filter((name) => /^[a-zA-Z0-9_-]+$/.test(name))
+      .map((name) => join(root, name, 'codex.exe'))
+      .filter((exe) => deps.exists(exe))
+      .sort((a, b) => (deps.modified?.(b) ?? 0) - (deps.modified?.(a) ?? 0))[0]
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * `bin` 을 실제로 실행할 방법을 정한다.
  * - Windows 가 아니면 이름 그대로(PATH 해석은 OS 가 한다)
@@ -60,6 +90,10 @@ function findNode(dir: string, deps: CliResolveDeps): string {
  */
 export function resolveCliBin(bin: string, deps: CliResolveDeps = defaultDeps): ResolvedCli {
   if (deps.platform !== 'win32') return { command: bin, prefixArgs: [] }
+  if (bin === 'codex') {
+    const native = findNativeCodex(deps)
+    if (native) return { command: native, prefixArgs: [] }
+  }
   for (const dir of searchDirs(deps)) {
     const exe = join(dir, `${bin}.exe`)
     if (deps.exists(exe)) return { command: exe, prefixArgs: [] }
