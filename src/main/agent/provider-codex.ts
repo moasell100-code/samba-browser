@@ -152,8 +152,10 @@ export function buildCodexArgs(input: Pick<CodexInput, 'model' | 'mcpServer'>): 
       endpoint.hash
     )
       throw new Error('codex_invalid_mcp_server')
-    // TOML 인라인 테이블로 서버 하나를 얹는다(-c mcp_servers.<name>={...})
-    const toml = `{url=${JSON.stringify(url)},bearer_token_env_var="${CODEX_MCP_TOKEN_ENV}",required=true}`
+    // Delegate only this run's authenticated browser tools to the app's existing confirm/vault
+    // gates. Codex exec cannot show an interactive MCP approval prompt; leaving "auto" here
+    // rejects tools without read-only hints before those app guards can run.
+    const toml = `{url=${JSON.stringify(url)},bearer_token_env_var="${CODEX_MCP_TOKEN_ENV}",required=true,default_tools_approval_mode="approve"}`
     args.push('-c', `mcp_servers.${name}=${toml}`)
   }
   return args

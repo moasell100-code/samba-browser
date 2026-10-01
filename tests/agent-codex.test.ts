@@ -65,9 +65,14 @@ describe('buildCodexArgs — 실제로 확인한 인자만 쓴다', () => {
     const cfg = args[args.indexOf('-c', args.indexOf('mcp_servers') - 1)]
     expect(cfg).toBe('-c')
     expect(args.join(' ')).toContain(
-      `mcp_servers.samba={url="http://127.0.0.1:4123/mcp",bearer_token_env_var="${CODEX_MCP_TOKEN_ENV}",required=true}`
+      `mcp_servers.samba={url="http://127.0.0.1:4123/mcp",bearer_token_env_var="${CODEX_MCP_TOKEN_ENV}",required=true,default_tools_approval_mode="approve"}`
     )
     expect(args.join(' ')).not.toContain('private-token')
+    expect(args).toEqual(expect.arrayContaining(['--sandbox', 'read-only']))
+    expect(args).toContain('features.shell_tool=false')
+    expect(args).toContain('features.unified_exec=false')
+    expect(args.some((arg) => arg.startsWith('approval_policy='))).toBe(false)
+    expect(args.filter((arg) => arg.includes('default_tools_approval_mode'))).toHaveLength(1)
   })
 
   it.each([
