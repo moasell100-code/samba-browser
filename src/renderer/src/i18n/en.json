@@ -353,6 +353,8 @@
     "finalConfirm": "Final confirmation"
   },
   "auth": {
+    "codexMissing": "Check your Codex subscription connection. Reconnect in Settings > AI connection > Codex subscription.",
+    "codexLimit": "You've reached the Codex subscription limit. Check your Codex usage and reset time in Settings > AI connection, then try again.",
     "missing": "AI is not connected. Run claude auth login in a terminal or add an API key in Settings.",
     "limit": "You've reached the AI usage limit. Please try again later.",
     "notConnected": "No AI connection. Connect a subscription or add an API key in Settings > AI"

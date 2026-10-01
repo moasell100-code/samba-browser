@@ -9,6 +9,7 @@ import type {
   TaskModels
 } from '@shared/ai'
 import { SUBSCRIPTION_PROVIDERS } from '@shared/ai'
+import { useChatStore } from './chatStore'
 
 // AI 연결 화면 상태.
 // 평문 API 키는 setApiKey 로 메인에 넘어가기만 하고 되돌아오지 않는다 —
@@ -102,6 +103,10 @@ export const useAiStore = create<AiStoreState>((set, get) => ({
       choices: models.data.choices,
       loading: false
     })
+    useChatStore.setState({
+      model: models.data.taskModels.standard,
+      modelChoices: models.data.choices
+    })
   },
 
   // 연결: 성공하면 카드 상태를 다시 읽고, 자격이 없으면 안내 다이얼로그를 띄운다
@@ -143,9 +148,14 @@ export const useAiStore = create<AiStoreState>((set, get) => ({
       return
     }
     set({ provider: r.data.provider, taskModels: r.data.taskModels, remapped: r.data.changed })
+    // 채팅은 설정과 같은 표준 모델을 표시한다. 메인의 기존 remap 결과를 그대로 반영한다.
+    useChatStore.setState({ model: r.data.taskModels.standard, modelChoices: [] })
     // 제공자가 바뀌면 고를 수 있는 모델 목록도 달라진다
     const models = await window.samba.ai.taskModels()
-    if (models.ok) set({ choices: models.data.choices })
+    if (models.ok && models.data.provider === get().provider) {
+      set({ choices: models.data.choices })
+      useChatStore.setState({ modelChoices: models.data.choices })
+    }
   },
 
   setApiKey: async (vendor, key) => {
@@ -172,8 +182,10 @@ export const useAiStore = create<AiStoreState>((set, get) => ({
 
   setTaskModel: async (key, model) => {
     const r = await window.samba.ai.setTaskModel(key, model)
-    if (r.ok) set({ taskModels: r.data, error: null })
-    else set({ error: r.error })
+    if (r.ok) {
+      set({ taskModels: r.data, error: null })
+      useChatStore.setState({ model: r.data.standard })
+    } else set({ error: r.error })
   },
 
   dismissRemapped: () => set({ remapped: [] })
