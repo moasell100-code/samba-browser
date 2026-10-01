@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   connectSubscription,
   disconnectedRecord,
@@ -12,6 +12,16 @@ import { CLAUDE_CREDENTIAL_PATHS } from '../src/main/ai/providers'
 import type { AiConnections } from '../src/shared/ai'
 
 const NONE: AiConnections = { claude: { connected: false }, codex: { connected: false } }
+
+// 인증 경계 회귀가 나도 테스트가 실제 SDK/유료 요청을 시작하지 않도록 막는다.
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: vi.fn(() => {
+    throw new Error('unexpected_claude_sdk_query')
+  }),
+  startup: vi.fn(() => {
+    throw new Error('unexpected_claude_sdk_startup')
+  })
+}))
 
 function probes(o: {
   installed?: boolean
@@ -152,10 +162,20 @@ describe('resolveAgentAuth — 미연결 구독은 쓰지 않는다', () => {
     ).toEqual({ mode: 'none', reason: 'not_connected' })
   })
 
-  it('미연결 구독이라도 내 API 키가 있으면 그 경로로 돌아간다', () => {
-    expect(
-      resolveAgentAuth({ provider: 'claude_subscription', connections: NONE, hasApiKey: true })
-    ).toEqual({ mode: 'api_key' })
+  it.each(['claude_subscription', 'codex_subscription'] as const)(
+    '%s 미연결 시 API 키가 있어도 과금 경로로 전환하지 않는다',
+    (provider) => {
+      expect(resolveAgentAuth({ provider, connections: NONE, hasApiKey: true })).toEqual({
+        mode: 'none',
+        reason: 'not_connected'
+      })
+    }
+  )
+
+  it('API 키는 사용자가 그 경로를 명시적으로 선택한 경우에만 쓴다', () => {
+    expect(resolveAgentAuth({ provider: 'api_key', connections: NONE, hasApiKey: true })).toEqual({
+      mode: 'api_key'
+    })
   })
 
   it('Codex 도 연결했을 때만 쓴다', () => {
@@ -183,6 +203,39 @@ describe('resolveAgentAuth — 미연결 구독은 쓰지 않는다', () => {
 })
 
 describe('자격 파일이 있어도 미연결이면 provider 가 키를 넘기지 않는다', () => {
+  it('Codex 구독을 선택했으면 Claude 직접 실행·미리 띄우기를 모두 차단한다', async () => {
+    const { query, startup } = await import('@anthropic-ai/claude-agent-sdk')
+    const {
+      runQuery,
+      startWarmSession,
+      setAuthResolver,
+      setApiKeyResolver,
+      CODEX_BACKEND_REQUIRED_ERROR
+    } = await import('../src/main/agent/provider')
+    const readKey = vi.fn(() => 'sk-must-not-be-used')
+    setAuthResolver(() => ({ mode: 'codex_subscription' }))
+    setApiKeyResolver(readKey)
+    vi.clearAllMocks()
+    try {
+      const input = {
+        prompt: 'x',
+        systemPrompt: 's',
+        model: 'sonnet',
+        mcpServers: {},
+        allowedTools: [],
+        abort: new AbortController()
+      }
+      expect(() => runQuery(input)).toThrowError(CODEX_BACKEND_REQUIRED_ERROR)
+      expect(await startWarmSession(input)).toBeNull()
+      expect(query).not.toHaveBeenCalled()
+      expect(startup).not.toHaveBeenCalled()
+      expect(readKey).not.toHaveBeenCalled()
+    } finally {
+      setAuthResolver(null)
+      setApiKeyResolver(null)
+    }
+  })
+
   it('runQuery 는 SDK 를 부르지 않고 auth:not_connected 로 멈춘다', async () => {
     const { runQuery, setAuthResolver, setApiKeyResolver, NOT_CONNECTED_ERROR } =
       await import('../src/main/agent/provider')

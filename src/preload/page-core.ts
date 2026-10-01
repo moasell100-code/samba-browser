@@ -9,6 +9,7 @@ import type {
   PageSnapshot
 } from '../shared/snapshot'
 import { MAX_ELEMENTS } from './page-constants'
+import { captureFinanceTables } from './page-finance'
 import {
   isCloseLabel,
   isOverlay,
@@ -1422,6 +1423,8 @@ export function runAgentOp(raw: unknown): unknown {
   const text = typeof r.text === 'string' ? r.text : ''
   const value = typeof r.value === 'string' ? r.value : ''
   switch (r.op) {
+    case 'financeTables':
+      return captureFinanceTables()
     case 'snapshot':
       return buildSnapshot({
         ...(typeof r.query === 'string' ? { query: r.query } : {}),

@@ -10,11 +10,13 @@
 //  - item.type 은 agent_message · reasoning · command_execution · file_change ·
 //    mcp_tool_call · web_search · todo_list · error
 //
-// 도구 연동 범위: samba 도구는 Claude Agent SDK 의 **인프로세스** MCP 서버(createSdkMcpServer)라
-// 별도 프로세스인 codex 가 붙을 수 없다. 그래서 이 어댑터는 `-c mcp_servers.*` 로 **외부 stdio
-// MCP 서버가 주어졌을 때만** 도구를 연결하고, 없으면 텍스트 응답 경로로만 동작한다.
+// 도구는 실행마다 만들어지는 로컬 HTTP MCP 브리지를 통해 연결한다.
+// 브리지 토큰은 CLI 인자나 프롬프트 대신 이 자식 프로세스의 환경에만 전달한다.
 
 import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { resolveCliBin } from '../ai/cli-bin'
 
 /** codex 에 넘길 실행 입력 */
@@ -22,10 +24,9 @@ export interface CodexInput {
   prompt: string
   systemPrompt: string
   model: string
-  /** 도구를 붙일 외부 stdio MCP 서버(없으면 도구 없이 텍스트만) */
-  mcpServer?: { name: string; command: string; args: string[] }
+  /** 도구를 붙일 이 실행 전용 loopback HTTP MCP 서버(없으면 도구 없이 텍스트만) */
+  mcpServer?: { name: string; url: string; bearerToken: string }
   abort: AbortController
-  cwd?: string
 }
 
 /** 어댑터가 밖으로 내보내는 정규화된 사건 */
@@ -44,9 +45,64 @@ export interface CodexChild {
   on: (event: 'close' | 'error', listener: (arg: never) => void) => unknown
 }
 
-export type CodexSpawn = (command: string, args: string[], cwd?: string) => CodexChild
+export type CodexSpawn = (
+  command: string,
+  args: string[],
+  cwd?: string,
+  env?: NodeJS.ProcessEnv
+) => CodexChild
 
 export const CODEX_BIN = 'codex'
+export const CODEX_SUBSCRIPTION_REQUIRED = 'authentication:codex_chatgpt_subscription_required'
+export const CODEX_MCP_TOKEN_ENV = 'SAMBA_CODEX_MCP_TOKEN'
+
+// 키·게이트웨이·Node 주입 옵션을 개별 차단하는 대신 OS 실행과 로그인 저장소에 필요한 값만 허용한다.
+// OPENAI_API_KEY / CODEX_API_KEY, OPENAI_BASE_URL, CODEX_CONFIG_*, NODE_OPTIONS 등은 상속되지 않는다.
+const CODEX_ENV_ALLOWLIST = new Set([
+  'PATH',
+  'PATHEXT',
+  'SYSTEMROOT',
+  'WINDIR',
+  'COMSPEC',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'HOME',
+  'TMP',
+  'TEMP',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_RUNTIME_DIR',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'CODEX_HOME'
+])
+
+export function codexSubscriptionEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(source).filter(
+      ([key, value]) => value !== undefined && CODEX_ENV_ALLOWLIST.has(key.toUpperCase())
+    )
+  )
+}
+
+/** 상태 문자열은 내부 판정에만 쓴다. API 키 로그인 출력은 렌더러·로그로 전달하지 않는다. */
+export function isChatGptLoginStatus(output: string, exitCode: number | null): boolean {
+  return (
+    exitCode === 0 &&
+    output.split(/\r?\n/).some((line) => /^Logged in using ChatGPT\s*$/i.test(line.trim())) &&
+    !/using (?:an? )?API key|not logged in/i.test(output)
+  )
+}
 
 /**
  * `codex exec` 인자. 승인·샌드박스는 가장 좁게 잡는다 —
@@ -58,18 +114,44 @@ export function buildCodexArgs(input: Pick<CodexInput, 'model' | 'mcpServer'>): 
     '--json',
     '--skip-git-repo-check',
     '--ephemeral',
-    // 사용자/프로젝트 config.toml 의 훅·MCP 를 상속하지 않는다(우리 설정만 쓴다)
+    // 사용자 config.toml 대신 이 실행의 구독 설정을 적용한다. 인증 저장소는 유지한다.
     '--ignore-user-config',
     '--sandbox',
-    'read-only'
+    'read-only',
+    '-c',
+    'forced_login_method="chatgpt"',
+    '-c',
+    'model_provider="openai"',
+    '-c',
+    'features.shell_tool=false',
+    '-c',
+    'features.unified_exec=false',
+    '-c',
+    'web_search="disabled"'
   ]
   if (input.model.trim()) args.push('-m', input.model.trim())
   if (input.mcpServer) {
-    const { name, command, args: serverArgs } = input.mcpServer
+    const { name, url, bearerToken } = input.mcpServer
+    let endpoint: URL
+    try {
+      endpoint = new URL(url)
+    } catch {
+      throw new Error('codex_invalid_mcp_server')
+    }
+    if (
+      !/^[a-zA-Z0-9_-]+$/.test(name) ||
+      !bearerToken ||
+      endpoint.protocol !== 'http:' ||
+      endpoint.hostname !== '127.0.0.1' ||
+      !endpoint.port ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash
+    )
+      throw new Error('codex_invalid_mcp_server')
     // TOML 인라인 테이블로 서버 하나를 얹는다(-c mcp_servers.<name>={...})
-    const toml = `{command=${JSON.stringify(command)},args=[${serverArgs
-      .map((a) => JSON.stringify(a))
-      .join(',')}]}`
+    const toml = `{url=${JSON.stringify(url)},bearer_token_env_var="${CODEX_MCP_TOKEN_ENV}",required=true}`
     args.push('-c', `mcp_servers.${name}=${toml}`)
   }
   return args
@@ -148,15 +230,88 @@ export function splitLines(buffer: string): { lines: string[]; rest: string } {
   return { lines: parts.map((l) => l.replace(/\r$/, '')), rest }
 }
 
-function defaultSpawn(command: string, args: string[], cwd?: string): CodexChild {
+function defaultSpawn(
+  command: string,
+  args: string[],
+  cwd?: string,
+  env: NodeJS.ProcessEnv = codexSubscriptionEnv()
+): CodexChild {
   // Windows 의 npm 셔틀(codex.cmd)은 spawn 이름만으로는 못 돌리므로 실제 실행 파일(node + .js)로 푼다
   const cli = resolveCliBin(command)
   const child = spawn(cli.command, [...cli.prefixArgs, ...args], {
     cwd,
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true
   })
   return child as unknown as CodexChild
+}
+
+/** 공식 CLI 상태 확인은 모델 요청을 보내지 않는다. 실패·시간 초과·불명확한 결과는 전부 중단한다. */
+export async function hasCodexSubscription(
+  spawnImpl: CodexSpawn = defaultSpawn,
+  cwd?: string,
+  signal?: AbortSignal,
+  timeoutMs = 10_000
+): Promise<boolean> {
+  if (signal?.aborted) return false
+  let child: CodexChild
+  try {
+    // forced_login_method 는 불일치 시 기존 자격을 지울 수 있어 읽기 전용 상태 검사에는 적용하지 않는다.
+    child = spawnImpl(CODEX_BIN, ['login', 'status'], cwd, codexSubscriptionEnv())
+  } catch {
+    return false
+  }
+  let output = ''
+  let readFailed = false
+  let finish: (code: number | null) => void = () => undefined
+  const closed = new Promise<number | null>((resolve) => {
+    finish = resolve
+  })
+  child.on('close', (code: number | null) => finish(code))
+  child.on('error', () => finish(null))
+  let stopWaiting: () => void = () => undefined
+  const stopped = new Promise<null>((resolve) => {
+    stopWaiting = () => resolve(null)
+  })
+  const stop = (): void => {
+    try {
+      child.kill()
+    } catch {
+      /* 이미 종료됨 */
+    }
+    finish(null)
+    stopWaiting()
+  }
+  const timeout = setTimeout(stop, timeoutMs)
+  signal?.addEventListener('abort', stop, { once: true })
+  if (signal?.aborted) stop()
+  const read = async (
+    stream?: AsyncIterable<string | Buffer> | NodeJS.ReadableStream
+  ): Promise<void> => {
+    if (!stream) return
+    try {
+      for await (const chunk of stream as AsyncIterable<string | Buffer>) {
+        if (output.length < 16_384) output += chunk.toString().slice(0, 16_384 - output.length)
+      }
+    } catch {
+      readFailed = true
+    }
+  }
+  // stdout/stderr 양쪽을 소비하되 원문을 외부에 내보내지 않는다.
+  const streams = Promise.all([read(child.stdout), read(child.stderr)])
+  try {
+    child.stdin?.end()
+    const completed = Promise.all([closed, streams]).then(([code]) => code)
+    const code = await Promise.race([completed, stopped])
+    return !readFailed && !signal?.aborted && isChatGptLoginStatus(output, code)
+  } catch {
+    stop()
+    return false
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', stop)
+  }
 }
 
 /**
@@ -167,14 +322,55 @@ export async function* runCodex(
   input: CodexInput,
   spawnImpl: CodexSpawn = defaultSpawn
 ): AsyncGenerator<CodexEvent> {
-  const args = buildCodexArgs(input)
+  if (input.abort.signal.aborted) return
+  let cwd: string
+  try {
+    // 프로젝트 config.toml/AGENTS.md/훅이 구독 실행에 섞이지 않도록 매번 빈 작업 폴더를 쓴다.
+    cwd = await mkdtemp(join(tmpdir(), 'samba-codex-'))
+  } catch {
+    yield { type: 'done', ok: false, message: 'codex_workspace_unavailable' }
+    return
+  }
+  try {
+    yield* runIsolatedCodex(input, spawnImpl, cwd)
+  } finally {
+    // 외부 입력 경로는 지우지 않는다. 위 mkdtemp 가 반환한 이번 실행 폴더만 정리한다.
+    await rm(cwd, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined)
+  }
+}
+
+async function* runIsolatedCodex(
+  input: CodexInput,
+  spawnImpl: CodexSpawn,
+  cwd: string
+): AsyncGenerator<CodexEvent> {
+  if (!(await hasCodexSubscription(spawnImpl, cwd, input.abort.signal))) {
+    if (!input.abort.signal.aborted) {
+      yield { type: 'done', ok: false, message: CODEX_SUBSCRIPTION_REQUIRED }
+    }
+    return
+  }
   let child: CodexChild
   try {
-    child = spawnImpl(CODEX_BIN, args, input.cwd)
+    const args = buildCodexArgs(input)
+    const env = codexSubscriptionEnv()
+    if (input.mcpServer) env[CODEX_MCP_TOKEN_ENV] = input.mcpServer.bearerToken
+    child = spawnImpl(CODEX_BIN, args, cwd, env)
   } catch (e) {
     yield { type: 'done', ok: false, message: e instanceof Error ? e.message : String(e) }
     return
   }
+  let spawnFailed = false
+  let closed = false
+  // 이벤트를 소비하지 않으면 spawn ENOENT 가 Electron 메인 프로세스를 종료시킬 수 있다.
+  child.on('error', () => {
+    spawnFailed = true
+  })
+  child.on('close', () => {
+    closed = true
+  })
+  // CLI 진단에 로그인 정보가 섞일 수 있어 저장·출력하지 않고 파이프만 비운다.
+  child.stderr?.on('data', () => undefined)
   const onAbort = (): void => {
     try {
       child.kill()
@@ -190,7 +386,10 @@ export async function* runCodex(
     child.stdin?.write(composeCodexPrompt(input.systemPrompt, input.prompt))
     child.stdin?.end()
   } catch {
-    // stdin 이 이미 닫혀 있으면 인자 프롬프트가 없으므로 실패로 끝난다
+    onAbort()
+    input.abort.signal.removeEventListener('abort', onAbort)
+    yield { type: 'done', ok: false, message: 'codex_input_failed' }
+    return
   }
   let buffer = ''
   let settled = false
@@ -211,11 +410,22 @@ export async function* runCodex(
       if (event.type === 'done') settled = true
       yield event
     }
+  } catch {
+    if (!settled && !input.abort.signal.aborted) {
+      settled = true
+      yield { type: 'done', ok: false, message: 'codex_stream_closed' }
+    }
   } finally {
     input.abort.signal.removeEventListener('abort', onAbort)
+    // 호출자가 스트림을 도중에 닫아도 실행을 남겨 두지 않는다.
+    if (!closed) onAbort()
   }
   // turn.completed/turn.failed 없이 끊긴 경우(프로세스 사망)도 한 번은 끝을 알린다
   if (!settled && !input.abort.signal.aborted) {
-    yield { type: 'done', ok: false, message: 'codex_stream_closed' }
+    yield {
+      type: 'done',
+      ok: false,
+      message: spawnFailed ? 'codex_start_failed' : 'codex_stream_closed'
+    }
   }
 }

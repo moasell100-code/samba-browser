@@ -25,8 +25,7 @@ export function resolveAgentAuth(input: {
   }
   if (provider === 'claude_subscription' || provider === 'codex_subscription') {
     if (connections[connectionKeyOf(provider)]?.connected) return { mode: provider }
-    // 해지했거나 아직 연결하지 않았다 — 내 API 키가 있으면 그 경로로 돌아간다
-    if (hasApiKey) return { mode: 'api_key' }
+    // 구독 연결이 끊겨도 유료 API 로 전환하지 않는다. API 는 명시적으로 선택할 때만 쓴다.
     return { mode: 'none', reason: 'not_connected' }
   }
   // 서비스 크레딧은 아직 자리만 잡아 둔 카드다

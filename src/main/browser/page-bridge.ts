@@ -18,6 +18,8 @@ import {
   type FrameSnapshot
 } from './frame-id'
 import type { Tab } from './tab-manager'
+import type { FinancePageCapture } from '../../shared/finance-capture'
+import { financeFrameCaptureSchema, isFinanceCaptureUrl } from '../finance/capture-schema'
 
 // preload 가 실행되는 격리 월드 id. Electron 의 WorldId.ISOLATED_WORLD = 999
 export const ISOLATED_WORLD_ID = 999
@@ -275,6 +277,8 @@ function encodeValue(value: string): string {
 /** 메인 프레임용 — 동작을 격리 월드에서 실행할 __samba 호출식으로 바꾼다 */
 function opToCode(op: AgentOp): string {
   switch (op.op) {
+    case 'financeTables':
+      return '__samba.financeTables()'
     case 'snapshot': {
       // selector 만 주는 경우도 있어 query 자리는 undefined 로 채운다
       const args =
@@ -315,6 +319,53 @@ function opToCode(op: AgentOp): string {
 }
 
 export const pageBridge = {
+  // Finance has an explicit allowlist and never silently claims all frames were captured.
+  financeTables: async (tab: Tab): Promise<FinancePageCapture> => {
+    const wc = tab.view.webContents
+    const before = wc.getURL()
+    if (!isFinanceCaptureUrl(before)) throw new Error('finance_origin_not_allowed')
+    const main = await call(wc, '__samba.financeTables()', financeFrameCaptureSchema)
+    if (
+      wc.getURL() !== before ||
+      main.origin !== new URL(before).origin ||
+      main.pathname !== new URL(before).pathname
+    ) {
+      throw new Error('finance_page_changed')
+    }
+    const result: FinancePageCapture = { frames: [main], failedFrames: 0, skippedFrames: 0 }
+    const frames = agentSubFrames(wc)
+    await Promise.all(
+      frames.map(async (frame) => {
+        const beforeFrame = frameUrl(frame)
+        if (!isFinanceCaptureUrl(beforeFrame)) {
+          result.skippedFrames += 1
+          return
+        }
+        try {
+          const captured = await callFrame(
+            frame,
+            { op: 'financeTables' },
+            financeFrameCaptureSchema
+          )
+          if (
+            frameUrl(frame) !== beforeFrame ||
+            captured.origin !== new URL(beforeFrame).origin ||
+            captured.pathname !== new URL(beforeFrame).pathname
+          ) {
+            result.failedFrames += 1
+          } else result.frames.push(captured)
+        } catch {
+          result.failedFrames += 1
+        }
+      })
+    )
+    if (wc.getURL() !== before) throw new Error('finance_page_changed')
+    // agentSubFrames has a bounded scan. Unexamined frames are never considered complete.
+    const totalFrames =
+      wc.mainFrame?.framesInSubtree?.filter((frame) => frame !== wc.mainFrame).length ?? 0
+    result.skippedFrames += Math.max(0, totalFrames - frames.length)
+    return result
+  },
   // query 를 주면 라벨·name·href·placeholder 가 일치하는 요소만 나열한다(id 는 그대로)
   snapshot: async (tab: Tab, query?: string, selector?: string): Promise<PageSnapshot> => {
     const op: AgentOp = {

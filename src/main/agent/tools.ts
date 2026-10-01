@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { TabManager, Tab } from '../browser/tab-manager'
 import { pageBridge } from '../browser/page-bridge'
 import type { LoginFieldsResult } from '../browser/page-bridge'
+import type { FinanceCaptureReceipt } from '../../shared/finance-capture'
 import { serializeSnapshot } from '../../shared/snapshot'
 import type { PageOverlay, PageSnapshot } from '../../shared/snapshot'
 import { diffLines } from '../../shared/snapshot-diff'
@@ -388,6 +389,7 @@ export async function withToolTimeout<T>(
 
 export interface ToolContext {
   tabs: TabManager
+  captureFinance?: (tab: Tab) => Promise<FinanceCaptureReceipt>
   dangerWords: string[]
   // 사용 권한 모드. read_only 는 조작 도구를 실행하지 않고, full 은 위험 단어 확인을 생략한다
   mode: PermissionMode
@@ -2041,8 +2043,24 @@ overlays left: ${after.length}${kept}`
     }
   )
 
+  const captureFinance = tool(
+    'capture_finance_table',
+    'Read the visible Hyundai Card tables into temporary local memory. Returns only capture metadata, ' +
+      'never transaction cells. Preview only: this does NOT import transactions, prove complete pagination, ' +
+      'or synchronize the finance app. Never claim that the ledger was updated.',
+    {},
+    () =>
+      guard('현대카드 표 확인 (장부 반영 전)', async () => {
+        const tab = activeOr(ctx)
+        if (!tab) return 'no active tab'
+        if (!ctx.captureFinance) return 'error: finance capture unavailable'
+        return ctx.captureFinance(tab)
+      })
+  )
+
   const tools = [
     getPage,
+    ...(ctx.captureFinance ? [captureFinance] : []),
     findElements,
     screenshot,
     createOcrTool(ctx),
@@ -2082,6 +2100,7 @@ overlays left: ${after.length}${kept}`
 
 export const SAMBA_TOOL_NAMES = [
   'get_page',
+  'capture_finance_table',
   'find_elements',
   'screenshot',
   'ocr',

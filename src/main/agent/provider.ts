@@ -54,6 +54,7 @@ export function currentAuth(): AgentAuth {
 
 // 인증 경로가 없을 때 실행부가 그대로 실패 사유로 쓰는 표식(UI 는 "연결 필요" 안내로 바꾼다)
 export const NOT_CONNECTED_ERROR = 'auth:not_connected'
+export const CODEX_BACKEND_REQUIRED_ERROR = 'codex_backend_required'
 
 // 내 API 키를 쓸 때만 환경을 교체한다(교체 시 process.env 를 통째로 펼쳐 PATH 등을 유지)
 function resolveEnv(auth: AgentAuth): Record<string, string | undefined> | undefined {
@@ -114,7 +115,7 @@ export function agentBackend(auth: AgentAuth = currentAuth()): 'claude' | 'codex
   return 'claude'
 }
 
-/** Codex CLI 백엔드 실행(도구 없이 텍스트 응답 경로). 사건은 정규화된 CodexEvent 로 온다 */
+/** Codex CLI 백엔드 실행. 사건은 정규화된 CodexEvent 로 온다 */
 export function runCodexQuery(input: CodexInput): AsyncGenerator<CodexEvent> {
   return runCodex(input)
 }
@@ -202,6 +203,8 @@ export function runQuery(input: ProviderInput): Query {
   // 연결된 경로가 없으면 SDK 를 아예 부르지 않는다 —
   // 부르면 이 PC 에 남아 있는 CLI 로그인 자격을 SDK 가 알아서 집어 쓴다
   if (auth.mode === 'none') throw new Error(NOT_CONNECTED_ERROR)
+  // Codex 구독 선택은 Claude SDK 를 허용하지 않는다. 직접 호출도 유료 키를 자동 사용하지 않게 막는다.
+  if (auth.mode === 'codex_subscription') throw new Error(CODEX_BACKEND_REQUIRED_ERROR)
   const env = resolveEnv(auth)
   // 키 경로인데 키가 사라졌으면 구독 자격으로 조용히 넘어가지 않고 멈춘다
   if (auth.mode === 'api_key' && !env) throw new Error(NOT_CONNECTED_ERROR)
@@ -233,7 +236,7 @@ export async function startWarmSession(
 ): Promise<WarmSession | null> {
   const auth = currentAuth()
   // 연결이 없으면 프로세스를 띄우지 않는다(남아 있는 CLI 자격을 몰래 쓰지 않기 위함)
-  if (auth.mode === 'none') return null
+  if (auth.mode === 'none' || auth.mode === 'codex_subscription') return null
   const env = resolveEnv(auth)
   if (auth.mode === 'api_key' && !env) return null
   const abort = new AbortController()

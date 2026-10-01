@@ -34,6 +34,9 @@ import {
 import { resolveModel } from '../ai/models'
 import type { CodexInput } from './provider-codex'
 import { makeCounter } from './counter'
+import { startCodexMcp } from './codex-mcp'
+import { FinanceCaptureStore } from '../finance/capture-store'
+import { captureCurrentFinancePage } from '../finance/capture'
 import type { SiteScriptStore } from './site-scripts-store'
 import { buildScriptsBlock } from '../../shared/site-scripts'
 import { createTextDeduper } from './dedupe'
@@ -537,11 +540,13 @@ export class AgentRunner {
       phones?.approvePayment
         ? phones.approvePayment(phoneCtx(), req)
         : Promise.resolve({ ok: false, reason: 'declined' as const })
+    const financeCaptures = new FinanceCaptureStore()
     const server = createSambaTools(
       this.buildToolContext({
         s,
         jobId,
-        tick: counter.tick,
+        tick: () => (abort.signal.aborted ? '작업이 중단되었습니다.' : counter.tick()),
+        captureFinance: (tab) => captureCurrentFinancePage(tab, financeCaptures),
         emit,
         confirm: (action, kind = 'danger') => this.requestConfirm(action, kind, emit),
         handoff: (req) => this.requestHandoff(req, emit),
@@ -569,23 +574,29 @@ export class AgentRunner {
         emit({ type: 'status', state: 'failed', message: 'auth:notConnected', toolCalls: 0 })
         return
       }
-      // Codex 구독 경로: Codex CLI 를 백엔드로 텍스트 응답을 받는다(samba 도구는 붙지 않는다)
+      // 같은 도구 문맥을 Codex에도 연결한다. 실행마다 별도 토큰/포트를 쓰고 종료 시 닫는다.
       if (backend === 'codex') {
-        // Codex 경로는 이미지를 받지 않는다 — 조용히 빼지 않고 모델에게 그 사실을 알린다
-        settled = await this.runOnCodex(
-          {
-            prompt:
-              images && images.length > 0
-                ? `${prompt}
-${CODEX_NO_IMAGE_NOTE}`
-                : prompt,
-            systemPrompt: systemPrompt(s.permissionMode),
-            model: runModel,
-            abort
-          },
-          deduper,
-          emit
-        )
+        const bridge = await startCodexMcp({ server, signal: abort.signal })
+        try {
+          const historyNote =
+            chatId !== undefined && !learning && this.historyReader
+              ? buildHistoryNote(this.historyReader(chatId))
+              : ''
+          settled = await this.runOnCodex(
+            {
+              prompt: `${historyNote}${prompt}${images?.length ? `\n${CODEX_NO_IMAGE_NOTE}` : ''}`,
+              systemPrompt: systemPrompt(s.permissionMode),
+              model: runModel,
+              abort,
+              mcpServer: { name: 'samba', url: bridge.url, bearerToken: bridge.bearerToken }
+            },
+            deduper,
+            emit,
+            counter.count
+          )
+        } finally {
+          await bridge.close()
+        }
         return
       }
       // 같은 대화면 SDK 세션을 이어받는다(앞선 지시·탭·도구 결과를 기억). 세션이 없거나 한 세션으로
@@ -736,6 +747,7 @@ ${CODEX_NO_IMAGE_NOTE}`
         })
       }
     } finally {
+      financeCaptures.clear()
       releaseVaultHold()
       if (this.releaseVaultHold === releaseVaultHold) this.releaseVaultHold = null
       // 다음 지시가 이어받을 세션 id 를 대화에 남긴다(이어받기에 실패한 실행은 남기지 않는다)
@@ -774,6 +786,7 @@ ${CODEX_NO_IMAGE_NOTE}`
     s: Settings
     jobId: string
     tick: () => string | null
+    captureFinance?: ToolContext['captureFinance']
     emit: (e: AgentEvent) => void
     confirm: ToolContext['confirm']
     handoff: NonNullable<ToolContext['handoff']>
@@ -790,6 +803,7 @@ ${CODEX_NO_IMAGE_NOTE}`
     void phoneCtx
     return {
       tabs: this.tabs,
+      captureFinance: o.captureFinance,
       vault: this.vault,
       jobId,
       dangerWords: s.dangerWords,
@@ -922,14 +936,14 @@ ${CODEX_NO_IMAGE_NOTE}`
   }
 
   /**
-   * Codex CLI 백엔드로 1건을 실행한다. samba 도구는 인프로세스 MCP 라 붙지 않으므로
-   * 이 경로는 텍스트 응답(그리고 codex 자신이 쓴 도구 흔적)만 화면에 올린다.
+   * Codex CLI 백엔드로 1건을 실행한다. 도구의 확인·호출 수는 공통 문맥이 관리한다.
    * 종료 상태를 보냈으면 true 를 돌려준다
    */
   private async runOnCodex(
     input: CodexInput,
     deduper: ReturnType<typeof createTextDeduper>,
-    emit: (e: AgentEvent) => void
+    emit: (e: AgentEvent) => void,
+    count: () => number
   ): Promise<boolean> {
     let lastError = ''
     for await (const event of runCodexQuery(input)) {
@@ -947,7 +961,7 @@ ${CODEX_NO_IMAGE_NOTE}`
         emit({
           type: 'status',
           state: event.ok ? 'done' : 'failed',
-          toolCalls: 0,
+          toolCalls: count(),
           message: event.ok ? undefined : kind ? `auth:${kind}` : message
         })
         return true
