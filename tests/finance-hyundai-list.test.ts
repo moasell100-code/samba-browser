@@ -169,6 +169,16 @@ describe('Hyundai observed visible list adapter', () => {
     const read = readers()
     const result = captureHyundaiHistoryLists(docAt(root(hidden + malformed)), read)
     expect(result[0]).toMatchObject({ rows: [], hiddenRows: 1, unrecognizedRows: 1 })
+    expect(result[0].unrecognizedDiagnostics).toEqual([
+      {
+        rowIndex: 1,
+        reason: 'field_count',
+        linkCount: 1,
+        nameCount: 1,
+        metadataCount: 3,
+        amountCount: 1
+      }
+    ])
     expect(read.readCell).not.toHaveBeenCalled()
   })
 
@@ -186,7 +196,43 @@ describe('Hyundai observed visible list adapter', () => {
     const read = readers()
     const result = captureHyundaiHistoryLists(docAt(root(hiddenField + duplicate)), read)
     expect(result[0].unrecognizedRows).toBe(2)
+    expect(result[0].unrecognizedDiagnostics).toEqual([
+      {
+        rowIndex: 0,
+        reason: 'field_count',
+        linkCount: 1,
+        nameCount: 1,
+        metadataCount: 4,
+        amountCount: 0
+      },
+      { rowIndex: 1, reason: 'link_count', linkCount: 2 }
+    ])
     expect(read.readCell).not.toHaveBeenCalled()
+  })
+
+  it('reports at most five omitted-row diagnostics using counts and empty field names only', () => {
+    const blankTime = row().replace('12:34', '')
+    const read = readers()
+    const result = captureHyundaiHistoryLists(docAt(root(blankTime.repeat(8))), read)
+    expect(result[0].unrecognizedRows).toBe(8)
+    expect(result[0].unrecognizedDiagnostics).toHaveLength(5)
+    expect(result[0].unrecognizedDiagnostics![4]).toEqual({
+      rowIndex: 4,
+      reason: 'empty_fields',
+      linkCount: 1,
+      nameCount: 1,
+      metadataCount: 4,
+      amountCount: 1,
+      emptyFields: ['time']
+    })
+    const diagnostics = JSON.stringify(result[0].unrecognizedDiagnostics)
+    expect(diagnostics).not.toMatch(/합성|어제|취소|12,345|secret|private/)
+    const report = receipt(root(blankTime.repeat(8)))
+    expect(report.listSummaries![0].unrecognizedDiagnostics).toEqual(
+      result[0].unrecognizedDiagnostics
+    )
+    expect(report.issues).toContain('unrecognized_rows')
+    expect(JSON.stringify(report)).not.toMatch(/합성|어제|취소|12,345|secret|private/)
   })
 
   it('propagates the shared capture budget and bounds malformed row scanning', () => {

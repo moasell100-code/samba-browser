@@ -53,23 +53,40 @@ export function captureHyundaiHistoryLists(
   }
   const visibleMatches = (parent: Element, selector: string): Element[] =>
     Array.from(parent.querySelectorAll(selector)).filter((element) => !readers.isHidden(element))
+  const recordUnrecognized = (
+    diagnostic: NonNullable<FinanceListCapture['unrecognizedDiagnostics']>[number]
+  ): void => {
+    result.unrecognizedRows += 1
+    if ((result.unrecognizedDiagnostics?.length ?? 0) >= 5) return
+    ;(result.unrecognizedDiagnostics ??= []).push(diagnostic)
+  }
 
-  for (const row of sourceRows) {
+  for (const [rowIndex, row] of sourceRows.entries()) {
     if (readers.isHidden(row)) {
       result.hiddenRows += 1
       continue
     }
     const links = visibleMatches(row, ':scope > a.cel_link')
+    if (links.length > MAX_ROWS) throw new Error('finance_capture_limit')
     if (links.length !== 1) {
-      result.unrecognizedRows += 1
+      recordUnrecognized({ rowIndex, reason: 'link_count', linkCount: links.length })
       continue
     }
     const link = links[0]
     const name = visibleMatches(link, ':scope > span.p1_m_lt_1ln')
     const metadata = visibleMatches(link, ':scope > span.divr_dot > li.p2_m_lt_1ln.divr_txt')
     const amount = visibleMatches(link, ':scope > span.price > em.p1_m_rt_1ln')
+    if ([name.length, metadata.length, amount.length].some((count) => count > MAX_ROWS))
+      throw new Error('finance_capture_limit')
+    const counts = {
+      rowIndex,
+      linkCount: links.length,
+      nameCount: name.length,
+      metadataCount: metadata.length,
+      amountCount: amount.length
+    }
     if (name.length !== 1 || metadata.length !== 4 || amount.length !== 1) {
-      result.unrecognizedRows += 1
+      recordUnrecognized({ ...counts, reason: 'field_count' })
       continue
     }
     readers.countRow(6)
@@ -85,8 +102,9 @@ export function captureHyundaiHistoryLists(
       field: fields[index],
       text: readers.readCell(element)
     }))
-    if (head.some(({ text }) => !text)) {
-      result.unrecognizedRows += 1
+    const emptyFields = head.filter(({ text }) => !text).map(({ field }) => field)
+    if (emptyFields.length) {
+      recordUnrecognized({ ...counts, reason: 'empty_fields', emptyFields })
       continue
     }
     result.rows.push({ head, details: [], detailsVisible: false })
