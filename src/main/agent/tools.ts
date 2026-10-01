@@ -15,6 +15,7 @@ import { hyundaiAttempts, type HyundaiAttempts } from '../finance/hyundai-attemp
 import { isLotteOrigin, lotteAttempts, LOTTE_USE_LOGIN } from '../finance/lotte-login'
 import { loginLotteKeypad, lotteKeypadAttempts } from '../finance/lotte-keypad-login'
 import { probeLotteKeypad } from '../finance/lotte-keypad-probe'
+import { probeLotteKeypadLayouts } from '../finance/lotte-keypad-layout-probe'
 import { probeLotteKeyboard } from '../finance/lotte-keyboard-probe'
 import { serializeSnapshot } from '../../shared/snapshot'
 import type { PageOverlay, PageSnapshot } from '../../shared/snapshot'
@@ -2182,6 +2183,25 @@ overlays left: ${after.length}${kept}`
     }
   )
 
+  const probeLotteLayouts = tool(
+    'probe_lotte_keypad_layouts',
+    'Check only the public Lotte official keypad layouts in fixed lower/upper/special order, then restore lower. Requires an empty password field. Never reads KeyMaster, enters any password key, clears input, submits a login, or touches attempt protection. Returns fixed stage/reason enums only.',
+    {},
+    () =>
+      guard('롯데카드 공개 키패드 구성 진단 (비밀번호 입력 없음)', async () => {
+        if (ctx.mode === 'read_only') return READ_ONLY_REFUSAL
+        const tab = activeOr(ctx)
+        if (!tab) return 'no active tab'
+        return probeLotteKeypadLayouts({
+          bridge: {
+            url: () => currentUrl(tab),
+            read: () => pageBridge.lotteKeypad(tab),
+            press: (id, count, layout) => pageBridge.pressLotteKeypad(tab, id, count, layout)
+          },
+          tick: ctx.tick
+        })
+      })
+  )
   const probeLotteOfficialKeypad = tool(
     'probe_lotte_keypad',
     'Diagnose Lotte Card official semantic keypad with one fixed noncredential letter a and official delete-one cleanup. Never accesses KeyMaster, submits a login, changes security settings, or resets attempts. Returns one fixed result code. Do not repeat without a relevant environment change.',
@@ -2298,6 +2318,7 @@ overlays left: ${after.length}${kept}`
     inspectCardLogin,
     probeLotteInput,
     probeLotteOfficialKeypad,
+    probeLotteLayouts,
     ...(ctx.captureFinance ? [captureFinance] : []),
     findElements,
     screenshot,
@@ -2341,6 +2362,7 @@ export const SAMBA_TOOL_NAMES = [
   'inspect_card_login',
   'probe_lotte_keyboard',
   'probe_lotte_keypad',
+  'probe_lotte_keypad_layouts',
   'capture_finance_table',
   'find_elements',
   'screenshot',

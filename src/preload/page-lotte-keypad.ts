@@ -56,31 +56,35 @@ export function readLotteKeypad(
 ): LotteKeypadSnapshot {
   const auth = readLotteAuth(doc)
   if (['signed_in', 'input_error', 'unsupported', 'unknown'].includes(auth.state))
-    return { state: auth.state as 'signed_in' | 'input_error' | 'unsupported' | 'unknown' }
+    return {
+      state: auth.state as 'signed_in' | 'input_error' | 'unsupported' | 'unknown',
+      ...(auth.state === 'unknown' ? { reason: 'auth_unverified' as const } : {})
+    }
   const input = lottePasswordField(doc)
   const form = input?.form
-  if (!input || !form || form.id !== 'loginForm') return { state: 'unknown' }
+  if (!input || !form || form.id !== 'loginForm')
+    return { state: 'unknown', reason: 'field_unverified' }
   const toggles = Array.from(
     form.querySelectorAll<HTMLButtonElement>('.idLogin #mbrCtfEncV_keypad')
   ).filter(visible)
   if (toggles.length !== 1 || toggles[0].disabled || toggles[0].type !== 'button')
-    return { state: 'unknown' }
+    return { state: 'unknown', reason: 'opener_unverified' }
   const toggle = toggles[0]
   const filled = input.value.length
-  if (filled > 20) return { state: 'unknown' }
+  if (filled > 20) return { state: 'unknown', reason: 'invalid_buffer' }
   const roots = Array.from(doc.querySelectorAll<HTMLElement>('#nppfs-keypad-mbrCtfEncV')).filter(
     visible
   )
   if (roots.length > 1 || (roots.length === 1 && !form.contains(roots[0])))
-    return { state: 'unknown' }
+    return { state: 'unknown', reason: 'root_unverified' }
   const root = roots[0]
   if (!root) return { state: 'closed', filled, openId: ensureId(toggle) }
   const groups = Array.from(root.querySelectorAll<HTMLElement>('.kpd-group')).filter(visible)
-  if (groups.length !== 1) return { state: 'unknown' }
+  if (groups.length !== 1) return { state: 'unknown', reason: 'visible_group_ambiguous' }
   const modes = (['lower', 'upper', 'special'] as const).filter((mode) =>
     groups[0].classList.contains(mode)
   )
-  if (modes.length !== 1) return { state: 'unknown' }
+  if (modes.length !== 1) return { state: 'unknown', reason: 'mode_ambiguous' }
   const mode = modes[0]
   const keys = new Map<string, number>()
   const controls = new Map<LotteKeypadMode, number>()
@@ -89,9 +93,10 @@ export function readLotteKeypad(
     groups[0].querySelectorAll<HTMLElement>('img.kpd-data[role="button"]')
   ).filter(visible)) {
     const label = el.getAttribute('aria-label')?.trim()
-    if (!label || label !== el.getAttribute('alt')?.trim()) return { state: 'unknown' }
+    if (!label || label !== el.getAttribute('alt')?.trim())
+      return { state: 'unknown', reason: 'label_mismatch' }
     if (label === '한개지움') {
-      if (removeId !== undefined) return { state: 'unknown' }
+      if (removeId !== undefined) return { state: 'unknown', reason: 'duplicate_delete' }
       removeId = ensureId(el)
       continue
     }
@@ -101,7 +106,7 @@ export function readLotteKeypad(
     else if (/^대문자 [A-Z]$/.test(label)) character = label.slice(-1)
     else character = symbols[label]
     if (character !== undefined) {
-      if (keys.has(character)) return { state: 'unknown' }
+      if (keys.has(character)) return { state: 'unknown', reason: 'duplicate_character' }
       keys.set(character, ensureId(el))
       continue
     }
@@ -116,11 +121,11 @@ export function readLotteKeypad(
               : 'lower'
             : undefined
     if (target !== undefined) {
-      if (controls.has(target)) return { state: 'unknown' }
+      if (controls.has(target)) return { state: 'unknown', reason: 'duplicate_mode_control' }
       controls.set(target, ensureId(el))
-    } else if (!unusedLabels.has(label)) return { state: 'unknown' }
+    } else if (!unusedLabels.has(label)) return { state: 'unknown', reason: 'unknown_label' }
   }
-  if (keys.size === 0) return { state: 'unknown' }
+  if (keys.size === 0) return { state: 'unknown', reason: 'empty_layout' }
   return {
     state: 'open',
     filled,

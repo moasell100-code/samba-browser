@@ -44,12 +44,30 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
     deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   let begun = false
   let succeeded = false
+  let stage:
+    | 'initial_state'
+    | 'navigate_login'
+    | 'fill_username'
+    | 'after_username'
+    | 'open_keypad'
+    | 'preflight_lower'
+    | 'preflight_upper'
+    | 'preflight_special'
+    | 'restore_lower'
+    | 'read_secret'
+    | 'password_input'
+    | 'submit'
+    | 'verify_session' = 'initial_state'
+  let reason = 'operation_failed'
+  const refused = (): string => `${UNVERIFIED} [stage=${stage}; reason=${reason}]`
   const gate = (): string | null =>
     deps.tick() ?? (!isLotteOrigin(bridge.url()) ? UNVERIFIED : deps.verifyTarget())
   const read = async (): Promise<LotteKeypadSnapshot> => {
     const url = bridge.url()
     if (gate()) throw new Error('stopped')
     const snapshot = await bridge.read()
+    reason =
+      snapshot.reason ?? (snapshot.state === 'unknown' ? 'unknown_state' : 'operation_failed')
     if (bridge.url() !== url || gate()) throw new Error('stopped')
     return snapshot
   }
@@ -70,7 +88,10 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
       state.filled !== count
     )
       throw new Error('stopped')
-    if (!(await bridge.press(id!, count, state.layout!))) throw new Error('stopped')
+    if (!(await bridge.press(id!, count, state.layout!))) {
+      reason = 'press_rejected'
+      throw new Error('stopped')
+    }
   }
   const mode = async (target: LotteKeypadMode, count: number): Promise<LotteKeypadSnapshot> => {
     let state = await read()
@@ -80,7 +101,10 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
       const next =
         state.controls?.find((control) => control.mode === target) ??
         state.controls?.find((control) => control.mode === 'lower')
-      if (!next) throw new Error('stopped')
+      if (!next) {
+        reason = 'mode_control_unavailable'
+        throw new Error('stopped')
+      }
       await press(next.id, state, count)
       let changed = false
       for (let poll = 0; poll < 20; poll++) {
@@ -92,7 +116,10 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
           break
         }
       }
-      if (!changed) throw new Error('stopped')
+      if (!changed) {
+        reason = 'mode_transition_unconfirmed'
+        throw new Error('stopped')
+      }
     }
     throw new Error('stopped')
   }
@@ -102,19 +129,26 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
     let state = await read()
     if (state.state === 'signed_in') return success()
     if (state.state === 'unknown') {
+      stage = 'navigate_login'
       await bridge.navigate(LOTTE_LOGIN_URL)
       await bridge.waitForLoad()
       state = await read()
     }
     if (state.state === 'signed_in') return success()
-    if (!['open', 'closed'].includes(state.state)) return UNVERIFIED
+    if (!['open', 'closed'].includes(state.state)) return refused()
     if (state.filled !== 0)
       return 'refused: Lotte Card password field is not empty; no input or submit'
     if (!deps.autoSubmit)
       return 'refused: automatic login submission is disabled; no password entered'
-    if ((await bridge.fillUsername()) !== 'ok') return UNVERIFIED
+    stage = 'fill_username'
+    if ((await bridge.fillUsername()) !== 'ok') {
+      reason = 'username_fill_rejected'
+      return refused()
+    }
+    stage = 'after_username'
     state = await read()
     if (state.state === 'closed') {
+      stage = 'open_keypad'
       await press(state.openId, state, 0)
       for (let poll = 0; poll < 20; poll++) {
         await sleep(100)
@@ -122,20 +156,28 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
         if (state.state !== 'closed') break
       }
     }
-    if (state.state !== 'open' || state.filled !== 0) return UNVERIFIED
+    if (state.state !== 'open' || state.filled !== 0) return refused()
     // Inspect every public layout in a fixed order before touching KeyMaster. This neither
     // types a secret nor tells the page which modes/characters the saved password needs.
     const available = new Map<string, LotteKeypadMode[]>()
     for (const target of MODES) {
+      stage =
+        target === 'lower'
+          ? 'preflight_lower'
+          : target === 'upper'
+            ? 'preflight_upper'
+            : 'preflight_special'
       state = await mode(target, 0)
-      if (!state.keys?.length) return UNVERIFIED
+      if (!state.keys?.length) return refused()
       for (const key of state.keys) {
-        if (!/^[\x20-\x7e]$/.test(key.character)) return UNVERIFIED
+        if (!/^[\x20-\x7e]$/.test(key.character)) return refused()
         available.set(key.character, [...(available.get(key.character) ?? []), target])
       }
     }
+    stage = 'restore_lower'
     state = await mode('lower', 0)
-    if (gate()) return UNVERIFIED
+    if (gate()) return refused()
+    stage = 'read_secret'
     const password = deps.readSavedPassword()
     if (password === null) return 'not found: no Lotte Card login password saved in KeyMaster'
     if (
@@ -146,12 +188,13 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
     )
       return 'refused: saved Lotte Card password is not supported by the verified public keypad labels; no input or submit'
     for (let index = 0; index < password.length; index++) {
+      stage = 'password_input'
       state = await read()
-      if (state.state !== 'open' || state.filled !== index) return UNVERIFIED
+      if (state.state !== 'open' || state.filled !== index) return refused()
       if (!state.keys?.some((key) => key.character === password[index]))
         state = await mode(available.get(password[index])![0], index)
       const matches = state.keys?.filter((key) => key.character === password[index]) ?? []
-      if (matches.length !== 1) return UNVERIFIED
+      if (matches.length !== 1) return refused()
       if (!begun) {
         if (!attempts.begin(attempt))
           return 'refused: Lotte Card keypad login was already attempted; do not retry'
@@ -171,17 +214,19 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
       }
       if (!accepted) return INPUT_FAILED
     }
-    if (gate() || !(await bridge.submit(password.length))) return UNVERIFIED
+    stage = 'submit'
+    if (gate() || !(await bridge.submit(password.length))) return refused()
+    stage = 'verify_session'
     await bridge.waitForLoad()
     for (let poll = 0; poll < 16; poll++) {
       state = await read()
       if (state.state === 'signed_in') return success()
-      if (['input_error', 'unsupported'].includes(state.state)) return UNVERIFIED
+      if (['input_error', 'unsupported'].includes(state.state)) return refused()
       await sleep(500)
     }
     return 'needs_user: Lotte Card login was submitted once but is not confirmed; do not retry'
   } catch {
-    return UNVERIFIED
+    return refused()
   } finally {
     if (begun && !succeeded) {
       try {

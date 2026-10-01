@@ -150,6 +150,15 @@ describe('Lotte protected login agent integration', () => {
     expect(f.attempts.begin).not.toHaveBeenCalled()
     expect(f.attempts.clearSignedInProfile).not.toHaveBeenCalled()
   })
+  it('public layout-only probe cannot read credentials, clear input or reset attempt protection', async () => {
+    const f = fixture()
+    expect(await f.call('probe_lotte_keypad_layouts')).toContain('initial_state')
+    expect(f.vault.getSecretForFill).not.toHaveBeenCalled()
+    expect(pageBridge.pressLotteKeypad).not.toHaveBeenCalled()
+    expect(pageBridge.submitLotteKeypad).not.toHaveBeenCalled()
+    expect(f.attempts.begin).not.toHaveBeenCalled()
+    expect(f.attempts.clearSignedInProfile).not.toHaveBeenCalled()
+  })
   it('reuses a verified signed-in session even when KeyMaster is locked', async () => {
     const f = fixture()
     f.vault.state.mockReturnValue('locked')

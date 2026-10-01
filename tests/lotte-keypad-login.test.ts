@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { LotteKeypadMode, LotteKeypadSnapshot } from '../src/shared/lotte-keypad'
 import { loginLotteKeypad } from '../src/main/finance/lotte-keypad-login'
 import { probeLotteKeypad } from '../src/main/finance/lotte-keypad-probe'
+import { probeLotteKeypadLayouts } from '../src/main/finance/lotte-keypad-layout-probe'
 import { LOTTE_LOGIN_URL } from '../src/main/finance/lotte-login'
 
 // Entirely synthetic public layouts and test password. No profile or credentials are loaded.
@@ -112,6 +113,27 @@ function fixture() {
   }
 }
 describe('Lotte dedicated official keypad login', () => {
+  it('reports a fixed failure stage for username fill without exposing its value', async () => {
+    const f = fixture()
+    f.bridge.fillUsername.mockResolvedValue('arbitrary sensitive message')
+    const result = await loginLotteKeypad(f.deps)
+    expect(result).toContain('stage=fill_username; reason=username_fill_rejected')
+    expect(result).not.toContain('arbitrary sensitive message')
+    expect(f.deps.readSavedPassword).not.toHaveBeenCalled()
+  })
+  it('reports public preflight failure reason without reading a secret or consuming a latch', async () => {
+    const f = fixture()
+    const original = f.bridge.read.getMockImplementation()!
+    f.bridge.read.mockImplementation(async () => {
+      const state = await original()
+      return state.mode === 'upper' ? { state: 'unknown', reason: 'duplicate_mode_control' } : state
+    })
+    expect(await loginLotteKeypad(f.deps)).toContain(
+      'stage=preflight_upper; reason=duplicate_mode_control'
+    )
+    expect(f.deps.readSavedPassword).not.toHaveBeenCalled()
+    expect(f.deps.attempts.begin).not.toHaveBeenCalled()
+  })
   it('preflights every mode before reading the secret and submits only after all accepted keys', async () => {
     const f = fixture()
     expect(await loginLotteKeypad(f.deps)).toContain('session verified')
@@ -180,6 +202,37 @@ describe('Lotte dedicated official keypad login', () => {
   })
 })
 describe('Lotte official keypad harmless diagnostic', () => {
+  it('inspects every public layout with no password keys, Vault access or latch mutations', async () => {
+    const f = fixture()
+    expect(await probeLotteKeypadLayouts(f.deps)).toEqual({ stage: 'complete', reason: 'verified' })
+    expect(f.bridge.press.mock.calls.map(([id]) => id)).toEqual([1, 20, 21, 22])
+    expect(f.deps.readSavedPassword).not.toHaveBeenCalled()
+    expect(f.bridge.submit).not.toHaveBeenCalled()
+    expect(f.bridge.erase).not.toHaveBeenCalled()
+    expect(f.deps.attempts.begin).not.toHaveBeenCalled()
+  })
+  it('reports only fixed public stage/reason and leaves existing input untouched', async () => {
+    const f = fixture()
+    const original = f.bridge.read.getMockImplementation()!
+    f.bridge.read.mockImplementation(async () => {
+      const state = await original()
+      return state.mode === 'special' ? { state: 'unknown', reason: 'unknown_label' } : state
+    })
+    expect(await probeLotteKeypadLayouts(f.deps)).toEqual({
+      stage: 'preflight_special',
+      reason: 'unknown_label'
+    })
+    expect(f.deps.readSavedPassword).not.toHaveBeenCalled()
+    expect(f.events).not.toContain('key')
+    const existing = fixture()
+    existing.setFilled(1)
+    expect(await probeLotteKeypadLayouts(existing.deps)).toEqual({
+      stage: 'initial_state',
+      reason: 'nonempty'
+    })
+    expect(existing.bridge.press).not.toHaveBeenCalled()
+    expect(existing.bridge.erase).not.toHaveBeenCalled()
+  })
   it('presses only fixed public a then official delete-one, never submits or reads a secret', async () => {
     const f = fixture()
     expect(await probeLotteKeypad(f.deps)).toBe('accepted_and_cleared')

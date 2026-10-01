@@ -145,6 +145,23 @@ const lotteAuthSchema = z.object({
 const lotteKeypadId = z.number().int().min(1).max(99999)
 const lotteKeypadSchema = z.object({
   state: z.enum(['open', 'closed', 'signed_in', 'input_error', 'unknown', 'unsupported']),
+  reason: z
+    .enum([
+      'auth_unverified',
+      'field_unverified',
+      'opener_unverified',
+      'invalid_buffer',
+      'root_unverified',
+      'visible_group_ambiguous',
+      'mode_ambiguous',
+      'label_mismatch',
+      'duplicate_delete',
+      'duplicate_character',
+      'duplicate_mode_control',
+      'unknown_label',
+      'empty_layout'
+    ])
+    .optional(),
   filled: z.number().int().min(0).max(20).optional(),
   layout: z.number().int().positive().optional(),
   openId: lotteKeypadId.optional(),
