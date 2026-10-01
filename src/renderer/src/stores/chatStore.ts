@@ -3,6 +3,7 @@ import type { AgentEvent, ChatDto, ChatMessageDto, HandoffKind } from '@shared/i
 import { RECENT_CHAT_LIMIT, titleFromMessage } from '@shared/chat'
 import { agentImageDataUrl, type AgentImage } from '@shared/agent-image'
 import { DEFAULT_SETTINGS, type AgentEffort } from '@shared/settings'
+import { summarize } from '@shared/notify'
 
 export interface ChatMessage {
   id: string
@@ -211,7 +212,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       images && images.length > 0
         ? await window.samba.agent.run(text, chatId ?? undefined, scheduleToken, images)
         : await window.samba.agent.run(...args)
-    if (!r.ok && get().runSeq === seq) set({ status: 'failed', currentLabel: r.error, retry: null })
+    if (!r.ok && get().runSeq === seq) {
+      // 접수 단계의 실패도 상태 이벤트와 같은 화면 경로로 보여 준다.
+      get().handleEvent({ type: 'status', state: 'failed', message: r.error })
+    }
   },
   stop: async () => {
     await window.samba.agent.stop()
@@ -284,11 +288,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? (e.message.slice(5) as 'missing' | 'limit')
         : null
       const done = e.state === 'done' || e.state === 'failed' || e.state === 'stopped'
+      const failure =
+        e.state === 'failed' && !auth
+          ? summarize(
+              (e.message?.trim() || '작업 실행에 실패했습니다.')
+                .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9_+./=-]+/gi, '$1 ***')
+                .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '***'),
+              1000
+            )
+          : ''
+      if (failure) {
+        // 이미 받은 답변·도구 단계는 보존하고 실패 이유를 마지막 AI 말풍선에 덧붙인다.
+        if (last?.role === 'ai') {
+          if (!last.text.trimEnd().endsWith(failure)) {
+            patchLast({ text: last.text ? `${last.text}\n\n${failure}` : failure })
+          }
+        } else {
+          set({ messages: [...msgs, { id: nid(), role: 'ai', text: failure }] })
+        }
+      }
       // 작업이 끝나면 메인이 방금 기록을 남겼다 — 목록의 제목·순서를 다시 읽는다
       if (done) void get().loadChats()
       set({
         status: e.state,
         authError: auth,
+        currentLabel: failure || get().currentLabel,
         toolCalls: e.toolCalls ?? get().toolCalls,
         retry: e.state === 'running' ? get().retry : null,
         // 중단 후 응답 불가능한 확인·넘김 카드가 남지 않도록 정리

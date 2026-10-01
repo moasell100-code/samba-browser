@@ -109,6 +109,7 @@ describe('chatStore 상태 가드', () => {
     await first
     expect(useChatStore.getState().status).toBe('running')
     expect(useChatStore.getState().currentLabel).toBe('')
+    expect(useChatStore.getState().messages.at(-1)?.text).toBe('')
   })
 
   it('현재 실행의 ok:false 응답은 failed 로 반영된다', async () => {
@@ -116,6 +117,64 @@ describe('chatStore 상태 가드', () => {
     await useChatStore.getState().send('작업')
     expect(useChatStore.getState().status).toBe('failed')
     expect(useChatStore.getState().currentLabel).toBe('시작 실패')
+    expect(useChatStore.getState().messages.at(-1)?.text).toBe('시작 실패')
+  })
+
+  it('일반 실패 이유를 AI 답변 뒤에 보여 주고 중복 이벤트는 반복하지 않는다', async () => {
+    await useChatStore.getState().send('작업')
+    fire({ type: 'text', text: '페이지를 확인했습니다.' })
+    fire({ type: 'step', label: '페이지 읽기', ok: true })
+    const failure: AgentEvent = {
+      type: 'status',
+      state: 'failed',
+      message: '도구 연결에 실패했습니다.'
+    }
+    fire(failure)
+    fire(failure)
+    const reply = useChatStore.getState().messages.at(-1)
+    expect(reply?.text).toBe('페이지를 확인했습니다.\n\n도구 연결에 실패했습니다.')
+    expect(reply?.steps).toEqual([{ label: '페이지 읽기', ok: true }])
+    expect(useChatStore.getState().status).toBe('failed')
+  })
+
+  it('실패 이유의 비밀번호·API 키·Authorization 토큰을 화면에 남기지 않는다', async () => {
+    await useChatStore.getState().send('작업')
+    fire({
+      type: 'status',
+      state: 'failed',
+      message:
+        '연결 실패 password=private-password token=private-token Authorization: Bearer private-bearer sk-privateapikey1234'
+    })
+    const visible = JSON.stringify({
+      reply: useChatStore.getState().messages.at(-1)?.text,
+      label: useChatStore.getState().currentLabel
+    })
+    expect(visible).toContain('연결 실패')
+    for (const secret of [
+      'private-password',
+      'private-token',
+      'private-bearer',
+      'sk-privateapikey1234'
+    ]) {
+      expect(visible).not.toContain(secret)
+    }
+  })
+
+  it('auth 오류는 전용 배너로 보내고 원시 상태 코드를 답변에 붙이지 않는다', async () => {
+    await useChatStore.getState().send('작업')
+    fire({ type: 'status', state: 'failed', message: 'auth:missing' })
+    expect(useChatStore.getState().authError).toBe('missing')
+    expect(useChatStore.getState().messages.at(-1)?.text).toBe('')
+  })
+
+  it('접수 거절의 비밀값도 같은 마스킹 경로를 거친다', async () => {
+    run.mockImplementationOnce(async () => ({
+      ok: false as const,
+      error: '접수 실패 token=private-token'
+    }))
+    await useChatStore.getState().send('작업')
+    expect(useChatStore.getState().messages.at(-1)?.text).toBe('접수 실패 token ***')
+    expect(useChatStore.getState().currentLabel).not.toContain('private-token')
   })
 
   it('api_retry 진행 이벤트는 retry 로 보관하고 step 이 오면 지운다', () => {
