@@ -15,6 +15,14 @@ import { Button } from '@renderer/components/ui/button'
 import { useVaultStore, type PutSectionInput } from '@renderer/stores/vaultStore'
 import { useBrowserStore } from '@renderer/stores/browserStore'
 import { normalizeHost, accountGroupKey } from '@shared/host'
+import {
+  LOGIN_METHOD_FIELD_KEY,
+  LOGIN_METHODS,
+  isHyundaiCardHost,
+  isValidHyundaiPin,
+  loginMethodOfSections,
+  normalizeLoginMethod
+} from '@shared/login-method'
 import { PasswordGenerator } from './PasswordGenerator'
 import {
   DEFAULT_PAYMENT_PROVIDER,
@@ -127,15 +135,19 @@ const CUSTOM_SECTION_KEY = 'custom'
 function SecretInput({
   value,
   onChange,
-  placeholder
+  placeholder,
+  label,
+  numeric = false
 }: {
   value: string
   onChange: (value: string) => void
   placeholder?: string
+  label?: string
+  numeric?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation()
   const [shown, setShown] = useState(false)
-  const label = t(shown ? 'vault.editor.hideSecret' : 'vault.editor.showSecret')
+  const toggleLabel = t(shown ? 'vault.editor.hideSecret' : 'vault.editor.showSecret')
   return (
     <div className="relative min-w-0 flex-1">
       <Input
@@ -143,6 +155,8 @@ function SecretInput({
         autoComplete="off"
         data-lpignore="true"
         spellCheck={false}
+        aria-label={label}
+        inputMode={numeric ? 'numeric' : undefined}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
@@ -150,8 +164,8 @@ function SecretInput({
       />
       <button
         type="button"
-        aria-label={label}
-        title={label}
+        aria-label={toggleLabel}
+        title={toggleLabel}
         aria-pressed={shown}
         onClick={() => setShown((v) => !v)}
         className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[7px] text-[var(--text2)] hover:bg-black/5 hover:text-[var(--text)]"
@@ -189,6 +203,9 @@ function initialValues(
     values[PAYMENT_PROVIDER_FIELD_KEY] = item
       ? paymentProviderOfSections(item.sections)
       : DEFAULT_PAYMENT_PROVIDER
+  }
+  if (type === 'login') {
+    values[LOGIN_METHOD_FIELD_KEY] = loginMethodOfSections(item?.sections ?? [])
   }
   return values
 }
@@ -241,6 +258,12 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
   const [host, setHost] = useState(account?.host ?? (isAccountForm ? tabHost : ''))
   const [customFields, setCustomFields] = useState<CustomField[]>([])
   const [saving, setSaving] = useState(false)
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const loginMethod = normalizeLoginMethod(values[LOGIN_METHOD_FIELD_KEY])
+  const isPinLogin = itemType === 'login' && loginMethod === 'hyundai_pin'
+  const supportsHyundaiPin = itemType === 'login' && isHyundaiCardHost(host)
+  const methodChanged =
+    itemType === 'login' && !!item && loginMethod !== loginMethodOfSections(item.sections)
 
   const accounts = useVaultStore((s) => s.accounts)
   // 결제 앱(네이버페이 등)의 비밀번호는 앱 계정(naver.com …)에만 둔다 — 쇼핑몰 계정에서는 어느 앱 계정을 쓸지만 고른다
@@ -264,6 +287,27 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
   const linkMode = appAccounts.length > 0
   const specs = useMemo((): SectionSpec[] => {
     const base = FORM_SPECS[itemType]
+    if (itemType === 'login') {
+      return base.map((section) => ({
+        ...section,
+        fields: [
+          ...(supportsHyundaiPin
+            ? [
+                {
+                  key: LOGIN_METHOD_FIELD_KEY,
+                  labelKey: 'vault.fieldNames.loginMethod',
+                  kind: 'select' as const,
+                  options: LOGIN_METHODS,
+                  optionLabelPrefix: 'vault.loginMethod'
+                }
+              ]
+            : []),
+          ...section.fields.map((field) =>
+            isPinLogin ? { ...field, labelKey: 'vault.fieldNames.hyundaiPin' } : field
+          )
+        ]
+      }))
+    }
     if (!linkMode) return base
     return base.map((section) => ({
       ...section,
@@ -278,10 +322,15 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
           : field
       )
     }))
-  }, [itemType, linkMode, appAccounts])
+  }, [itemType, linkMode, appAccounts, supportsHyundaiPin, isPinLogin])
 
   const setValue = (key: string, value: string): void => {
-    setValues((prev) => ({ ...prev, [key]: value }))
+    setValidationError(null)
+    setValues((prev) => ({
+      ...prev,
+      [key]: value,
+      ...(key === LOGIN_METHOD_FIELD_KEY ? { value: '' } : {})
+    }))
     // 결제 수단을 고르면 손대지 않은 라벨을 그 이름으로 맞춰 준다
     if (key === PAYMENT_PROVIDER_FIELD_KEY && !labelTouched) {
       setLabel(t(`vault.paymentProvider.${value}`))
@@ -305,6 +354,15 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
         }
       })
     }))
+    // Preserve explicit metadata even when the method selector is hidden on ordinary sites.
+    if (itemType === 'login' && !supportsHyundaiPin) {
+      sections[0].fields.unshift({
+        key: LOGIN_METHOD_FIELD_KEY,
+        label: t('vault.fieldNames.loginMethod'),
+        kind: 'select',
+        value: loginMethod
+      })
+    }
     if (customFields.length > 0) {
       sections.push({
         key: CUSTOM_SECTION_KEY,
@@ -327,6 +385,24 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
 
   const save = async (): Promise<void> => {
     if (!label.trim()) return
+    if (isPinLogin && !supportsHyundaiPin) {
+      setValidationError(t('vault.editor.hyundaiPinHost'))
+      return
+    }
+    const newSecret = values.value ?? ''
+    if (
+      isPinLogin &&
+      (newSecret !== '' || !item || methodChanged) &&
+      !isValidHyundaiPin(newSecret)
+    ) {
+      setValidationError(t('vault.editor.hyundaiPinInvalid'))
+      return
+    }
+    if (methodChanged && newSecret === '') {
+      setValidationError(t('vault.editor.loginMethodNeedsSecret'))
+      return
+    }
+    setValidationError(null)
     setSaving(true)
     let accountId: number | null = account?.id ?? null
     if (isAccountForm) {
@@ -390,7 +466,9 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
           </Field>
           {isAccountForm && (
             <>
-              <Field label={t('vault.editor.username')}>
+              <Field
+                label={t(isPinLogin ? 'vault.editor.usernameOptional' : 'vault.editor.username')}
+              >
                 <Input value={username} onChange={(e) => setUsername(e.target.value)} />
               </Field>
               <Field label={t('vault.editor.host')}>
@@ -427,6 +505,7 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
                 <Field key={field.key} label={t(field.labelKey)}>
                   {field.kind === 'select' ? (
                     <select
+                      aria-label={t(field.labelKey)}
                       value={values[field.key] ?? field.options?.[0] ?? ''}
                       onChange={(e) => setValue(field.key, e.target.value)}
                       required
@@ -447,7 +526,9 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
                         <SecretInput
                           value={values[field.key] ?? ''}
                           onChange={(v) => setValue(field.key, v)}
-                          placeholder={item ? t('vault.editor.keepHint') : ''}
+                          placeholder={item && !methodChanged ? t('vault.editor.keepHint') : ''}
+                          label={t(field.labelKey)}
+                          numeric={isPinLogin && field.key === 'value'}
                         />
                       ) : (
                         <Input
@@ -460,7 +541,7 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
                           placeholder={item ? t('vault.editor.keepHint') : ''}
                         />
                       )}
-                      {field.kind === 'secret' && (
+                      {field.kind === 'secret' && !isPinLogin && (
                         <Popover>
                           <PopoverTrigger asChild>
                             <Button
@@ -484,6 +565,12 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
             </section>
           ))}
 
+          {isPinLogin && (
+            <p className="text-[11.5px] leading-relaxed text-[var(--text2)]">
+              {t('vault.editor.hyundaiPinHint')}
+            </p>
+          )}
+
           <CustomFieldEditor
             fields={customFields}
             values={values}
@@ -492,6 +579,11 @@ export function ItemEditor({ open, onOpenChange, type, account, item }: Props): 
             onChange={setValue}
           />
 
+          {validationError && (
+            <p role="alert" className="text-[12px] text-[#b91c1c]">
+              {validationError}
+            </p>
+          )}
           {error && <p className="text-[12px] text-[#b91c1c]">{error}</p>}
           <DialogFooter>
             <Button

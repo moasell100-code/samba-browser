@@ -7,6 +7,7 @@ import { usePhoneStore } from '@renderer/stores/phoneStore'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { AGENT_ACCESS_VALUES, paymentProviderOfSections } from '@shared/vault'
+import { LOGIN_METHOD_FIELD_KEY, normalizeLoginMethod } from '@shared/login-method'
 import {
   PhoneAssignDialog,
   PhoneAssignSuggestion
@@ -190,7 +191,11 @@ function ItemSections({ item }: { item: VaultItemMeta }): React.JSX.Element {
       <PlainRow
         key={field.key}
         label={field.label}
-        value={field.value ?? ''}
+        value={
+          item.type === 'login' && field.key === LOGIN_METHOD_FIELD_KEY
+            ? t(`vault.loginMethod.${normalizeLoginMethod(field.value)}`)
+            : (field.value ?? '')
+        }
         onCopy={field.value ? () => void copyWithAutoClear(field.value as string) : undefined}
       />
     )

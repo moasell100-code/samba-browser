@@ -629,6 +629,11 @@
       "label": "Account label",
       "itemLabel": "Label",
       "username": "Username",
+      "usernameOptional": "Username (optional for simple PIN login)",
+      "hyundaiPinHint": "Enter the simple PIN already registered with Hyundai Card. This method signs in without a username, and the PIN is stored encrypted.",
+      "hyundaiPinInvalid": "The simple PIN must contain exactly 6 digits.",
+      "hyundaiPinHost": "Hyundai Card simple PINs can only be saved for hyundaicard.com or www.hyundaicard.com accounts.",
+      "loginMethodNeedsSecret": "Enter a new secret when changing the login method.",
       "host": "Site host",
       "itemType": "Item type",
       "value": "Value",
@@ -772,6 +777,8 @@
     },
     "fieldNames": {
       "password": "Password",
+      "loginMethod": "Login method",
+      "hyundaiPin": "Simple PIN (6 digits)",
       "holder": "Cardholder",
       "brand": "Card brand / type",
       "number": "Card number",
@@ -789,6 +796,10 @@
       "note": "Note",
       "paymentProvider": "Payment method",
       "paymentAccount": "Pay-app account"
+    },
+    "loginMethod": {
+      "password": "Standard password",
+      "hyundai_pin": "Hyundai Card simple PIN"
     },
     "paymentProvider": {
       "site": "Site's own pay",
