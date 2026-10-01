@@ -15,6 +15,25 @@ export interface FinanceTableCapture {
   hasNestedTable: boolean
 }
 
+export interface FinanceListRow {
+  // Selector-defined column names; each text value is retained exactly as displayed.
+  head: Array<{
+    field: 'name' | 'date' | 'time' | 'card' | 'payment_type' | 'amount'
+    text: string
+  }>
+  details: Array<{ label: string; value: string }>
+  detailsVisible: boolean
+  sourceRowId?: string
+}
+
+export interface FinanceListCapture {
+  adapter: 'samsung_history_list_v1'
+  rows: FinanceListRow[]
+  hiddenRows: number
+  unrecognizedRows: number
+  hasMore: boolean
+}
+
 // Structure only. No text, IDs, form values, URL queries, or arbitrary attributes.
 export interface FinanceLayoutDiagnostic {
   nodes: Array<{ depth: number; tag: string; classes: string[] }>
@@ -25,6 +44,7 @@ export interface FinanceFrameCapture {
   origin: string
   pathname: string
   tables: FinanceTableCapture[]
+  lists?: FinanceListCapture[]
   layoutDiagnostic?: FinanceLayoutDiagnostic
 }
 
@@ -42,6 +62,9 @@ export type FinanceCaptureIssue =
   | 'frame_incomplete'
   | 'hidden_rows'
   | 'complex_table'
+  | 'details_incomplete'
+  | 'more_rows_available'
+  | 'unrecognized_rows'
 
 // Safe to return to a model. No financial cells, page title, account names or URL queries.
 export interface FinanceCaptureReceipt {
@@ -51,6 +74,8 @@ export interface FinanceCaptureReceipt {
   expiresAt: string
   tableCount: number
   rowCount: number
+  listCount?: number
+  listRowCount?: number
   frameCount: number
   previewOnly: true
   issues: FinanceCaptureIssue[]

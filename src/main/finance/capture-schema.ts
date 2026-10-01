@@ -28,6 +28,57 @@ const cell = z
   })
   .strict()
 
+const listRow = z
+  .object({
+    head: z
+      .array(
+        z
+          .object({
+            field: z.enum(['name', 'date', 'time', 'card', 'payment_type', 'amount']),
+            text: z.string().max(2000)
+          })
+          .strict()
+      )
+      .length(6)
+      .refine(
+        (head) =>
+          head.map((cell) => cell.field).join(',') === 'name,date,time,card,payment_type,amount'
+      ),
+    details: z
+      .array(
+        z
+          .object({
+            label: z.string().max(2000),
+            value: z.string().max(2000)
+          })
+          .strict()
+      )
+      .max(17),
+    detailsVisible: z.boolean(),
+    sourceRowId: z
+      .string()
+      .regex(/^[A-Za-z0-9-]{1,80}$/)
+      .optional()
+  })
+  .strict()
+  .refine(
+    (row) =>
+      !row.sourceRowId ||
+      (!/^-+$/.test(row.sourceRowId) &&
+        row.details.filter(({ label, value }) => label === '승인번호' && value === row.sourceRowId)
+          .length === 1)
+  )
+
+const list = z
+  .object({
+    adapter: z.literal('samsung_history_list_v1'),
+    rows: z.array(listRow).max(1000),
+    hiddenRows: z.number().int().nonnegative(),
+    unrecognizedRows: z.number().int().nonnegative(),
+    hasMore: z.boolean()
+  })
+  .strict()
+
 const layoutDiagnostic = z
   .object({
     nodes: z
@@ -94,6 +145,7 @@ export const financeFrameCaptureSchema = z
           .strict()
       )
       .max(20),
+    lists: z.array(list).max(2).optional(),
     layoutDiagnostic: layoutDiagnostic.optional()
   })
   .strict()
@@ -103,6 +155,15 @@ export const financeFrameCaptureSchema = z
       (financeCardIssuer(frame.origin) === 'hyundai_card' &&
         frame.pathname === '/cpa/cb/CPACB0101_01.hc' &&
         frame.tables.length === 0)
+  )
+  .refine(
+    (frame) =>
+      !frame.lists?.length ||
+      (financeCardIssuer(frame.origin) === 'samsung_card' &&
+        [
+          '/personal/card/activity/UHPPRP0801M0.jsp',
+          '/personal/card/activity/UHPPRP0801D0.jsp'
+        ].includes(frame.pathname))
   )
 
 export const financePageCaptureSchema = z

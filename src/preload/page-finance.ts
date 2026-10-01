@@ -1,6 +1,8 @@
 import type {
   FinanceFrameCapture,
   FinanceLayoutDiagnostic,
+  FinanceListCapture,
+  FinanceListRow,
   FinanceTableCell
 } from '../shared/finance-capture'
 
@@ -117,6 +119,120 @@ function cellText(cell: Element): string {
   return parts.join(' ').replace(/\s+/g, ' ').trim()
 }
 
+interface CaptureBudget {
+  rows: number
+  cells: number
+  chars: number
+}
+
+function readCell(el: Element, budget: CaptureBudget): string {
+  budget.cells += 1
+  if (budget.cells > FINANCE_CAPTURE_LIMITS.cells) throw new Error('finance_capture_limit')
+  const text = isHidden(el) ? '' : cellText(el)
+  budget.chars += text.length
+  if (budget.chars > FINANCE_CAPTURE_LIMITS.totalChars) throw new Error('finance_capture_limit')
+  return text
+}
+
+function countRow(budget: CaptureBudget, columns: number): void {
+  budget.rows += 1
+  if (budget.rows > FINANCE_CAPTURE_LIMITS.rows || columns > FINANCE_CAPTURE_LIMITS.columns)
+    throw new Error('finance_capture_limit')
+}
+
+function visibleOne(root: Element, selector: string): Element | undefined {
+  const matches = Array.from(root.querySelectorAll(selector)).filter((el) => !isHidden(el))
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+// These boundaries come from Samsung's public UHPPRP0801D0.jsp row template.
+// Read only displayed head columns and expanded detail label/value pairs; never
+// inspect the template, onclick data, hidden input values, or application state.
+function samsungHistoryLists(doc: Document, url: URL, budget: CaptureBudget): FinanceListCapture[] {
+  if (
+    url.hostname !== 'www.samsungcard.com' ||
+    ![
+      '/personal/card/activity/UHPPRP0801M0.jsp',
+      '/personal/card/activity/UHPPRP0801D0.jsp'
+    ].includes(url.pathname)
+  )
+    return []
+  const roots = Array.from(
+    doc.querySelectorAll('ul#inquire_append, ul#clnd_inquire_append')
+  ).filter((root) => !isHidden(root))
+  const lists: FinanceListCapture[] = []
+  for (const root of roots) {
+    const sourceRows = Array.from(root.querySelectorAll(':scope > li.rowList'))
+    if (!sourceRows.length) continue
+    if (sourceRows.length > FINANCE_CAPTURE_LIMITS.rows) throw new Error('finance_capture_limit')
+    const result: FinanceListCapture = {
+      adapter: 'samsung_history_list_v1',
+      rows: [],
+      hiddenRows: 0,
+      unrecognizedRows: 0,
+      hasMore: false
+    }
+    const more = doc.getElementById(root.id === 'inquire_append' ? 'btn_more' : 'clnd_btn_more')
+    result.hasMore = Boolean(more && !isHidden(more))
+    for (const sourceRow of sourceRows) {
+      if (isHidden(sourceRow)) {
+        result.hiddenRows += 1
+        continue
+      }
+      const selectors: Array<[FinanceListRow['head'][number]['field'], string]> = [
+        ['name', ':scope > .head > .fl_l > p.name > span:not(.ico)'],
+        ['date', ':scope > .head > .fl_l > p.td.first > strong'],
+        ['time', ':scope > .head > .fl_l > p.td.second > span:not(.hide)'],
+        ['card', ':scope > .head > .fl_l > p.td.last > span:first-child'],
+        ['payment_type', ':scope > .head > .fl_l > p.td.last > span:last-child'],
+        ['amount', ':scope > .head > .fl_r > p.em > strong']
+      ]
+      const head = selectors.map(([field, selector]) => ({
+        field,
+        el: visibleOne(sourceRow, selector)
+      }))
+      const cardColumns = sourceRow.querySelectorAll(':scope > .head > .fl_l > p.td.last > span')
+      if (head.some(({ el }) => !el) || cardColumns.length !== 2) {
+        result.unrecognizedRows += 1
+        continue
+      }
+      const detail = visibleOne(sourceRow, ':scope > .desc_wrap.ui_accord_content')
+      const pairs = detail
+        ? Array.from(detail.querySelectorAll(':scope > ul.row > li')).filter(
+            (pair) => !isHidden(pair)
+          )
+        : []
+      const details: FinanceListRow['details'] = []
+      let detailsVisible = Boolean(detail && pairs.length)
+      for (const pair of pairs) {
+        const label = visibleOne(pair, ':scope > .fl_l')
+        const value = visibleOne(pair, ':scope > .fl_r')
+        if (!label || !value) {
+          detailsVisible = false
+          continue
+        }
+        details.push({ label: readCell(label, budget), value: readCell(value, budget) })
+      }
+      countRow(budget, head.length + details.length * 2)
+      const row: FinanceListRow = {
+        head: head.map(({ field, el }) => ({ field, text: readCell(el!, budget) })),
+        details,
+        detailsVisible
+      }
+      const approval = details.filter(({ label }) => label === '승인번호')
+      if (
+        approval.length === 1 &&
+        /^[A-Za-z0-9-]{1,80}$/.test(approval[0].value) &&
+        !/^-+$/.test(approval[0].value)
+      )
+        row.sourceRowId = approval[0].value
+      result.rows.push(row)
+    }
+    lists.push(result)
+  }
+  return lists
+}
+
 /** Fixed DOM reader. It has no selectors, row data, or executable code supplied by a model. */
 export function captureFinanceTables(doc: Document = document): FinanceFrameCapture {
   const url = new URL(doc.URL)
@@ -136,9 +252,8 @@ export function captureFinanceTables(doc: Document = document): FinanceFrameCapt
 
   const tables = Array.from(doc.querySelectorAll('table')).filter((table) => !isHidden(table))
   if (tables.length > FINANCE_CAPTURE_LIMITS.tables) throw new Error('finance_capture_limit')
-  let rowCount = 0
-  let cellCount = 0
-  let totalChars = 0
+  const budget: CaptureBudget = { rows: 0, cells: 0, chars: 0 }
+  const lists = samsungHistoryLists(doc, url, budget)
   const layoutDiagnostic =
     tables.length === 0 &&
     ['hyundaicard.com', 'www.hyundaicard.com'].includes(url.hostname) &&
@@ -148,6 +263,7 @@ export function captureFinanceTables(doc: Document = document): FinanceFrameCapt
   return {
     origin: url.origin,
     pathname: url.pathname,
+    ...(lists.length ? { lists } : {}),
     ...(layoutDiagnostic ? { layoutDiagnostic } : {}),
     tables: tables.map((table, index) => {
       let hiddenRows = 0
@@ -158,20 +274,9 @@ export function captureFinanceTables(doc: Document = document): FinanceFrameCapt
           hiddenRows += 1
           continue
         }
-        rowCount += 1
-        if (
-          rowCount > FINANCE_CAPTURE_LIMITS.rows ||
-          row.cells.length > FINANCE_CAPTURE_LIMITS.columns
-        ) {
-          throw new Error('finance_capture_limit')
-        }
+        countRow(budget, row.cells.length)
         const cells = Array.from(row.cells).map((cell) => {
-          cellCount += 1
-          if (cellCount > FINANCE_CAPTURE_LIMITS.cells) throw new Error('finance_capture_limit')
-          const text = isHidden(cell) ? '' : cellText(cell)
-          totalChars += text.length
-          if (totalChars > FINANCE_CAPTURE_LIMITS.totalChars)
-            throw new Error('finance_capture_limit')
+          const text = readCell(cell, budget)
           return {
             text,
             header: cell.tagName === 'TH',

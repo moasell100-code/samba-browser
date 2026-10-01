@@ -74,14 +74,18 @@ export class FinanceCaptureStore {
       this.remove(oldest)
     }
     const tables = valid.data.frames.flatMap((frame) => frame.tables)
-    const issues: FinanceCaptureIssue[] = [
-      'site_adapter_unverified',
-      'query_range_unverified',
-      'pagination_unverified'
-    ]
-    if (tables.length === 0) issues.push('no_tables')
+    const lists = valid.data.frames.flatMap((frame) => frame.lists ?? [])
+    const issues: FinanceCaptureIssue[] = ['query_range_unverified', 'pagination_unverified']
+    if (!lists.length || tables.length || lists.some((list) => list.unrecognizedRows))
+      issues.unshift('site_adapter_unverified')
+    if (tables.length === 0 && lists.length === 0) issues.push('no_tables')
     if (valid.data.failedFrames || valid.data.skippedFrames) issues.push('frame_incomplete')
-    if (tables.some((table) => table.hiddenRows > 0)) issues.push('hidden_rows')
+    if (tables.some((table) => table.hiddenRows > 0) || lists.some((list) => list.hiddenRows > 0))
+      issues.push('hidden_rows')
+    if (lists.some((list) => list.rows.some((row) => !row.detailsVisible)))
+      issues.push('details_incomplete')
+    if (lists.some((list) => list.hasMore)) issues.push('more_rows_available')
+    if (lists.some((list) => list.unrecognizedRows)) issues.push('unrecognized_rows')
     if (
       tables.some(
         (table) =>
@@ -99,6 +103,12 @@ export class FinanceCaptureStore {
       expiresAt: new Date(now + FINANCE_CAPTURE_TTL_MS).toISOString(),
       tableCount: tables.length,
       rowCount: tables.reduce((count, table) => count + table.rows.length, 0),
+      ...(lists.length
+        ? {
+            listCount: lists.length,
+            listRowCount: lists.reduce((count, list) => count + list.rows.length, 0)
+          }
+        : {}),
       frameCount: valid.data.frames.length,
       previewOnly: true,
       issues,
