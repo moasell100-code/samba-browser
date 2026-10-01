@@ -7,6 +7,23 @@ beforeEach(() => {
   document.body.innerHTML = `<form id="loginForm"><fieldset class="idLogin"><input id="mbrCtfDrmId"><input id="mbrCtfEncV" name="mbrCtfEncV" type="password" maxlength="20" npkencrypt="on" data-keypad-type="alpha" readonly><button type="button" id="mbrCtfEncV_keypad">보안키패드 열기</button></fieldset><div id="nppfs-keypad-mbrCtfEncV"><div class="kpd-group lower"><img class="kpd-data" role="button" alt="소문자 a" aria-label="소문자 a"><img class="kpd-data" role="button" alt="한개지움" aria-label="한개지움"></div></div></form>`
 })
 describe('fresh Lotte public layout revision', () => {
+  it('keeps unselected duplicate candidates in the revision and rejects a stale first-key choice', () => {
+    const group = document.querySelector('.kpd-group.lower')!
+    group.setAttribute('class', 'kpd-group special')
+    group.innerHTML =
+      '<img class="kpd-data" role="button" alt="느낌표" aria-label="느낌표"><img class="kpd-data" role="button" alt="느낌표" aria-label="느낌표">'
+    const before = lotteKeypad()
+    expect(before.keys).toHaveLength(2)
+    const first = group.querySelectorAll('img')[0]
+    const second = group.querySelectorAll('img')[1]
+    const click = vi.fn()
+    first.addEventListener('click', click)
+    second.setAttribute('alt', '골뱅이')
+    second.setAttribute('aria-label', '골뱅이')
+    expect(lotteKeypad().keys![0]).toEqual(before.keys![0])
+    expect(pressLotteKeypad(before.keys![0].id, 0, before.layout!)).toContain('refused')
+    expect(click).not.toHaveBeenCalled()
+  })
   it('presses one public key only once when count and full layout remain unchanged', () => {
     const before = lotteKeypad()
     const click = vi.fn()

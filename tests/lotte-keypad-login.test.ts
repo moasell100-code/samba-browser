@@ -113,6 +113,47 @@ function fixture() {
   }
 }
 describe('Lotte dedicated official keypad login', () => {
+  it('selects only the first currently verified identical official duplicate symbol key', async () => {
+    const f = fixture()
+    const original = f.bridge.read.getMockImplementation()!
+    f.bridge.read.mockImplementation(async () => {
+      const state = await original()
+      return state.mode === 'special'
+        ? {
+            ...state,
+            keys: [
+              { character: '!', id: 13, label: '느낌표' },
+              { character: '!', id: 14, label: '느낌표' }
+            ]
+          }
+        : state
+    })
+    expect(await loginLotteKeypad(f.deps)).toContain('session verified')
+    expect(f.bridge.press.mock.calls.filter(([id]) => id === 13)).toHaveLength(1)
+    expect(f.bridge.press.mock.calls.filter(([id]) => id === 14)).toHaveLength(0)
+    expect(f.bridge.submit).toHaveBeenCalledOnce()
+  })
+  it('refuses duplicate candidates with differing public labels before typing that symbol', async () => {
+    const f = fixture()
+    const original = f.bridge.read.getMockImplementation()!
+    f.bridge.read.mockImplementation(async () => {
+      const state = await original()
+      return state.mode === 'special'
+        ? {
+            ...state,
+            keys: [
+              { character: '!', id: 13, label: '느낌표' },
+              { character: '!', id: 14, label: 'different' }
+            ]
+          }
+        : state
+    })
+    expect(await loginLotteKeypad(f.deps)).toContain('stage=preflight_special')
+    expect(f.bridge.press.mock.calls.filter(([id]) => id === 13 || id === 14)).toHaveLength(0)
+    expect(f.bridge.submit).not.toHaveBeenCalled()
+    expect(f.deps.readSavedPassword).not.toHaveBeenCalled()
+    expect(f.deps.attempts.begin).not.toHaveBeenCalled()
+  })
   it('reports a fixed failure stage for username fill without exposing its value', async () => {
     const f = fixture()
     f.bridge.fillUsername.mockResolvedValue('arbitrary sensitive message')

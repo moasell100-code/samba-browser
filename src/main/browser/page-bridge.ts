@@ -168,7 +168,13 @@ const lotteKeypadSchema = z.object({
   removeId: lotteKeypadId.optional(),
   mode: z.enum(['lower', 'upper', 'special']).optional(),
   keys: z
-    .array(z.object({ character: z.string().regex(/^[\x20-\x7e]$/), id: lotteKeypadId }))
+    .array(
+      z.object({
+        character: z.string().regex(/^[\x20-\x7e]$/),
+        id: lotteKeypadId,
+        label: z.string().min(1).max(30).optional()
+      })
+    )
     .max(100)
     .optional(),
   controls: z

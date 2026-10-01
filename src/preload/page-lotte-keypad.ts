@@ -87,7 +87,8 @@ export function readLotteKeypad(
   )
   if (modes.length !== 1) return { state: 'unknown', reason: 'mode_ambiguous' }
   const mode = modes[0]
-  const keys = new Map<string, number>()
+  const keys: Array<{ character: string; id: number; label: string }> = []
+  const seen = new Map<string, { label: string; count: number }>()
   const controls = new Map<LotteKeypadMode, number>()
   let removeId: number | undefined
   for (const el of Array.from(
@@ -107,8 +108,19 @@ export function readLotteKeypad(
     else if (/^대문자 [A-Z]$/.test(label)) character = label.slice(-1)
     else character = symbols[label]
     if (character !== undefined) {
-      if (keys.has(character)) return { state: 'unknown', reason: 'duplicate_character' }
-      keys.set(character, ensureId(el))
+      const previous = seen.get(character)
+      // The official special layout visibly repeats these four identical symbol keys.
+      // Preserve every public candidate for revision checks; no other ambiguity is accepted.
+      if (
+        previous &&
+        (mode !== 'special' ||
+          !['!', '@', '#', '$'].includes(character) ||
+          previous.label !== label ||
+          previous.count >= 2)
+      )
+        return { state: 'unknown', reason: 'duplicate_character' }
+      seen.set(character, { label, count: (previous?.count ?? 0) + 1 })
+      keys.push({ character, id: ensureId(el), label })
       continue
     }
     // The official special layout also displays Shift, but its action is unverified.
@@ -129,13 +141,13 @@ export function readLotteKeypad(
       controls.set(target, ensureId(el))
     } else if (!unusedLabels.has(label)) return { state: 'unknown', reason: 'unknown_label' }
   }
-  if (keys.size === 0) return { state: 'unknown', reason: 'empty_layout' }
+  if (keys.length === 0) return { state: 'unknown', reason: 'empty_layout' }
   return {
     state: 'open',
     filled,
     mode,
     removeId,
-    keys: Array.from(keys, ([character, id]) => ({ character, id })),
+    keys,
     controls: Array.from(controls, ([mode, id]) => ({ mode, id }))
   }
 }

@@ -23,11 +23,55 @@ afterEach(() => {
   for (const dom of windows.splice(0)) dom.window.close()
 })
 describe('Lotte official public semantic keypad', () => {
+  it('retains both identical official special symbol keys and their public labels in DOM order', () => {
+    const doc = at()
+    const group = doc.querySelector('.kpd-group.lower')!
+    group.setAttribute('class', 'kpd-group special')
+    const labels = [
+      '느낌표',
+      '골뱅이',
+      '우물표시',
+      '달러표시',
+      '느낌표',
+      '골뱅이',
+      '우물표시',
+      '달러표시',
+      '소문자'
+    ]
+    group.innerHTML = labels.map(key).join('')
+    const state = readLotteKeypad(ids(), doc)
+    expect(state.state).toBe('open')
+    expect(state.keys?.map((entry) => entry.character)).toEqual([
+      '!',
+      '@',
+      '#',
+      '$',
+      '!',
+      '@',
+      '#',
+      '$'
+    ])
+    expect(state.keys?.map((entry) => entry.label)).toEqual(labels.slice(0, -1))
+    expect(new Set(state.keys?.map((entry) => entry.id)).size).toBe(8)
+  })
+  it.each([
+    { labels: ['느낌표', '느낌표', '느낌표'] },
+    { labels: ['밑줄', '밑줄'] },
+    { labels: ['앰퍼센드', '앰퍼샌드'] }
+  ])('refuses unsupported special duplicate candidates: $labels', ({ labels }) => {
+    const doc = at()
+    const group = doc.querySelector('.kpd-group.lower')!
+    group.setAttribute('class', 'kpd-group special')
+    group.innerHTML = labels.map(key).join('')
+    expect(readLotteKeypad(ids(), doc)).toEqual({ state: 'unknown', reason: 'duplicate_character' })
+  })
   it('recognizes but never exposes the unverified Shift control in the official special layout', () => {
     const doc = at()
     const group = doc.querySelector('.kpd-group.lower')!
     group.setAttribute('class', 'kpd-group special')
-    group.innerHTML = ['느낌표', '앰퍼센드', '쉬프트', '소문자', '한개지움', '확인'].map(key).join('')
+    group.innerHTML = ['느낌표', '앰퍼센드', '쉬프트', '소문자', '한개지움', '확인']
+      .map(key)
+      .join('')
     const ensureId = vi.fn(ids())
     const state = readLotteKeypad(ensureId, doc)
     expect(state.state).toBe('open')

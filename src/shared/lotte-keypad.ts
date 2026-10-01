@@ -21,6 +21,6 @@ export interface LotteKeypadSnapshot {
   openId?: number
   removeId?: number
   mode?: LotteKeypadMode
-  keys?: Array<{ character: string; id: number }>
+  keys?: Array<{ character: string; id: number; label?: string }>
   controls?: Array<{ mode: LotteKeypadMode; id: number }>
 }

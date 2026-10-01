@@ -38,6 +38,22 @@ const INPUT_FAILED =
   'refused: Lotte Card official keypad input was not accepted; no submit or retry'
 const MODES: LotteKeypadMode[] = ['lower', 'upper', 'special']
 
+function verifiedCandidates(
+  keys: NonNullable<LotteKeypadSnapshot['keys']>,
+  mode: LotteKeypadMode | undefined
+): boolean {
+  return (
+    keys.length === 1 ||
+    (keys.length === 2 &&
+      mode === 'special' &&
+      ['!', '@', '#', '$'].includes(keys[0].character) &&
+      keys[0].character === keys[1].character &&
+      !!keys[0].label &&
+      keys[0].label === keys[1].label &&
+      keys[0].id !== keys[1].id)
+  )
+}
+
 export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<string> {
   const { bridge, attempts, attempt } = deps
   const sleep =
@@ -171,6 +187,13 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
       if (!state.keys?.length) return refused()
       for (const key of state.keys) {
         if (!/^[\x20-\x7e]$/.test(key.character)) return refused()
+        if (
+          !verifiedCandidates(
+            state.keys.filter((candidate) => candidate.character === key.character),
+            state.mode
+          )
+        )
+          return refused()
         available.set(key.character, [...(available.get(key.character) ?? []), target])
       }
     }
@@ -194,12 +217,14 @@ export async function loginLotteKeypad(deps: LotteKeypadLoginDeps): Promise<stri
       if (!state.keys?.some((key) => key.character === password[index]))
         state = await mode(available.get(password[index])![0], index)
       const matches = state.keys?.filter((key) => key.character === password[index]) ?? []
-      if (matches.length !== 1) return refused()
+      if (!verifiedCandidates(matches, state.mode)) return refused()
       if (!begun) {
         if (!attempts.begin(attempt))
           return 'refused: Lotte Card keypad login was already attempted; do not retry'
         begun = true
       }
+      // Both visible duplicate keys mean the same symbol. Always select the first in DOM
+      // order, while the fresh revision still covers every candidate's public label and id.
       await press(matches[0].id, state, index)
       let accepted = false
       for (let poll = 0; poll < 20; poll++) {
