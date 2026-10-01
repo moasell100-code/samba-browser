@@ -23,6 +23,18 @@ afterEach(() => {
   for (const dom of windows.splice(0)) dom.window.close()
 })
 describe('Lotte official public semantic keypad', () => {
+  it('recognizes but never exposes the unverified Shift control in the official special layout', () => {
+    const doc = at()
+    const group = doc.querySelector('.kpd-group.lower')!
+    group.setAttribute('class', 'kpd-group special')
+    group.innerHTML = ['느낌표', '쉬프트', '소문자', '한개지움', '확인'].map(key).join('')
+    const ensureId = vi.fn(ids())
+    const state = readLotteKeypad(ensureId, doc)
+    expect(state.state).toBe('open')
+    expect(state.keys?.map((entry) => entry.character)).toEqual(['!'])
+    expect(state.controls?.map((entry) => entry.mode)).toEqual(['lower'])
+    expect(ensureId.mock.calls.map(([el]) => el.getAttribute('aria-label'))).not.toContain('쉬프트')
+  })
   it('reads public accessible labels without inspecting encrypted action attributes', () => {
     const doc = at()
     for (const node of doc.querySelectorAll('img')) {

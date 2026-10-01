@@ -110,6 +110,9 @@ export function readLotteKeypad(
       keys.set(character, ensureId(el))
       continue
     }
+    // The official special layout also displays Shift, but its action is unverified.
+    // Recognize the public control without exposing an actionable id. Return via 소문자.
+    if (mode === 'special' && label === '쉬프트') continue
     const target: LotteKeypadMode | undefined =
       label === '특수문자'
         ? 'special'
