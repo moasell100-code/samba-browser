@@ -119,6 +119,32 @@ describe('fillValue', () => {
 })
 
 describe('submitForm', () => {
+  it('로그인 type=button 은 암호화/AJAX 클릭 처리만 실행하고 기본 폼 제출을 하지 않는다', () => {
+    document.body.innerHTML = `
+      <form id="loginForm">
+        <input type="text" name="mbrCtfDrmId" placeholder="아이디 입력">
+        <input type="password" name="mbrCtfEncV" placeholder="비밀번호 입력">
+        <button type="button">로그인</button>
+      </form>
+    `
+    const form = document.querySelector('form') as HTMLFormElement
+    const button = document.querySelector('button') as HTMLButtonElement
+    const requestSubmit = vi.fn()
+    const clickHandler = vi.fn()
+    const submitHandler = vi.fn()
+    form.requestSubmit = requestSubmit
+    button.addEventListener('click', clickHandler)
+    form.addEventListener('submit', submitHandler)
+    const fields = findLoginFields()
+    expect(fields.submit).toBeDefined()
+
+    expect(submitForm(fields.submit!)).toBe('ok')
+
+    expect(clickHandler).toHaveBeenCalledTimes(1)
+    expect(requestSubmit).not.toHaveBeenCalled()
+    expect(submitHandler).not.toHaveBeenCalled()
+  })
+
   it('form 이 있으면 requestSubmit 을 호출한다', () => {
     document.body.innerHTML = `
       <form>
@@ -133,6 +159,24 @@ describe('submitForm', () => {
     const btnId = buildSnapshot().elements.find((e) => e.tag === 'button')!.id
     expect(submitForm(btnId)).toBe('ok')
     expect(requestSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('input type=submit 과 비밀번호 칸으로 제출하는 기존 폼 동작을 유지한다', () => {
+    document.body.innerHTML = `
+      <form method="post">
+        <input type="password" name="pw">
+        <input type="submit" value="로그인">
+      </form>
+    `
+    const form = document.querySelector('form') as HTMLFormElement
+    const requestSubmit = vi.fn()
+    form.requestSubmit = requestSubmit
+    const fields = findLoginFields()
+
+    expect(submitForm(fields.submit!)).toBe('ok')
+    expect(submitForm(fields.password!)).toBe('ok')
+
+    expect(requestSubmit).toHaveBeenCalledTimes(2)
   })
 
   it('form 이 없으면 click 을 호출한다', () => {

@@ -1179,6 +1179,12 @@ export function checkKeepSignedIn(anchorId?: number): string {
 export function submitForm(id: number): string {
   const el = get(id)
   if (!el) return missingMessage(id)
+  // ID-login buttons on card sites perform encryption and AJAX in their click handler.
+  // requestSubmit() would skip that handler and submit the enclosing form directly.
+  if (el instanceof HTMLButtonElement && el.type === 'button') {
+    el.click()
+    return 'ok'
+  }
   const form = formOf(el)
   if (form && typeof form.requestSubmit === 'function') form.requestSubmit()
   else el.click()
