@@ -87,11 +87,34 @@ describe('scoped finance layout diagnostic', () => {
     '<div class="other-root"></div>',
     '<div hidden><div id="divHistoryUseRight"></div></div>',
     '<div style="display:none"><div id="divHistoryUseRight"></div></div>',
-    '<form><div id="divHistoryUseRight"></div></form>',
     '<div contenteditable><div id="divHistoryUseRight"></div></div>'
   ])('omits missing, hidden, or editable roots', (html) => {
     document.body.innerHTML = html
     expect(captureFinanceTables().layoutDiagnostic).toBeUndefined()
+  })
+
+  it('allows a structural root inside a form without reading the form or any controls', () => {
+    document.body.innerHTML = `
+      <form id="parent-secret" name="name-secret" action="/action-secret">
+        <input name="card-secret" value="card-value-secret">
+        <div id="divHistoryUseRight" class="history-list">
+          <ul class="rows"><li class="row">merchant-secret</li></ul>
+          <input class="input-secret" value="input-value-secret">
+          <select class="select-secret"><option selected>option-secret</option></select>
+          <textarea class="textarea-secret">textarea-value-secret</textarea>
+          <button class="button-secret" value="button-value-secret">button-secret</button>
+        </div>
+      </form>`
+    const diagnostic = captureFinanceTables().layoutDiagnostic
+    expect(diagnostic).toEqual({
+      nodes: [
+        { depth: 0, tag: 'div', classes: ['history-list'] },
+        { depth: 1, tag: 'ul', classes: ['rows'] },
+        { depth: 2, tag: 'li', classes: ['row'] }
+      ],
+      truncated: false
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('secret')
   })
 
   it('limits structure to 80 nodes and depth 8 with an explicit truncation marker', () => {

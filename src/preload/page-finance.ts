@@ -62,11 +62,7 @@ function isHidden(el: Element): boolean {
 
 function historyLayout(doc: Document): FinanceLayoutDiagnostic | undefined {
   const root = doc.getElementById('divHistoryUseRight')
-  if (
-    !root ||
-    root.closest('form, input, textarea, select, button, [contenteditable]') ||
-    isHidden(root)
-  )
+  if (!root || root.closest('input, textarea, select, button, [contenteditable]') || isHidden(root))
     return undefined
   const diagnostic: FinanceLayoutDiagnostic = { nodes: [], truncated: false }
   const visit = (el: Element, depth: number): void => {
