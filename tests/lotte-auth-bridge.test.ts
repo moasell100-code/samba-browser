@@ -29,6 +29,41 @@ function fixture(result: unknown = { state: 'keyboard_ready', focused: true, fil
   }
 }
 describe('Lotte native keyboard bridge', () => {
+  it('passes only public numeric ids/count/revision to the official keypad bridge', async () => {
+    const f = fixture('ok')
+    expect(await pageBridge.pressLotteKeypad(f.tab, 10, 0, 7)).toBe(true)
+    expect(f.execute).toHaveBeenLastCalledWith(999, [{ code: '__samba.pressLotteKeypad(10,0,7)' }])
+    expect(await pageBridge.eraseLotteKeypadProbe(f.tab, 8)).toBe(true)
+    expect(f.execute).toHaveBeenLastCalledWith(999, [{ code: '__samba.eraseLotteKeypadProbe(8)' }])
+    expect(f.send).not.toHaveBeenCalled()
+    expect(await pageBridge.pressLotteKeypad(f.tab, 100000, 0, 7)).toBe(false)
+    f.setUrl('https://www.lottecard.co.kr:8443/app/LPMANAA_V200.lc')
+    expect(await pageBridge.pressLotteKeypad(f.tab, 10, 0, 7)).toBe(false)
+    expect(await pageBridge.submitLotteKeypad(f.tab, 7)).toBe(false)
+    expect(f.execute).toHaveBeenCalledTimes(2)
+  })
+  it('strips unrecognized public keypad response fields and rejects foreign navigation', async () => {
+    const f = fixture({
+      state: 'open',
+      filled: 0,
+      layout: 1,
+      mode: 'lower',
+      keys: [{ character: 'a', id: 1, private: 'not-returned' }],
+      private: 'not-returned'
+    })
+    expect(await pageBridge.lotteKeypad(f.tab)).toEqual({
+      state: 'open',
+      filled: 0,
+      layout: 1,
+      mode: 'lower',
+      keys: [{ character: 'a', id: 1 }]
+    })
+    f.execute.mockImplementation(async () => {
+      f.setUrl('https://evil.test/')
+      return { state: 'signed_in' }
+    })
+    expect(await pageBridge.lotteKeypad(f.tab)).toEqual({ state: 'unknown' })
+  })
   it('erases only one focused probe character with a normal Backspace key event', async () => {
     const f = fixture({ state: 'keyboard_ready', focused: true, filled: 1 })
     expect(await pageBridge.eraseLotteProbeCharacter(f.tab)).toBe(true)

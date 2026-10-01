@@ -12,12 +12,9 @@ import {
   loginHyundaiCard
 } from '../finance/hyundai-login'
 import { hyundaiAttempts, type HyundaiAttempts } from '../finance/hyundai-attempts'
-import {
-  isLotteOrigin,
-  loginLotteCard,
-  lotteAttempts,
-  LOTTE_USE_LOGIN
-} from '../finance/lotte-login'
+import { isLotteOrigin, lotteAttempts, LOTTE_USE_LOGIN } from '../finance/lotte-login'
+import { loginLotteKeypad, lotteKeypadAttempts } from '../finance/lotte-keypad-login'
+import { probeLotteKeypad } from '../finance/lotte-keypad-probe'
 import { probeLotteKeyboard } from '../finance/lotte-keyboard-probe'
 import { serializeSnapshot } from '../../shared/snapshot'
 import type { PageOverlay, PageSnapshot } from '../../shared/snapshot'
@@ -408,6 +405,7 @@ export interface ToolContext {
   // Optional test/runtime override; the default store persists failed PIN attempts across restarts.
   hyundaiAttempts?: HyundaiAttempts
   lotteAttempts?: HyundaiAttempts
+  lotteKeypadAttempts?: HyundaiAttempts
   dangerWords: string[]
   // 사용 권한 모드. read_only 는 조작 도구를 실행하지 않고, full 은 위험 단어 확인을 생략한다
   mode: PermissionMode
@@ -1785,6 +1783,7 @@ overlays left: ${after.length}${kept}`
           if (lotte && (await pageBridge.lotteAuth(tab)).state === 'signed_in') {
             try {
               ;(ctx.lotteAttempts ?? lotteAttempts()).clearSignedInProfile(tab.profile)
+              ;(ctx.lotteKeypadAttempts ?? lotteKeypadAttempts()).clearSignedInProfile(tab.profile)
             } catch {
               /* retain failed latches on storage failure */
             }
@@ -1821,11 +1820,10 @@ overlays left: ${after.length}${kept}`
             const revision = gate.loginSecretRevision(account.id)
             if (!item || !revision || !account.username)
               return 'not found: save the Lotte Card username and login password in KeyMaster'
-            return loginLotteCard({
+            return loginLotteKeypad({
               bridge: {
                 url: () => currentUrl(tab),
-                read: () => pageBridge.lotteAuth(tab),
-                focusPassword: () => pageBridge.focusLottePassword(tab),
+                read: () => pageBridge.lotteKeypad(tab),
                 fillUsername: async () => {
                   const fields = await pageBridge.findLoginFields(tab)
                   if (fields.username === undefined || fields.iframe) return 'fields not found'
@@ -1833,13 +1831,13 @@ overlays left: ${after.length}${kept}`
                   if (moved) return moved
                   return pageBridge.fillValue(tab, fields.username, account.username)
                 },
-                pressCharacter: (character, expectedLength) =>
-                  pageBridge.pressLotteCharacter(tab, character, expectedLength),
-                submit: (expectedLength) => pageBridge.submitLotteLogin(tab, expectedLength),
+                press: (id, expectedLength, layout) =>
+                  pageBridge.pressLotteKeypad(tab, id, expectedLength, layout),
+                submit: (expectedLength) => pageBridge.submitLotteKeypad(tab, expectedLength),
                 navigate: (url) => ctx.tabs.navigate(tab.id, url),
                 waitForLoad: () => pageBridge.waitForLoad(tab)
               },
-              attempts: ctx.lotteAttempts ?? lotteAttempts(),
+              attempts: ctx.lotteKeypadAttempts ?? lotteKeypadAttempts(),
               attempt: { accountId: account.id, itemId: item.id, revision, profile: tab.profile },
               readSavedPassword: () =>
                 gate.getSecretForFill(account.id, 'login', DEFAULT_FIELD_KEY, ctx.jobId),
@@ -2184,6 +2182,28 @@ overlays left: ${after.length}${kept}`
     }
   )
 
+  const probeLotteOfficialKeypad = tool(
+    'probe_lotte_keypad',
+    'Diagnose Lotte Card official semantic keypad with one fixed noncredential letter a and official delete-one cleanup. Never accesses KeyMaster, submits a login, changes security settings, or resets attempts. Returns one fixed result code. Do not repeat without a relevant environment change.',
+    {},
+    () =>
+      guard('롯데카드 공식 키패드 입력 진단 (로그인 제출 없음)', async () => {
+        if (ctx.mode === 'read_only') return READ_ONLY_REFUSAL
+        const tab = activeOr(ctx)
+        if (!tab) return 'no active tab'
+        return {
+          result: await probeLotteKeypad({
+            bridge: {
+              url: () => currentUrl(tab),
+              read: () => pageBridge.lotteKeypad(tab),
+              press: (id, count, layout) => pageBridge.pressLotteKeypad(tab, id, count, layout),
+              erase: (layout) => pageBridge.eraseLotteKeypadProbe(tab, layout)
+            },
+            tick: ctx.tick
+          })
+        }
+      })
+  )
   const probeLotteInput = tool(
     'probe_lotte_keyboard',
     'Diagnose Lotte Card normal keyboard support with exactly one fixed noncredential character in its empty official password field, then Backspace cleanup. Never accesses KeyMaster, submits a login, disables security, or resets failed-attempt protection. Returns one fixed result code only. Do not repeat without a relevant environment change.',
@@ -2277,6 +2297,7 @@ overlays left: ${after.length}${kept}`
     getPage,
     inspectCardLogin,
     probeLotteInput,
+    probeLotteOfficialKeypad,
     ...(ctx.captureFinance ? [captureFinance] : []),
     findElements,
     screenshot,
@@ -2319,6 +2340,7 @@ export const SAMBA_TOOL_NAMES = [
   'get_page',
   'inspect_card_login',
   'probe_lotte_keyboard',
+  'probe_lotte_keypad',
   'capture_finance_table',
   'find_elements',
   'screenshot',

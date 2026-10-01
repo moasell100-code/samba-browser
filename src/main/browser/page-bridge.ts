@@ -27,6 +27,7 @@ import {
 } from '../finance/capture-schema'
 import type { CardSessionSnapshot } from '../../shared/card-session'
 import type { LotteAuthSnapshot } from '../../shared/lotte-auth'
+import type { LotteKeypadSnapshot } from '../../shared/lotte-keypad'
 import { isLotteOrigin } from '../finance/lotte-login'
 
 // preload 가 실행되는 격리 월드 id. Electron 의 WorldId.ISOLATED_WORLD = 999
@@ -140,6 +141,23 @@ const lotteAuthSchema = z.object({
   ]),
   focused: z.boolean().optional(),
   filled: z.number().int().min(0).max(20).optional()
+})
+const lotteKeypadId = z.number().int().min(1).max(99999)
+const lotteKeypadSchema = z.object({
+  state: z.enum(['open', 'closed', 'signed_in', 'input_error', 'unknown', 'unsupported']),
+  filled: z.number().int().min(0).max(20).optional(),
+  layout: z.number().int().positive().optional(),
+  openId: lotteKeypadId.optional(),
+  removeId: lotteKeypadId.optional(),
+  mode: z.enum(['lower', 'upper', 'special']).optional(),
+  keys: z
+    .array(z.object({ character: z.string().regex(/^[\x20-\x7e]$/), id: lotteKeypadId }))
+    .max(100)
+    .optional(),
+  controls: z
+    .array(z.object({ mode: z.enum(['lower', 'upper', 'special']), id: lotteKeypadId }))
+    .max(3)
+    .optional()
 })
 
 const hyundaiAuthSchema = z.object({
@@ -503,6 +521,72 @@ export const pageBridge = {
       return wc.getURL() === url ? result : { state: 'unknown' }
     } catch {
       return { state: 'unknown' }
+    }
+  },
+  lotteKeypad: async (tab: Tab): Promise<LotteKeypadSnapshot> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (!isLotteOrigin(url)) return { state: 'unsupported' }
+    try {
+      const result = await call(wc, '__samba.lotteKeypad()', lotteKeypadSchema)
+      return wc.getURL() === url ? result : { state: 'unknown' }
+    } catch {
+      return { state: 'unknown' }
+    }
+  },
+  pressLotteKeypad: async (
+    tab: Tab,
+    id: number,
+    expectedLength: number,
+    layout: number
+  ): Promise<boolean> => {
+    const wc = tab.view.webContents
+    if (
+      !isLotteOrigin(wc.getURL()) ||
+      !Number.isInteger(id) ||
+      id < 1 ||
+      id > 99999 ||
+      !Number.isInteger(expectedLength) ||
+      expectedLength < 0 ||
+      expectedLength > 20 ||
+      !Number.isSafeInteger(layout) ||
+      layout < 1
+    )
+      return false
+    try {
+      return (
+        (await call(
+          wc,
+          `__samba.pressLotteKeypad(${id},${expectedLength},${layout})`,
+          resultSchema
+        )) === 'ok'
+      )
+    } catch {
+      return false
+    }
+  },
+  eraseLotteKeypadProbe: async (tab: Tab, layout: number): Promise<boolean> => {
+    const wc = tab.view.webContents
+    if (!isLotteOrigin(wc.getURL()) || !Number.isSafeInteger(layout) || layout < 1) return false
+    try {
+      return (await call(wc, `__samba.eraseLotteKeypadProbe(${layout})`, resultSchema)) === 'ok'
+    } catch {
+      return false
+    }
+  },
+  submitLotteKeypad: async (tab: Tab, expectedLength: number): Promise<boolean> => {
+    const wc = tab.view.webContents
+    if (
+      !isLotteOrigin(wc.getURL()) ||
+      !Number.isInteger(expectedLength) ||
+      expectedLength < 1 ||
+      expectedLength > 20
+    )
+      return false
+    try {
+      return await call(wc, `__samba.submitLotteKeypad(${expectedLength})`, boolSchema)
+    } catch {
+      return false
     }
   },
   focusLottePassword: async (tab: Tab): Promise<LotteAuthSnapshot> => {

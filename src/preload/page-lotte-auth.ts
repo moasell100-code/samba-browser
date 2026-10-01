@@ -1,12 +1,13 @@
 import type { LotteAuthSnapshot } from '../shared/lotte-auth'
 import { readCardSession } from './page-card-session'
 
-function visible(el: Element): boolean {
+export function visibleLotteElement(el: Element): boolean {
   const view = el.ownerDocument.defaultView
   if (!view) return false
   for (let node: Element | null = el; node; node = node.parentElement) {
     if (node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true') return false
     if (node.hasAttribute('inert')) return false
+    if (node.tagName === 'INPUT' && node.getAttribute('type') === 'hidden') return false
     const style = view.getComputedStyle(node)
     if (
       style.display === 'none' ||
@@ -15,14 +16,20 @@ function visible(el: Element): boolean {
     )
       return false
     if (style.opacity !== '' && Number(style.opacity) === 0) return false
+    if (style.clip === 'rect(0px, 0px, 0px, 0px)') return false
+    if (
+      style.position === 'absolute' &&
+      (parseFloat(style.left) <= -9999 || parseFloat(style.top) <= -9999)
+    )
+      return false
   }
   return true
 }
 
-function passwordField(doc: Document): HTMLInputElement | null {
+export function lottePasswordField(doc: Document): HTMLInputElement | null {
   const candidates = Array.from(
     doc.querySelectorAll<HTMLInputElement>('#loginForm .idLogin #mbrCtfEncV')
-  ).filter(visible)
+  ).filter(visibleLotteElement)
   if (candidates.length !== 1) return null
   const input = candidates[0]
   if (
@@ -44,10 +51,10 @@ export function readLotteAuth(doc: Document = document): LotteAuthSnapshot {
   if (session.state === 'signed_in') return { state: 'signed_in' }
   if (new URL(doc.URL).pathname !== '/app/LPMANAA_V200.lc') return { state: 'unknown' }
   const error = Array.from(doc.querySelectorAll('.alertBox .alertMsg')).some(
-    (el) => visible(el) && /E0010|보안키패드\s*입력\s*오류/.test(el.textContent ?? '')
+    (el) => visibleLotteElement(el) && /E0010|보안키패드\s*입력\s*오류/.test(el.textContent ?? '')
   )
   if (error) return { state: 'input_error' }
-  const input = passwordField(doc)
+  const input = lottePasswordField(doc)
   if (!input) return { state: 'unknown' }
   // nProtect requires its own keypad if the supported keyboard security client is unavailable.
   // Never clear readonly or write its hidden encryption fields to force another input mode.
@@ -63,7 +70,7 @@ export function readLotteAuth(doc: Document = document): LotteAuthSnapshot {
 export function focusLottePassword(doc: Document = document): LotteAuthSnapshot {
   const before = readLotteAuth(doc)
   if (before.state !== 'keyboard_ready') return before
-  passwordField(doc)!.focus()
+  lottePasswordField(doc)!.focus()
   // Focus handlers can activate the official mandatory keypad and change readonly.
   return readLotteAuth(doc)
 }
@@ -82,7 +89,7 @@ export function submitLotteLogin(expectedLength: number, doc: Document = documen
     doc.querySelectorAll<HTMLButtonElement>('#loginForm .idLogin button[type="button"]')
   ).filter(
     (el) =>
-      visible(el) &&
+      visibleLotteElement(el) &&
       !el.disabled &&
       el.textContent?.trim() === '로그인' &&
       /^fnDoLoginId\(\);\s*return false;?$/.test(el.getAttribute('onclick') ?? '')

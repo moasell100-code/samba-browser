@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolContext } from '../src/main/agent/tools'
 import type { LotteAuthSnapshot } from '../src/shared/lotte-auth'
+import type { LotteKeypadSnapshot } from '../src/shared/lotte-keypad'
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   tool: (name: string, _description: string, _schema: unknown, handler: unknown) => ({
@@ -12,6 +13,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 const { pageBridge } = vi.hoisted(() => ({
   pageBridge: {
     lotteAuth: vi.fn<() => Promise<LotteAuthSnapshot>>(),
+    lotteKeypad: vi.fn<() => Promise<LotteKeypadSnapshot>>(),
+    pressLotteKeypad: vi.fn(async () => true),
+    submitLotteKeypad: vi.fn(async () => true),
     focusLottePassword: vi.fn<() => Promise<LotteAuthSnapshot>>(),
     findLoginFields: vi.fn(async () => ({
       stage: 'single',
@@ -77,6 +81,7 @@ function fixture() {
     onStep: vi.fn(),
     vault,
     lotteAttempts: attempts,
+    lotteKeypadAttempts: attempts,
     jobId: 'unit-job'
   } as unknown as ToolContext
   const tools = createSambaTools(context).tools
@@ -91,6 +96,7 @@ function fixture() {
 beforeEach(() => {
   vi.clearAllMocks()
   pageBridge.lotteAuth.mockResolvedValue({ state: 'keypad_required' })
+  pageBridge.lotteKeypad.mockResolvedValue({ state: 'unknown' })
   pageBridge.focusLottePassword.mockResolvedValue({ state: 'keypad_required' })
 })
 
@@ -120,21 +126,29 @@ describe('Lotte protected login agent integration', () => {
     expect(f.attempts.begin).not.toHaveBeenCalled()
     expect(f.attempts.clearSignedInProfile).not.toHaveBeenCalled()
   })
-  it('diagnoses mandatory keypad without reading or filling a password', async () => {
+  it('rejects an unverified official keypad without reading or filling a password', async () => {
     const f = fixture()
-    expect(await f.call('login')).toContain('keypad_required')
+    expect(await f.call('login')).toContain('could not be verified')
     expect(f.vault.getSecretForFill).not.toHaveBeenCalled()
     expect(pageBridge.fillValue).not.toHaveBeenCalled()
     expect(pageBridge.pressLotteCharacter).not.toHaveBeenCalled()
     expect(pageBridge.submitLotteLogin).not.toHaveBeenCalled()
   })
-  it('stops if the site changes to secure keypad after focusing', async () => {
+  it('never falls back to unsupported native keyboard input when official keypad is unavailable', async () => {
     const f = fixture()
     pageBridge.lotteAuth.mockResolvedValue({ state: 'keyboard_ready', focused: false, filled: 0 })
-    expect(await f.call('login')).toContain('keypad_required')
-    expect(pageBridge.fillValue).toHaveBeenCalledWith(expect.anything(), 1, 'synthetic-account')
+    expect(await f.call('login')).toContain('could not be verified')
+    expect(pageBridge.focusLottePassword).not.toHaveBeenCalled()
     expect(f.vault.getSecretForFill).not.toHaveBeenCalled()
     expect(pageBridge.pressLotteCharacter).not.toHaveBeenCalled()
+  })
+  it('official keypad probe is credential-free and cannot reset attempt protection', async () => {
+    const f = fixture()
+    expect(await f.call('probe_lotte_keypad')).toContain('not_ready')
+    expect(f.vault.getSecretForFill).not.toHaveBeenCalled()
+    expect(pageBridge.submitLotteKeypad).not.toHaveBeenCalled()
+    expect(f.attempts.begin).not.toHaveBeenCalled()
+    expect(f.attempts.clearSignedInProfile).not.toHaveBeenCalled()
   })
   it('reuses a verified signed-in session even when KeyMaster is locked', async () => {
     const f = fixture()

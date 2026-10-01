@@ -12,6 +12,8 @@ import { MAX_ELEMENTS } from './page-constants'
 import { captureFinanceTables } from './page-finance'
 import { readHyundaiAuth } from './page-hyundai-auth'
 import type { HyundaiAuthSnapshot } from '../shared/hyundai-auth'
+import { readLotteKeypad } from './page-lotte-keypad'
+import type { LotteKeypadSnapshot } from '../shared/lotte-keypad'
 import {
   isCloseLabel,
   isOverlay,
@@ -1110,6 +1112,53 @@ export function hyundaiAuth(): HyundaiAuthSnapshot {
   return readHyundaiAuth(ensureId)
 }
 
+let lotteLayoutSignature = ''
+let lotteLayoutRevision = 0
+export function lotteKeypad(): LotteKeypadSnapshot {
+  const snapshot = readLotteKeypad(ensureId)
+  const signature = JSON.stringify(snapshot)
+  if (signature !== lotteLayoutSignature) {
+    lotteLayoutSignature = signature
+    lotteLayoutRevision++
+  }
+  return { ...snapshot, layout: lotteLayoutRevision }
+}
+
+export function pressLotteKeypad(id: number, expectedLength: number, layout: number): string {
+  const snapshot = lotteKeypad()
+  if (
+    !Number.isInteger(expectedLength) ||
+    expectedLength < 0 ||
+    expectedLength > 20 ||
+    snapshot.filled !== expectedLength ||
+    snapshot.layout !== layout
+  )
+    return 'refused: Lotte keypad state changed'
+  const allowed =
+    snapshot.state === 'closed'
+      ? [snapshot.openId]
+      : snapshot.state === 'open'
+        ? [
+            ...(snapshot.keys ?? []).map((key) => key.id),
+            ...(snapshot.controls ?? []).map((control) => control.id)
+          ]
+        : []
+  if (!allowed.includes(id)) return 'refused: Lotte keypad target changed'
+  return pressOnce(id)
+}
+
+export function eraseLotteKeypadProbe(layout: number): string {
+  const snapshot = lotteKeypad()
+  if (
+    snapshot.state !== 'open' ||
+    snapshot.filled !== 1 ||
+    snapshot.layout !== layout ||
+    snapshot.removeId === undefined
+  )
+    return 'refused: Lotte keypad probe state changed'
+  return pressOnce(snapshot.removeId)
+}
+
 /**
  * 결제 비밀번호 키패드의 숫자 버튼 배치. 앱이 키마스터 값을 대신 누를 때 쓴다.
  * 0~9 가 각각 정확히 한 개 보일 때만 배치를 돌려주고, 하나라도 빠지거나 겹치면 null —
@@ -1228,13 +1277,24 @@ export function installCaptureListener(
       document.querySelectorAll<HTMLInputElement>('input[type="password"]')
     ).filter((el) => isVisible(el))
     const pw = pwEls[0]
-    if (!pw || !pw.value) return // 값이 없으면 저장 제안을 띄우지 않는다
+    if (!pw) return
     // PINsign inputs contain mask stars, not the credential. Never capture/overwrite from them.
     if (
       ['www.hyundaicard.com', 'hyundaicard.com'].includes(location.hostname) &&
       ['inputPinPass', 'inputPinPassBg'].includes(pw.id)
     )
       return
+    // Lotte's protected field contains nProtect mask text in both keypad and keyboard modes.
+    // Do not propose saving it or replace the existing KeyMaster password with those masks.
+    if (
+      location.origin === 'https://www.lottecard.co.kr' &&
+      location.pathname === '/app/LPMANAA_V200.lc' &&
+      pw.matches('#loginForm .idLogin #mbrCtfEncV') &&
+      pw.getAttribute('npkencrypt') === 'on' &&
+      pw.getAttribute('data-keypad-type') === 'alpha'
+    )
+      return
+    if (!pw.value) return // 값이 없으면 저장 제안을 띄우지 않는다
     const userEl = usernameElementFor(pw)
     const username = userEl?.value ?? ''
     const signature = `${username}:${pw.value}`
