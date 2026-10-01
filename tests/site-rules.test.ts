@@ -39,6 +39,17 @@ describe('knownLoginUrl', () => {
     expect(knownLoginUrl('samba-wave.co.kr')).toBe('https://samba-wave.co.kr/samba/login')
     expect(knownLoginUrl('www.ebay.com')).toBe('https://signin.ebay.com/ws/eBayISAPI.dll?SignIn')
   })
+
+  it('카드사 홈에서 공식 아이디 로그인 페이지를 찾는다', () => {
+    expect(knownLoginUrl('www.samsungcard.com')).toBe(
+      'https://www.samsungcard.com/personal/login/UHPPCO0301M0.jsp'
+    )
+    expect(knownLoginUrl('www.lottecard.co.kr')).toBe(
+      'https://www.lottecard.co.kr/app/LPMANAA_V200.lc'
+    )
+    expect(knownLoginUrl('samsungcard.com.example.invalid')).toBeUndefined()
+    expect(knownLoginUrl('lottecard.co.kr.example.invalid')).toBeUndefined()
+  })
 })
 
 describe('isLikelyLoginUrl', () => {
@@ -72,6 +83,22 @@ describe('isLikelyLoginUrl', () => {
   it('KNOWN_LOGIN_URLS 의 모든 값이 로그인 URL 판정을 통과한다', () => {
     for (const [host, url] of Object.entries(KNOWN_LOGIN_URLS)) {
       expect(isLikelyLoginUrl(url), `${host} → ${url}`).toBe(true)
+    }
+  })
+
+  it('화면 코드 로그인 주소는 정확한 공식 origin/path만 인정한다', () => {
+    expect(
+      isLikelyLoginUrl('https://www.lottecard.co.kr/app/LPMANAA_V200.lc?returnUrl=%2Fapp')
+    ).toBe(true)
+    for (const url of [
+      'https://www.lottecard.co.kr/app/LPMANAA_V200.lc/extra',
+      'https://other.lottecard.co.kr/app/LPMANAA_V200.lc',
+      'https://www.lottecard.co.kr.example.invalid/app/LPMANAA_V200.lc',
+      'https://www.lottecard.co.kr:8443/app/LPMANAA_V200.lc',
+      'https://user@www.lottecard.co.kr/app/LPMANAA_V200.lc',
+      'http://www.lottecard.co.kr/app/LPMANAA_V200.lc'
+    ]) {
+      expect(isLikelyLoginUrl(url), url).toBe(false)
     }
   })
 })

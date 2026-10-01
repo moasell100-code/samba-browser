@@ -95,6 +95,9 @@ export const KNOWN_LOGIN_URLS: Record<string, string> = {
   // GS SHOP 은 WAF 가 봇 요청을 일괄 405 로 막아 응답으로 확인하지 못했다.
   // 틀려도 login 도구가 페이지 내 로그인 링크 클릭으로 되짚으므로 후보로만 둔다
   'gsshop.com': 'https://with.gsshop.com/login/loginForm.gs',
+  // --- 카드사 (공식 PC 로그인 화면 확인, 2026-10) ---
+  'samsungcard.com': 'https://www.samsungcard.com/personal/login/UHPPCO0301M0.jsp',
+  'lottecard.co.kr': 'https://www.lottecard.co.kr/app/LPMANAA_V200.lc',
   // --- 자사 서비스 ---
   'samba-wave.co.kr': 'https://samba-wave.co.kr/samba/login',
   'samba-wave.vercel.app': 'https://samba-wave.vercel.app/samba/login',
@@ -128,6 +131,13 @@ export function isLikelyLoginUrl(url: string): boolean {
   try {
     const u = new URL(url)
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    // 카드사처럼 로그인 경로가 화면 코드로만 된 경우도 있다. 알려진 주소의
+    // 정확한 origin/path만 인정하며 비슷한 경로나 다른 호스트로 넓히지 않는다.
+    const known = knownLoginUrl(u.hostname)
+    if (known && !u.username && !u.password) {
+      const expected = new URL(known)
+      if (u.origin === expected.origin && u.pathname === expected.pathname) return true
+    }
     target = `${u.hostname}${u.pathname}${u.search}`
   } catch {
     // 스킴이 없는 값(예: 'www.example.com/login')도 판정할 수 있게 원문 그대로 본다
