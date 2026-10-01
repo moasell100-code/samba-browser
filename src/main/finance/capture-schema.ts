@@ -24,6 +24,54 @@ const cell = z
   })
   .strict()
 
+const layoutDiagnostic = z
+  .object({
+    nodes: z
+      .array(
+        z
+          .object({
+            depth: z.number().int().min(0).max(8),
+            tag: z.enum([
+              'div',
+              'span',
+              'ul',
+              'ol',
+              'li',
+              'dl',
+              'dt',
+              'dd',
+              'p',
+              'a',
+              'strong',
+              'em',
+              'b',
+              'i',
+              'small',
+              'section',
+              'article',
+              'header',
+              'footer',
+              'nav',
+              'h1',
+              'h2',
+              'h3',
+              'h4',
+              'h5',
+              'h6',
+              'br',
+              'hr',
+              'img'
+            ]),
+            classes: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/)).max(12)
+          })
+          .strict()
+      )
+      .min(1)
+      .max(80),
+    truncated: z.boolean()
+  })
+  .strict()
+
 export const financeFrameCaptureSchema = z
   .object({
     origin: z.string().refine(isFinanceCaptureUrl),
@@ -39,9 +87,15 @@ export const financeFrameCaptureSchema = z
           })
           .strict()
       )
-      .max(20)
+      .max(20),
+    layoutDiagnostic: layoutDiagnostic.optional()
   })
   .strict()
+  .refine(
+    (frame) =>
+      !frame.layoutDiagnostic ||
+      (frame.pathname === '/cpa/cb/CPACB0101_01.hc' && frame.tables.length === 0)
+  )
 
 export const financePageCaptureSchema = z
   .object({

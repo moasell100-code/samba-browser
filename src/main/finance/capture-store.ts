@@ -99,7 +99,11 @@ export class FinanceCaptureStore {
       rowCount: tables.reduce((count, table) => count + table.rows.length, 0),
       frameCount: valid.data.frames.length,
       previewOnly: true,
-      issues
+      issues,
+      // Only the main frame's tightly scoped structure may leave the capture store.
+      ...(tables.length === 0 && valid.data.frames[0].layoutDiagnostic
+        ? { layoutDiagnostic: valid.data.frames[0].layoutDiagnostic }
+        : {})
     }
     this.captures.set(receipt.captureId, {
       receipt,

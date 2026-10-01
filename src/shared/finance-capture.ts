@@ -13,10 +13,17 @@ export interface FinanceTableCapture {
   hasNestedTable: boolean
 }
 
+// Structure only. No text, IDs, form values, URL queries, or arbitrary attributes.
+export interface FinanceLayoutDiagnostic {
+  nodes: Array<{ depth: number; tag: string; classes: string[] }>
+  truncated: boolean
+}
+
 export interface FinanceFrameCapture {
   origin: string
   pathname: string
   tables: FinanceTableCapture[]
+  layoutDiagnostic?: FinanceLayoutDiagnostic
 }
 
 export interface FinancePageCapture {
@@ -45,4 +52,5 @@ export interface FinanceCaptureReceipt {
   frameCount: number
   previewOnly: true
   issues: FinanceCaptureIssue[]
+  layoutDiagnostic?: FinanceLayoutDiagnostic
 }
