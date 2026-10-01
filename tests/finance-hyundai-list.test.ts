@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
 import { captureHyundaiHistoryLists } from '../src/preload/page-finance-hyundai'
+import { captureFinanceTables } from '../src/preload/page-finance'
+import { FinanceCaptureStore } from '../src/main/finance/capture-store'
+import type { FinanceCaptureReceipt } from '../src/shared/finance-capture'
 
 const HISTORY_URL = 'https://www.hyundaicard.com/cpa/cb/CPACB0101_01.hc'
 const windows: JSDOM[] = []
@@ -53,7 +56,69 @@ function root(rows: string): string {
   return `<form><div id="divHistoryUseRight"><div>${rows}</div></div></form>`
 }
 
+function receipt(html: string): FinanceCaptureReceipt {
+  const frame = captureFinanceTables(docAt(html))
+  const store = new FinanceCaptureStore()
+  try {
+    return store.save({ frames: [frame], failedFrames: 0, skippedFrames: 0 })
+  } finally {
+    store.clear()
+  }
+}
+
+function total(count: number): string {
+  return `<div class="cel_total"><div class="box_info01 clearfix"><div class="fl">
+    <p class="p1_m_lt_1ln">총 ${count}건</p></div><div class="fr">
+    <p class="p1_m_rt_1ln">999,888,777원</p></div></div></div>`
+}
+
 describe('Hyundai observed visible list adapter', () => {
+  it('keeps raw fields local and returns only verified column counts to the model', () => {
+    const result = receipt(root(row()))
+    expect(result.issuer).toBe('hyundai_card')
+    expect(result.listRowCount).toBe(1)
+    expect(result.listSummaries).toEqual([
+      {
+        adapter: 'hyundai_history_list_v1',
+        rowCount: 1,
+        detailsVisibleCount: 0,
+        sourceRowIdCount: 0,
+        nonemptyFields: ['name', 'card', 'date', 'time', 'payment_type', 'amount'].map((field) => ({
+          field,
+          count: 1
+        }))
+      }
+    ])
+    expect(JSON.stringify(result)).not.toMatch(/합성|어제|12:34|취소|12,345|secret|private/)
+    expect(result.issues).toContain('details_incomplete')
+    expect(result.previewOnly).toBe(true)
+  })
+
+  it('compares the displayed left count with captured rows without returning the right amount', () => {
+    const result = receipt(
+      root(row()).replace(
+        '<div id="divHistoryUseRight">',
+        `<div id="divHistoryUseRight">${total(700)}`
+      )
+    )
+    expect(result.listSummaries![0].displayedTotal).toBe(700)
+    expect(result.listRowCount).toBe(1)
+    expect(result.issues).toContain('total_count_mismatch')
+    expect(JSON.stringify(result)).not.toContain('999,888,777')
+  })
+
+  it('does not report a count mismatch when displayed count and captured rows agree', () => {
+    const result = receipt(
+      root(row()).replace(
+        '<div id="divHistoryUseRight">',
+        `<div id="divHistoryUseRight">${total(1)}`
+      )
+    )
+    expect(result.listSummaries![0].displayedTotal).toBe(1)
+    expect(result.issues).not.toContain('total_count_mismatch')
+    expect(result.issues).toContain('pagination_unverified')
+  })
+
   it('preserves six visible column boundaries, relative dates and combined status without inventing IDs', () => {
     const read = readers()
     const result = captureHyundaiHistoryLists(docAt(root(row())), read)
