@@ -4,7 +4,7 @@ import type {
   FinanceCaptureReceipt,
   FinancePageCapture
 } from '../../shared/finance-capture'
-import { financePageCaptureSchema } from './capture-schema'
+import { financeCardIssuer, financePageCaptureSchema } from './capture-schema'
 
 export const FINANCE_CAPTURE_TTL_MS = 10 * 60 * 1000
 export const FINANCE_CAPTURE_MAX_ITEMS = 10
@@ -60,6 +60,8 @@ export class FinanceCaptureStore {
     this.prune()
     const valid = financePageCaptureSchema.safeParse(page)
     if (!valid.success) throw new Error('finance_capture_invalid')
+    const issuer = financeCardIssuer(valid.data.frames[0].origin)
+    if (!issuer) throw new Error('finance_capture_invalid')
     const raw = JSON.stringify(valid.data)
     const bytes = Buffer.byteLength(raw)
     if (bytes > FINANCE_CAPTURE_MAX_ITEM_BYTES) throw new Error('finance_capture_limit')
@@ -92,7 +94,7 @@ export class FinanceCaptureStore {
     const now = this.now()
     const receipt: FinanceCaptureReceipt = {
       captureId: randomUUID(),
-      issuer: 'hyundai_card',
+      issuer,
       capturedAt: new Date(now).toISOString(),
       expiresAt: new Date(now + FINANCE_CAPTURE_TTL_MS).toISOString(),
       tableCount: tables.length,

@@ -1,18 +1,22 @@
 import { z } from 'zod'
+import type { FinanceCardIssuer } from '../../shared/finance-capture'
 
-export function isFinanceCaptureUrl(value: string): boolean {
+export function financeCardIssuer(value: string): FinanceCardIssuer | null {
   try {
     const url = new URL(value)
-    return (
-      url.protocol === 'https:' &&
-      url.port === '' &&
-      url.username === '' &&
-      url.password === '' &&
-      ['hyundaicard.com', 'www.hyundaicard.com'].includes(url.hostname)
-    )
+    if (url.protocol !== 'https:' || url.port !== '' || url.username !== '' || url.password !== '')
+      return null
+    if (['hyundaicard.com', 'www.hyundaicard.com'].includes(url.hostname)) return 'hyundai_card'
+    if (url.hostname === 'www.samsungcard.com') return 'samsung_card'
+    if (url.hostname === 'www.lottecard.co.kr') return 'lotte_card'
+    return null
   } catch {
-    return false
+    return null
   }
+}
+
+export function isFinanceCaptureUrl(value: string): boolean {
+  return financeCardIssuer(value) !== null
 }
 
 const cell = z
@@ -74,7 +78,9 @@ const layoutDiagnostic = z
 
 export const financeFrameCaptureSchema = z
   .object({
-    origin: z.string().refine(isFinanceCaptureUrl),
+    origin: z
+      .string()
+      .refine((value) => isFinanceCaptureUrl(value) && new URL(value).origin === value),
     pathname: z.string().max(2000).startsWith('/'),
     tables: z
       .array(
@@ -94,7 +100,9 @@ export const financeFrameCaptureSchema = z
   .refine(
     (frame) =>
       !frame.layoutDiagnostic ||
-      (frame.pathname === '/cpa/cb/CPACB0101_01.hc' && frame.tables.length === 0)
+      (financeCardIssuer(frame.origin) === 'hyundai_card' &&
+        frame.pathname === '/cpa/cb/CPACB0101_01.hc' &&
+        frame.tables.length === 0)
   )
 
 export const financePageCaptureSchema = z
@@ -104,6 +112,11 @@ export const financePageCaptureSchema = z
     skippedFrames: z.number().int().nonnegative()
   })
   .strict()
+  .refine((page) =>
+    page.frames.every(
+      (frame) => financeCardIssuer(frame.origin) === financeCardIssuer(page.frames[0].origin)
+    )
+  )
 
 /** A vocabulary helper for a future verified adapter; unknown never means approved. */
 export function validateApprovalStatus(value: string): 'active' | 'cancelled' | 'unknown' {

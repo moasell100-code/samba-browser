@@ -1,4 +1,6 @@
 // Types only: page preload must not share runtime chunks with the renderer.
+export type FinanceCardIssuer = 'hyundai_card' | 'samsung_card' | 'lotte_card'
+
 export interface FinanceTableCell {
   text: string
   header: boolean
@@ -44,7 +46,7 @@ export type FinanceCaptureIssue =
 // Safe to return to a model. No financial cells, page title, account names or URL queries.
 export interface FinanceCaptureReceipt {
   captureId: string
-  issuer: 'hyundai_card'
+  issuer: FinanceCardIssuer
   capturedAt: string
   expiresAt: string
   tableCount: number

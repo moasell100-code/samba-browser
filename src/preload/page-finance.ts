@@ -122,7 +122,12 @@ export function captureFinanceTables(doc: Document = document): FinanceFrameCapt
   const url = new URL(doc.URL)
   if (
     url.protocol !== 'https:' ||
-    !['hyundaicard.com', 'www.hyundaicard.com'].includes(url.hostname) ||
+    ![
+      'hyundaicard.com',
+      'www.hyundaicard.com',
+      'www.samsungcard.com',
+      'www.lottecard.co.kr'
+    ].includes(url.hostname) ||
     url.port !== '' ||
     url.username !== '' ||
     url.password !== ''
@@ -135,7 +140,11 @@ export function captureFinanceTables(doc: Document = document): FinanceFrameCapt
   let cellCount = 0
   let totalChars = 0
   const layoutDiagnostic =
-    tables.length === 0 && url.pathname === HISTORY_PATH ? historyLayout(doc) : undefined
+    tables.length === 0 &&
+    ['hyundaicard.com', 'www.hyundaicard.com'].includes(url.hostname) &&
+    url.pathname === HISTORY_PATH
+      ? historyLayout(doc)
+      : undefined
   return {
     origin: url.origin,
     pathname: url.pathname,
