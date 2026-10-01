@@ -10,6 +10,8 @@ import type {
 } from '../shared/snapshot'
 import { MAX_ELEMENTS } from './page-constants'
 import { captureFinanceTables } from './page-finance'
+import { readHyundaiAuth } from './page-hyundai-auth'
+import type { HyundaiAuthSnapshot } from '../shared/hyundai-auth'
 import {
   isCloseLabel,
   isOverlay,
@@ -1104,6 +1106,10 @@ function ensureId(el: HTMLElement): number {
   return id
 }
 
+export function hyundaiAuth(): HyundaiAuthSnapshot {
+  return readHyundaiAuth(ensureId)
+}
+
 /**
  * 결제 비밀번호 키패드의 숫자 버튼 배치. 앱이 키마스터 값을 대신 누를 때 쓴다.
  * 0~9 가 각각 정확히 한 개 보일 때만 배치를 돌려주고, 하나라도 빠지거나 겹치면 null —
@@ -1217,6 +1223,12 @@ export function installCaptureListener(
     ).filter((el) => isVisible(el))
     const pw = pwEls[0]
     if (!pw || !pw.value) return // 값이 없으면 저장 제안을 띄우지 않는다
+    // PINsign inputs contain mask stars, not the credential. Never capture/overwrite from them.
+    if (
+      ['www.hyundaicard.com', 'hyundaicard.com'].includes(location.hostname) &&
+      ['inputPinPass', 'inputPinPassBg'].includes(pw.id)
+    )
+      return
     const userEl = usernameElementFor(pw)
     const username = userEl?.value ?? ''
     const signature = `${username}:${pw.value}`

@@ -7,6 +7,7 @@ import type { VaultService } from './service'
 import { checkVaultGate, isSecurePageUrl, sameRegistrableDomain } from './access-gate'
 import { normalizeHost } from '../../shared/host'
 import { DEFAULT_FIELD_KEY } from './fields'
+import { loginMethodOfSections } from '../../shared/login-method'
 
 // 결과 문자열. 값(평문)은 어떤 경우에도 담기지 않는다
 export type AutofillResult =
@@ -21,6 +22,7 @@ export type AutofillResult =
   | 'fields-not-found'
   | 'secret-not-found'
   | 'fill-failed'
+  | 'pin-login-required'
 
 export interface AutofillDeps {
   vault: VaultService
@@ -66,6 +68,11 @@ export async function autofillAccount(
   const account = deps.vault.getAccount(accountId)
   if (!account) return 'account-not-found'
   if (!sameRegistrableDomain(account.host, host)) return 'host-mismatch'
+
+  const loginItem = deps.vault.listItems(account.id).find((item) => item.type === 'login')
+  if (loginItem && loginMethodOfSections(loginItem.sections) === 'hyundai_pin') {
+    return 'pin-login-required'
+  }
 
   const fields = await pageBridge.findLoginFields(tab)
   if (fields.password === undefined) return 'fields-not-found'

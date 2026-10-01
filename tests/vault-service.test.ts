@@ -63,6 +63,45 @@ describe('VaultService', () => {
     vi.useRealTimers()
   })
 
+  it('login secret revision ignores metadata edits and changes only when secret is rewritten', async () => {
+    await vault.setup('master-pw')
+    const account = vault.upsertAccount({
+      host: 'www.hyundaicard.com',
+      label: 'test',
+      username: ''
+    })
+    expect(vault.loginSecretRevision(account.id)).toBeNull()
+    const item = vault.putItem({
+      accountId: account.id,
+      type: 'login',
+      label: 'test',
+      value: SECRET
+    })
+    const revision = vault.loginSecretRevision(account.id)
+    expect(revision).toMatch(/^[a-f0-9]{64}$/)
+    vault.putItem({
+      id: item.id,
+      accountId: account.id,
+      type: 'login',
+      label: 'renamed',
+      sections: item.sections
+    })
+    expect(vault.loginSecretRevision(account.id)).toBe(revision)
+    await expect(vault.rekeyToPassword('replacement-master-pw')).resolves.toBe('ok')
+    expect(vault.loginSecretRevision(account.id)).toBe(revision)
+    vault.putItem({
+      id: item.id,
+      accountId: account.id,
+      type: 'login',
+      label: 'renamed',
+      value: 'changed-test-secret'
+    })
+    expect(vault.loginSecretRevision(account.id)).not.toBe(revision)
+    const next = vault.loginSecretRevision(account.id)
+    vault.lock()
+    expect(vault.loginSecretRevision(account.id)).toBe(next)
+  })
+
   it('db.close() 이후 dispose() 를 호출해도 throw 하지 않는다(종료 순서 버그 회귀 테스트)', async () => {
     await vault.setup('master-pw')
     // 실제 버그 재현 순서: db 가 먼저 닫히고, 그 다음 vault.dispose() → lock() →

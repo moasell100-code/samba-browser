@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Tab } from '../src/main/browser/tab-manager'
 import type { VaultService } from '../src/main/vault/service'
-import type { AccountDto } from '../src/shared/vault'
+import type { AccountDto, VaultItemMeta } from '../src/shared/vault'
 
 const { pageBridge } = vi.hoisted(() => ({
   pageBridge: {
@@ -46,7 +46,13 @@ function tabAt(url: string): Tab {
 }
 
 function deps(
-  opts: { url?: string; account?: AccountDto | null; excluded?: string[]; locked?: boolean } = {}
+  opts: {
+    url?: string
+    account?: AccountDto | null
+    excluded?: string[]
+    locked?: boolean
+    items?: VaultItemMeta[]
+  } = {}
 ): {
   vault: VaultService
   activeTab: () => Tab | null
@@ -55,6 +61,7 @@ function deps(
   const vault = {
     state: () => (opts.locked ? 'locked' : 'unlocked'),
     getAccount: () => (opts.account === undefined ? account() : opts.account),
+    listItems: () => opts.items ?? [],
     getSecretForFill: () => PASSWORD
   } as unknown as VaultService
   return {
@@ -70,6 +77,41 @@ beforeEach(() => {
 })
 
 describe('autofillAccount', () => {
+  it('never sends a saved Hyundai PIN through the generic password-field filler', async () => {
+    const result = await autofillAccount(
+      deps({
+        account: account({ host: 'www.hyundaicard.com' }),
+        url: 'https://www.hyundaicard.com/index.jsp',
+        items: [
+          {
+            id: 1,
+            accountId: 1,
+            type: 'login',
+            label: '현대카드',
+            updatedAt: 1,
+            sections: [
+              {
+                key: 'main',
+                label: '로그인',
+                fields: [
+                  {
+                    key: 'login.method',
+                    label: '로그인 방식',
+                    kind: 'select',
+                    value: 'hyundai_pin'
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }),
+      1
+    )
+    expect(result).toBe('pin-login-required')
+    expect(pageBridge.fillValue).not.toHaveBeenCalled()
+    expect(pageBridge.findLoginFields).not.toHaveBeenCalled()
+  })
   it('같은 등록 도메인이면 서브도메인이 달라도 채운다(nid.naver.com 계정 → www.naver.com)', async () => {
     expect(await autofillAccount(deps(), 1)).toBe('ok')
     expect(pageBridge.fillValue).toHaveBeenCalledTimes(2)

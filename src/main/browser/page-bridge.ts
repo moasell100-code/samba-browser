@@ -19,6 +19,7 @@ import {
 } from './frame-id'
 import type { Tab } from './tab-manager'
 import type { FinancePageCapture } from '../../shared/finance-capture'
+import type { HyundaiAuthSnapshot } from '../../shared/hyundai-auth'
 import { financeFrameCaptureSchema, isFinanceCaptureUrl } from '../finance/capture-schema'
 
 // preload 가 실행되는 격리 월드 id. Electron 의 WorldId.ISOLATED_WORLD = 999
@@ -114,6 +115,24 @@ export type LoginFieldsResult = z.infer<typeof loginFieldsSchema>
 
 // 로그인 상태 힌트 — matched 는 페이지에서 온 문자열이라 길이를 잘라 쓴다
 const signedInHintSchema = z.object({ signedIn: z.boolean(), matched: z.string() })
+
+const hyundaiAuthSchema = z.object({
+  state: z.enum([
+    'signed_in',
+    'pin_ready',
+    'registration_required',
+    'unsupported',
+    'additional_auth',
+    'pin_error',
+    'unknown'
+  ]),
+  inputId: z.number().int().positive().optional(),
+  filled: z.number().int().min(0).max(6).optional(),
+  digits: z
+    .array(z.object({ digit: z.string().regex(/^[0-9]$/), id: z.number().int().positive() }))
+    .length(10)
+    .optional()
+})
 
 // 캡차·2FA 징후. 푸는 것은 사용자 몫이고, 여기서는 "사람이 필요하다"만 판정한다
 const captchaHintSchema = z.object({ needsUser: z.boolean(), matched: z.string() })
@@ -438,6 +457,13 @@ export const pageBridge = {
   // 이미 로그인된 상태인지 힌트(로그인 폼을 못 찾았을 때만 쓴다)
   signedInHint: (tab: Tab): Promise<SignedInHintResult> =>
     call(tab.view.webContents, '__samba.signedInHint()', signedInHintSchema),
+  hyundaiAuth: async (tab: Tab): Promise<HyundaiAuthSnapshot> => {
+    const url = tab.view.webContents.getURL()
+    if (!isFinanceCaptureUrl(url)) return { state: 'unsupported' }
+    const snapshot = await call(tab.view.webContents, '__samba.hyundaiAuth()', hyundaiAuthSchema)
+    if (tab.view.webContents.getURL() !== url) return { state: 'unknown' }
+    return snapshot
+  },
   // 결제 비밀번호 키패드 신호(비밀 화면 판정용). 입력 내용은 읽지 않는다
   keypadSignals: (tab: Tab): Promise<KeypadSignals> =>
     call(tab.view.webContents, '__samba.keypadSignals()', keypadSignalsSchema),

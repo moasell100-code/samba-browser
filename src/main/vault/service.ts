@@ -975,6 +975,21 @@ export class VaultService {
     return this.repo.listItems(accountId)
   }
 
+  // Main-process-only opaque revision for a failed-login latch. Neither metadata edits nor
+  // vault re-encryption may unblock it. Only an explicit credential write rotates this value.
+  loginSecretRevision(accountId: number): string | null {
+    const row = this.repo.findItemRow(accountId, 'login')
+    if (!row) return null
+    const field = findField(row.sections, DEFAULT_FIELD_KEY)
+    if (!field || !isSecretField(field)) return null
+    const metaKey = `login_secret_revision:${row.id}`
+    const saved = this.repo.getMeta(metaKey)?.toString('utf8')
+    if (saved && /^[a-f0-9]{64}$/.test(saved)) return saved
+    const revision = randomBytes(32).toString('hex')
+    this.repo.setMeta(metaKey, Buffer.from(revision, 'utf8'))
+    return revision
+  }
+
   listAudit(accountId?: number, limit?: number): AuditRow[] {
     return this.repo.listAudit(accountId, limit)
   }
@@ -1025,6 +1040,23 @@ export class VaultService {
       const base = existing?.sections ?? []
       const sections = this.buildSections(key, id, input, base)
       this.repo.updateItemFields(id, sections, input.label, input.type, now)
+      const wroteLoginSecret =
+        input.type === 'login' &&
+        ((!input.sections && input.value !== undefined) ||
+          input.sections?.some((section) =>
+            section.fields.some(
+              (field) =>
+                field.key === DEFAULT_FIELD_KEY &&
+                field.kind === 'secret' &&
+                field.value !== undefined
+            )
+          ))
+      if (wroteLoginSecret) {
+        this.repo.setMeta(
+          `login_secret_revision:${id}`,
+          Buffer.from(randomBytes(32).toString('hex'), 'utf8')
+        )
+      }
       this.repo.insertAudit({
         itemId: id,
         accountId: input.accountId,
