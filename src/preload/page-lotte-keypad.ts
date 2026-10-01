@@ -15,6 +15,7 @@ const symbols: Readonly<Record<string, string>> = {
   퍼센트: '%',
   윗꺽쇠: '^',
   앰퍼샌드: '&',
+  앰퍼센드: '&',
   별표: '*',
   소괄호열기: '(',
   소괄호닫기: ')',

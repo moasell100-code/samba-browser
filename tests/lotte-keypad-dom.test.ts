@@ -27,11 +27,11 @@ describe('Lotte official public semantic keypad', () => {
     const doc = at()
     const group = doc.querySelector('.kpd-group.lower')!
     group.setAttribute('class', 'kpd-group special')
-    group.innerHTML = ['느낌표', '쉬프트', '소문자', '한개지움', '확인'].map(key).join('')
+    group.innerHTML = ['느낌표', '앰퍼센드', '쉬프트', '소문자', '한개지움', '확인'].map(key).join('')
     const ensureId = vi.fn(ids())
     const state = readLotteKeypad(ensureId, doc)
     expect(state.state).toBe('open')
-    expect(state.keys?.map((entry) => entry.character)).toEqual(['!'])
+    expect(state.keys?.map((entry) => entry.character)).toEqual(['!', '&'])
     expect(state.controls?.map((entry) => entry.mode)).toEqual(['lower'])
     expect(ensureId.mock.calls.map(([el]) => el.getAttribute('aria-label'))).not.toContain('쉬프트')
   })
