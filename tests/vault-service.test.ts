@@ -163,6 +163,47 @@ describe('VaultService', () => {
     expect(secretFields[0].value).toBeUndefined()
   })
 
+  it('ordinary password capture and its undo cannot replace a subsequently saved login PIN', async () => {
+    await vault.setup('master-pw')
+    const account = vault.upsertAccount({
+      host: 'www.hyundaicard.com',
+      label: 'test',
+      username: 'test-user'
+    })
+    vault.putItem({ accountId: account.id, type: 'login', label: 'test', value: SECRET })
+    const { undoToken } = vault.applyAutoPasswordUpdate({
+      accountId: account.id,
+      username: 'test-user',
+      value: 'ordinary-update'
+    })
+    vault.putItem({
+      accountId: account.id,
+      type: 'login',
+      label: 'test',
+      sections: [
+        {
+          key: 'main',
+          label: '로그인',
+          fields: [
+            { key: 'login.method', kind: 'select', label: '로그인 방식', value: 'hyundai_pin' },
+            { key: 'value', kind: 'secret', label: '간편번호', value: '000000' }
+          ]
+        }
+      ]
+    })
+    const revision = vault.loginSecretRevision(account.id)
+    expect(() =>
+      vault.applyAutoPasswordUpdate({
+        accountId: account.id,
+        username: 'test-user',
+        value: 'captured-ordinary-password'
+      })
+    ).toThrow('PIN credentials')
+    expect(vault.undoAutoPasswordUpdate(undoToken)).toBe(false)
+    expect(vault.getSecretForFill(account.id, 'login')).toBe('000000')
+    expect(vault.loginSecretRevision(account.id)).toBe(revision)
+  })
+
   it('공개 목록·메타 어디에도 비밀값 문자열이 직렬화되지 않는다', async () => {
     await vault.setup('master-pw')
     const account = vault.upsertAccount({

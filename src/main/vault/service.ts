@@ -82,6 +82,7 @@ import {
   type WorkspaceScope
 } from '../../shared/sync'
 import { normalizeHost, accountGroupKey } from '../../shared/host'
+import { loginMethodOfSections } from '../../shared/login-method'
 
 // electron safeStorage 중 실제로 쓰는 부분만 좁혀 둔 인터페이스(테스트에서 스텁 주입)
 export interface SafeStorageLike {
@@ -1627,6 +1628,9 @@ export class VaultService {
     const key = this.requireKey()
     // v2 구조: 로그인 항목의 기본 secret 필드('value')에서 갱신 전 값을 읽는다
     const existing = this.repo.findItemRow(input.accountId, 'login')
+    if (existing && loginMethodOfSections(existing.sections) !== 'password') {
+      throw new Error('PIN credentials cannot be replaced by password capture')
+    }
     const existingField = existing ? findField(existing.sections, DEFAULT_FIELD_KEY) : null
     const oldValue =
       existing && existingField && isSecretField(existingField)
@@ -1676,6 +1680,9 @@ export class VaultService {
     this.pendingUndos.delete(token)
     if (Date.now() > pending.expiresAt) return false
     if (!this.key) return false
+
+    const current = this.repo.getItemRow(pending.itemId)
+    if (current && loginMethodOfSections(current.sections) !== 'password') return false
 
     if (pending.hadExistingItem && pending.oldValue !== null) {
       this.putItem({
