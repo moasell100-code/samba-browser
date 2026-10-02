@@ -61,8 +61,14 @@ const LABELS = new Set([
   '할부개월',
   '승인상태',
   '이용내역',
+  '승인금액',
+  '결제방법',
+  '승인일시',
+  '취소일시',
+  '매입일자',
   '더보기'
 ])
+const STATUS_LABELS = new Set(['취소', '부분취소', '승인취소'])
 
 function visible(el: Element): boolean {
   for (let node: Element | null = el; node; node = node.parentElement) {
@@ -122,9 +128,13 @@ function describe(el: Element, depth: number): LotteHistoryLayoutNode {
       if (child.nodeType === 3) text += (child.textContent ?? '').slice(0, 257)
       if (text.length > 256) break
     }
+    const exactStatus = STATUS_LABELS.has(text.trim()) ? text.trim() : undefined
     text = text.replace(/\s+/g, '').trim()
     if (!text) node.textKind = 'empty'
-    else if (LABELS.has(text)) {
+    else if (exactStatus) {
+      node.textKind = 'fixed_label'
+      node.label = exactStatus
+    } else if (LABELS.has(text)) {
       node.textKind = 'fixed_label'
       node.label = text
     } else if (
@@ -187,6 +197,27 @@ function moreControls(root: Element): NonNullable<LotteHistoryLayout['moreContro
   return matches
 }
 
+function rowShape(row: Element): { nodes: LotteHistoryLayoutNode[]; truncated: boolean } {
+  const shape = { nodes: [] as LotteHistoryLayoutNode[], truncated: false }
+  const visit = (el: Element, depth: number): void => {
+    if (!eligible(el)) return
+    if (depth > 6 || shape.nodes.length >= 80) {
+      shape.truncated = true
+      return
+    }
+    shape.nodes.push(describe(el, depth))
+    for (const child of Array.from(el.children)) {
+      visit(child, depth + 1)
+      if (shape.nodes.length >= 80) {
+        shape.truncated = true
+        break
+      }
+    }
+  }
+  visit(row, 0)
+  return shape
+}
+
 export function readLotteHistoryLayout(doc: Document = document): LotteHistoryLayout {
   let url: URL
   try {
@@ -207,12 +238,14 @@ export function readLotteHistoryLayout(doc: Document = document): LotteHistoryLa
   if (!roots.length) return { state: 'root_missing' }
   if (roots.length !== 1) return { state: 'root_ambiguous' }
   const root = roots[0]
-  const rows = Array.from(root.children).filter((el) => el.tagName === 'LI' && eligible(el))
+  const sourceRows = Array.from(root.children).filter((el) => el.tagName === 'LI')
+  const rows = sourceRows.filter(eligible)
   const result: LotteHistoryLayout = {
     state: 'ok',
     directRowCount: Math.min(rows.length, 1000),
     root: describe(root, 0),
     representative: [],
+    variantSamples: [],
     variants: { cancel: 0, parttot: 0, toggle: 0, toggleON: 0 },
     moreControls: moreControls(root),
     truncated: rows.length > 1000
@@ -229,21 +262,42 @@ export function readLotteHistoryLayout(doc: Document = document): LotteHistoryLa
         result.variants![name]++
     }
   }
-  const visit = (el: Element, depth: number): void => {
-    if (!eligible(el)) return
-    if (depth > 6 || result.representative!.length >= 80) {
-      result.truncated = true
-      return
-    }
-    result.representative!.push(describe(el, depth))
-    for (const child of Array.from(el.children)) {
-      visit(child, depth + 1)
-      if (result.representative!.length >= 80) {
-        result.truncated = true
-        break
-      }
-    }
+  if (rows[0]) {
+    const first = rowShape(rows[0])
+    result.representative = first.nodes
+    result.truncated ||= first.truncated
   }
-  if (rows[0]) visit(rows[0], 0)
+  const hasAmountClass = (row: Element, name: string): boolean =>
+    Array.from(row.children).some(
+      (el) => el.tagName === 'EM' && eligible(el) && el.classList.contains(name)
+    )
+  const variants: Array<
+    [
+      NonNullable<LotteHistoryLayout['variantSamples']>[number]['variant'],
+      (row: Element) => boolean
+    ]
+  > = [
+    ['row_cancel', (row) => row.classList.contains('cancel')],
+    ['em_cancel', (row) => hasAmountClass(row, 'cancel')],
+    ['em_parttot', (row) => hasAmountClass(row, 'parttot')],
+    [
+      'normal',
+      (row) =>
+        !row.classList.contains('cancel') &&
+        !hasAmountClass(row, 'cancel') &&
+        !hasAmountClass(row, 'parttot')
+    ]
+  ]
+  const selected = new Set(rows[0] ? [rows[0]] : [])
+  for (const [variant, matches] of variants) {
+    if (result.variantSamples!.length >= 3) break
+    const rowIndex = sourceRows.slice(0, 1000).findIndex((row) => eligible(row) && matches(row))
+    if (rowIndex < 0 || selected.has(sourceRows[rowIndex])) continue
+    selected.add(sourceRows[rowIndex])
+    const shape = rowShape(sourceRows[rowIndex])
+    result.variantSamples!.push({ variant, rowIndex, ...shape })
+    result.truncated ||= shape.truncated
+  }
+  result.truncated ||= sourceRows.length > 1000
   return result
 }

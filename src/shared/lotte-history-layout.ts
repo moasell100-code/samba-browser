@@ -16,6 +16,13 @@ export interface LotteHistoryLayout {
   directRowCount?: number
   root?: LotteHistoryLayoutNode
   representative?: LotteHistoryLayoutNode[]
+  variantSamples?: Array<{
+    variant: 'normal' | 'row_cancel' | 'em_cancel' | 'em_parttot'
+    /** Zero-based direct li index, including hidden siblings. */
+    rowIndex: number
+    nodes: LotteHistoryLayoutNode[]
+    truncated: boolean
+  }>
   variants?: { cancel: number; parttot: number; toggle: number; toggleON: number }
   /** One-based child-element indexes from #useCardList.parentElement, no attribute selectors. */
   moreControls?: Array<{ path: number[]; node: LotteHistoryLayoutNode }>

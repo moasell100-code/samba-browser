@@ -72,6 +72,14 @@ const node = z
         '할부개월',
         '승인상태',
         '이용내역',
+        '승인금액',
+        '결제방법',
+        '승인일시',
+        '취소일시',
+        '매입일자',
+        '취소',
+        '부분취소',
+        '승인취소',
         '더보기'
       ])
       .optional()
@@ -84,6 +92,19 @@ export const lotteHistoryLayoutSchema = z
     directRowCount: z.number().int().min(0).max(1000).optional(),
     root: node.optional(),
     representative: z.array(node).max(80).optional(),
+    variantSamples: z
+      .array(
+        z
+          .object({
+            variant: z.enum(['normal', 'row_cancel', 'em_cancel', 'em_parttot']),
+            rowIndex: z.number().int().min(0).max(999),
+            nodes: z.array(node).max(80),
+            truncated: z.boolean()
+          })
+          .strict()
+      )
+      .max(3)
+      .optional(),
     variants: z
       .object({
         cancel: z.number().int().min(0).max(1000),

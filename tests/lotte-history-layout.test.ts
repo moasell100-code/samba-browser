@@ -15,6 +15,81 @@ afterEach(() => {
 })
 
 describe('bounded Lotte public history shape diagnostic', () => {
+  it('adds only the first visible row for each distinct cancellation shape with original row indexes', () => {
+    const doc = at(`<ul id="useCardList"><li><strong>normal-private</strong></li>
+      <li hidden class="cancel"><em class="parttot">hidden-private</em></li>
+      <li class="cancel"><strong>cancel-private</strong><span>취소</span><span>취소 customer-private</span></li>
+      <li><em class="cancel"><span>98,765원</span><span>12,300원</span></em></li>
+      <li><em class="parttot"><span>23,456원</span><span>1,230원</span></em><div class="useList">
+        <dl><dt>승인금액</dt><dd>23,456원</dd><dt>취소금액</dt><dd>1,230원</dd><dt>결제방법</dt><dd>private-payment</dd>
+        <dt>승인일시</dt><dd>date-private</dd><dt>취소일시</dt><dd>cancel-date-private</dd><dt>매입일자</dt><dd>date-private</dd></dl>
+        <span>부분취소</span><span>승인취소</span><span>부분 취소</span><span hidden>secret-private</span>
+      </div></li><li class="cancel"><strong>later-private</strong></li></ul>`)
+    const result = readLotteHistoryLayout(doc)
+    expect(result.variantSamples?.map(({ variant, rowIndex }) => ({ variant, rowIndex }))).toEqual([
+      { variant: 'row_cancel', rowIndex: 2 },
+      { variant: 'em_cancel', rowIndex: 3 },
+      { variant: 'em_parttot', rowIndex: 4 }
+    ])
+    const labels = result.variantSamples!.flatMap(({ nodes }) =>
+      nodes.flatMap(({ label }) => (label ? [label] : []))
+    )
+    expect(labels).toEqual([
+      '취소',
+      '승인금액',
+      '취소금액',
+      '결제방법',
+      '승인일시',
+      '취소일시',
+      '매입일자',
+      '부분취소',
+      '승인취소'
+    ])
+    expect(JSON.stringify(result)).not.toMatch(/private|98,765|12,300|23,456|1,230/)
+    expect(lotteHistoryLayoutSchema.safeParse(result).success).toBe(true)
+  })
+  it('does not duplicate the existing first row and includes the first normal row when needed', () => {
+    const result = readLotteHistoryLayout(
+      at(
+        '<ul id="useCardList"><li class="cancel"><em class="cancel">private</em></li><li><strong>normal-private</strong></li><li class="cancel">later-private</li></ul>'
+      )
+    )
+    expect(result.variantSamples?.map(({ variant, rowIndex }) => ({ variant, rowIndex }))).toEqual([
+      { variant: 'normal', rowIndex: 1 }
+    ])
+  })
+  it('enforces independent node/depth limits and excludes inputs in every additional sample', () => {
+    const many = '<span>private</span>'.repeat(100)
+    const doc = at(
+      `<ul id="useCardList"><li>normal</li><li class="cancel">${many}<input type="password" value="secret"></li><li><em class="cancel">${many}</em></li><li><em class="parttot">${'<div>'.repeat(10)}deep-private${'</div>'.repeat(10)}</em></li></ul>`
+    )
+    vi.spyOn(doc.querySelector('input')!, 'value', 'get').mockImplementation(() => {
+      throw new Error('value read')
+    })
+    const result = readLotteHistoryLayout(doc)
+    expect(result.variantSamples).toHaveLength(3)
+    expect(
+      result.variantSamples!.every(
+        ({ nodes, truncated }) =>
+          nodes.length <= 80 && nodes.every(({ depth }) => depth <= 6) && truncated
+      )
+    ).toBe(true)
+    expect(result.truncated).toBe(true)
+    expect(JSON.stringify(result)).not.toMatch(/private|secret/)
+    expect(lotteHistoryLayoutSchema.safeParse(result).success).toBe(true)
+    expect(
+      lotteHistoryLayoutSchema.safeParse({
+        ...result,
+        variantSamples: [...result.variantSamples!, result.variantSamples![0]]
+      }).success
+    ).toBe(false)
+    expect(
+      lotteHistoryLayoutSchema.safeParse({
+        ...result,
+        variantSamples: [{ ...result.variantSamples![0], text: 'private' }]
+      }).success
+    ).toBe(false)
+  })
   it('describes only one direct row with value kinds, public CSS and list variant counts', () => {
     const doc =
       at(`<p>outside-account-name</p><form><ul id="useCardList" class="useCardList type02">

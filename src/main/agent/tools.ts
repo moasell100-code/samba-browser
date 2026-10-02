@@ -2338,7 +2338,7 @@ overlays left: ${after.length}${kept}`
 
   const inspectLotteHistoryLayout = tool(
     'inspect_lotte_history_layout',
-    'Inspect only the public structural shape of the first visible Lotte Card history list row on its exact official history page. Returns bounded tags, allowlisted static CSS identifiers, counts and text-kind flags; never transaction text, values, dynamic identifiers or secrets. Read-only diagnostic; does not capture or import transactions, authenticate a session, or prove completeness.',
+    'Inspect the first visible Lotte Card history row and up to three first cancellation/normal variant row shapes on the exact official history page. Returns bounded tags, allowlisted static CSS identifiers/labels, row indexes, counts and text-kind flags; never transaction values, dynamic identifiers or secrets. Read-only diagnostic; does not capture or import transactions, authenticate a session, or prove completeness.',
     {},
     () =>
       guard('롯데 이용내역 구조 확인 (거래값 제외)', async () => {
