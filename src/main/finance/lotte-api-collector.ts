@@ -87,7 +87,19 @@ const DETAIL_METHOD_LABELS = [
   '일시불 승인',
   '카드승인',
   '국내일시불',
-  '해외일시불'
+  '해외일시불',
+  '일반',
+  '법인',
+  '선불',
+  '후불',
+  '비씨',
+  'BC',
+  'BC신용',
+  '신용(BC)',
+  '체크(BC)',
+  '체크(비씨)',
+  '신용(비씨)',
+  '기프트'
 ] as const
 const CANCELLATION_EXTRA_LABELS = [
   '',
@@ -261,7 +273,11 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
   const method = metadata[2]
   if (method !== '일시불' && method !== '할부') needsReview.push('transaction_type_unverified')
   const detailMethod = details?.get('거래유형')
-  if (detailMethod && detailMethod !== method) {
+  const detailMethodCompatible =
+    detailMethod === method ||
+    ((detailMethod === '신용' || detailMethod === '체크') &&
+      (method === '일시불' || method === '할부'))
+  if (detailMethod && !detailMethodCompatible) {
     needsReview.push('transaction_type_conflict')
     const label = (DETAIL_METHOD_LABELS as readonly string[]).indexOf(detailMethod)
     needsReview.push(
@@ -301,9 +317,15 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
   const cancellationDate = details?.get('취소일자') ? date(details.get('취소일자')!) : null
   const detailRefund = krw(details?.get('취소금액'))
   const cancellationLabel = details?.get('취소여부')
+  const normalDash =
+    cancellationLabel === '-' &&
+    status === 'approved' &&
+    (detailRefund === 0 || ['', '-', '--'].includes(details?.get('취소금액') ?? '')) &&
+    ['', '-', '--'].includes(details?.get('취소일자') ?? '')
   if (
     details &&
     cancellationLabel !== '정상' &&
+    !normalDash &&
     !['취소', '취소완료', '부분취소'].includes(cancellationLabel ?? '')
   ) {
     needsReview.push('status_unverified')

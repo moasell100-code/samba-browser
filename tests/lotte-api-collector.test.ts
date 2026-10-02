@@ -199,10 +199,12 @@ describe('Lotte private API normalization', () => {
   })
   it('returns only fixed detail-method indices and retains unexpected semantics for review', () => {
     for (const [label, code] of [
-      ['신용', 'detail_method_label_0'],
+      ['신용거래', 'detail_method_label_2'],
       ['정상승인', 'detail_method_label_18'],
       ['신용판매', 'detail_method_label_19'],
       ['해외일시불', 'detail_method_label_28'],
+      ['법인', 'detail_method_label_30'],
+      ['기프트', 'detail_method_label_40'],
       ['private-method-value', 'detail_method_label_unrecognized']
     ]) {
       const html = content().replace(
@@ -215,10 +217,9 @@ describe('Lotte private API normalization', () => {
       expect(JSON.stringify(row)).not.toContain('private-method-value')
     }
   })
-  it('identifies public blank/hyphen cancellation labels by index without accepting them as normal', () => {
+  it('identifies unverified public cancellation labels by index without accepting them as normal', () => {
     for (const [label, code] of [
       ['', 'cancellation_extra_label_0'],
-      ['-', 'cancellation_extra_label_1'],
       ['승인완료', 'cancellation_extra_label_8']
     ]) {
       const row = parseLotteApiResponse(
@@ -227,6 +228,59 @@ describe('Lotte private API normalization', () => {
       expect(row.needsReview).toContain('status_unverified')
       expect(row.needsReview).toContain(code)
     }
+  })
+  it('treats verified credit/debit instrument class independently from the purchase payment method', () => {
+    for (const method of ['신용', '체크']) {
+      for (const header of ['일시불', '할부']) {
+        const html = content()
+          .replaceAll('일시불', header)
+          .replace(
+            `거래유형<input value="not-a-business-value"><span>${header}</span>`,
+            `거래유형<input value="not-a-business-value"><span>${method}</span>`
+          )
+          .replace('<span>정상</span>', '<span>-</span>')
+        const row = parseLotteApiResponse(response(html)).rows[0]
+        expect(row).toMatchObject({ status: 'approved', netAmount: 10000, needsReview: [] })
+      }
+    }
+    const loan = content()
+      .replace(
+        '<div class="info"><span>2026.10.02</span><span>합성카드(1234)</span><span>일시불</span>',
+        '<div class="info"><span>2026.10.02</span><span>합성카드(1234)</span><span>단기카드대출</span>'
+      )
+      .replace(
+        '거래유형<input value="not-a-business-value"><span>일시불</span>',
+        '거래유형<input value="not-a-business-value"><span>신용</span>'
+      )
+    expect(parseLotteApiResponse(response(loan)).rows[0].needsReview).toContain(
+      'transaction_type_unverified'
+    )
+  })
+  it('accepts a normal dash only when refund and cancellation date are explicitly empty or zero', () => {
+    for (const refund of ['0원', '-', '']) {
+      const row = parseLotteApiResponse(
+        response(content({ refund }).replace('<span>정상</span>', '<span>-</span>'))
+      ).rows[0]
+      expect(row.needsReview).toEqual([])
+    }
+    for (const options of [
+      { refund: '1,000원' },
+      { refund: '-1,000원' },
+      { refund: 'unknown-refund' },
+      { cancelDate: '2026.10.03' },
+      { cancelDate: 'unknown-date' }
+    ]) {
+      const row = parseLotteApiResponse(
+        response(content(options).replace('<span>정상</span>', '<span>-</span>'))
+      ).rows[0]
+      expect(row.needsReview).toContain('status_unverified')
+    }
+    const cancelled = parseLotteApiResponse(
+      response(
+        content({ kind: 'cancelled' }).replace('<span>취소</span></li>', '<span>-</span></li>')
+      )
+    ).rows[0]
+    expect(cancelled.needsReview).toContain('status_unverified')
   })
   it('flags disagreement between explicit cancellation amount and exact partial-cancellation label', () => {
     const row = parseLotteApiResponse(response(content({ kind: 'partial', refund: '4,000원' })))

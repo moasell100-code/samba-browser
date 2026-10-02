@@ -22,14 +22,23 @@ const SCRIPT = String.raw`(() => {
     if (token.startsWith('//') || token.startsWith('/*')) return '';
     const value = token.slice(1, -1);
     const publicMarkupText = value.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, '').replace(/\s+/g, '');
+    if (/^[a-zA-Z][a-zA-Z0-9_-]{0,32}$/.test(value) && /\.data\(\s*$/.test(source.slice(Math.max(0,offset-30),offset))) return JSON.stringify(value);
     if (value.includes('<') && ['원','국내','해외','승인','취소','보유카드전체'].includes(publicMarkupText)) return JSON.stringify('[markup omitted]' + publicMarkupText);
     // Static public currency/region comparisons only, never current form or account values.
     if (/^[A-Z]{1,6}$/.test(value) && (/\.(?:dmfrClsf|dmfrClsfCd|acplCrncCd|bllCrncCd)\s*={2,3}\s*$/.test(source.slice(Math.max(0, offset - 80), offset)) || /^\s*={2,3}\s*[A-Za-z_$][\w$]*\.(?:dmfrClsf|dmfrClsfCd|acplCrncCd|bllCrncCd)\b/.test(source.slice(offset + token.length, offset + token.length + 80)))) return JSON.stringify(value);
     if (literals.has(value) || /^\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do)$/.test(value) && !/\d{8,}/.test(value)) return JSON.stringify(value);
     return '"[literal omitted]"';
   }).replace(/\b\d{4,}\b/g, '[number omitted]');
-  const result = { functions: [], handlers: [], paths: [], filterLabels: [] };
+  const result = { functions: [], handlers: [], paths: [], filterLabels: [], cardSelectorSchema: [] };
   if (location.hostname === 'www.lottecard.co.kr') {
+    for (const input of Array.from(document.querySelectorAll('input[name="useCarditem"]')).slice(0,20)) {
+      const root = input.closest('li') || input.parentElement;
+      if (!root) continue;
+      const nodes = [root,...root.querySelectorAll('*')].slice(0,50);
+      const facts = nodes.map(node => ({tag:node.tagName, classes:Array.from(node.classList).filter(name=>/^[a-zA-Z][a-zA-Z_-]{0,40}$/.test(name)).slice(0,5), dataNames:node.getAttributeNames().filter(name=>/^data-[a-z-]{1,40}$/.test(name))})).filter(node=>node.dataNames.length || ['INPUT','LABEL'].includes(node.tag));
+      const label = Array.from(input.labels || []).map(item=>item.textContent || '').join(' ');
+      result.cardSelectorSchema.push({rootTag:root.tagName,nodes:facts,hasMaskedNumber:/[\d*]{4}[- ]?[\d*]{4}[- ]?[\d*]{4}[- ]?[\d*]{4}/.test(label),hasSuffix:/\([\d*]{4}\)/.test(label),hasFourDigitToken:/(?<![\d*])[\d*]{4}(?![\d*])/.test(label)});
+    }
     const publicLabels = new Set(['전체','신용카드','체크카드','국내','해외','승인','취소','정상','일시불','할부','일시불+할부','일시불/할부','단기카드대출','장기카드대출','단기카드대출(현금서비스)','장기카드대출(카드론)']);
     for (const name of ['useCdDvRadio','uplDvRadio','stDvRadio','useDvRadio']) {
       const labels = Array.from(document.querySelectorAll('input[type="radio"][name="' + name + '"]')).slice(0, 10).map(input => {

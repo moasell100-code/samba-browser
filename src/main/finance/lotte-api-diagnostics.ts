@@ -240,6 +240,12 @@ export function lotteResponseShapeIssues(value: unknown): string[] {
         result.add('shape_json_' + name.replaceAll('-', '_'))
         if (tags.has(node.tagName)) result.add('shape_json_node_' + node.tagName.toLowerCase())
         const stamp: unknown = Object.getOwnPropertyDescriptor(payload, 'aprDtti')?.value
+        const reference: unknown = Object.getOwnPropertyDescriptor(payload, 'cdno')?.value
+        if (typeof reference === 'string' && reference.length < 2048) {
+          if (/^\d{14,19}$/.test(reference)) result.add('shape_cdno_pan_digits')
+          else if (/^[\d*]{14,19}$/.test(reference)) result.add('shape_cdno_pan_masked')
+          else result.add('shape_cdno_opaque')
+        }
         if (typeof stamp === 'string' && stamp.length < 80) {
           result.add('shape_aprdtti_length_' + stamp.length)
           if (/^\d+$/.test(stamp)) result.add('shape_aprdtti_digits')

@@ -197,6 +197,18 @@ describe('fixed query contract inspection redaction', () => {
     expect(serialized).not.toContain('PRIVATE_CUSTOMER')
   })
 
+  it('returns selector structure without card references or label text', async () => {
+    const f = fixture()
+    f.dom.window.document.body.innerHTML +=
+      '<li><input id="useCarditem0" name="useCarditem" data-card-no="PRIVATE_REFERENCE"><label for="useCarditem0">PRIVATE_CARD (123*)</label></li>'
+    const serialized = JSON.stringify(await inspectCardQueryContract(f.tab))
+    expect(serialized).toContain('data-card-no')
+    expect(serialized).toContain('hasSuffix')
+    expect(serialized).not.toContain('PRIVATE_REFERENCE')
+    expect(serialized).not.toContain('PRIVATE_CARD')
+    expect(serialized).not.toContain('123*')
+  })
+
   it('does not invoke accessor properties or event handlers while inspecting', async () => {
     const f = fixture()
     const getter = vi.fn(() => {
