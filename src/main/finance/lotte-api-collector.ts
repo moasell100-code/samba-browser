@@ -551,6 +551,8 @@ function detailRequest(
     return { ok: false, reason: 'detail_approval_amount_format_unverified' }
   if (row.status === 'approved' && amount !== row.amount)
     return { ok: false, reason: 'detail_approval_amount_conflict' }
+  if (result.mcNm.replace(/\s+/g, ' ').trim() !== row.merchant.replace(/\s+/g, ' ').trim())
+    return { ok: false, reason: 'detail_merchant_conflict' }
   return { ok: true, form: result }
 }
 
@@ -577,9 +579,10 @@ async function enrichLottePage(
   mildolYn: unknown,
   budget: { remaining: number },
   signal?: AbortSignal
-): Promise<{ page: LotteApiPage; interruption?: string }> {
+): Promise<{ page: LotteApiPage; diagnostics: string[]; interruption?: string }> {
   const original = parseLotteApiResponse(response)
-  if (original.rowCount === null || original.rowCount === 0) return { page: original }
+  if (original.rowCount === null || original.rowCount === 0)
+    return { page: original, diagnostics: [] }
   const doc = parse(own(response, 'Content') as string)
   const root = doc.querySelector('#useCardList') ?? doc
   const overrides = new Map<number, DetailFields>()
@@ -641,9 +644,9 @@ async function enrichLottePage(
     }
   }
   const page = parseLotteApiResponse(response, overrides, flags)
-  page.issues = [...new Set([...page.issues, ...diagnostics])]
   return {
     page,
+    diagnostics: [...diagnostics],
     ...(interruption ? { interruption } : {})
   }
 }
@@ -816,6 +819,7 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
         options.signal
       )
       page = enriched.page
+      for (const issue of enriched.diagnostics) issues.add(issue)
       if (page.rowCount === null) return result(['response_schema_unverified'])
       let interruption = enriched.interruption
       if (!interruption) {

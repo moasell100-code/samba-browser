@@ -121,6 +121,7 @@ export function summarizeLotteHistoryContent(parsed: unknown): LotteHistoryConte
           node.nodeType === 8 || node === top[0] || (node.nodeType === 3 && !node.text.trim())
       ) &&
       [
+        '조회조건에해당하는내역이없습니다.',
         '조회하신조건에맞는내역이없습니다.',
         '조회하신조건과일치하는내역이없습니다.',
         '조회하신조건에해당하는내역이없습니다.',

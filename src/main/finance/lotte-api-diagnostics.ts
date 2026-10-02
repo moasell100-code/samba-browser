@@ -224,6 +224,21 @@ export function lotteResponseShapeIssues(value: unknown): string[] {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue
         result.add('shape_json_' + name.replaceAll('-', '_'))
         if (tags.has(node.tagName)) result.add('shape_json_node_' + node.tagName.toLowerCase())
+        const stamp: unknown = Object.getOwnPropertyDescriptor(payload, 'aprDtti')?.value
+        if (typeof stamp === 'string' && stamp.length < 80) {
+          result.add('shape_aprdtti_length_' + stamp.length)
+          if (/^\d+$/.test(stamp)) result.add('shape_aprdtti_digits')
+          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{1,9}$/.test(stamp))
+            result.add('shape_aprdtti_sql_fraction')
+          if (/^\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}(?:\.\d{1,9})?$/.test(stamp))
+            result.add('shape_aprdtti_db2')
+          if (
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?$/.test(stamp)
+          )
+            result.add('shape_aprdtti_iso')
+          if (/^\d{8} \d{6}$/.test(stamp)) result.add('shape_aprdtti_compact_space')
+          if (/^\d{14}\.\d{1,9}$/.test(stamp)) result.add('shape_aprdtti_compact_fraction')
+        }
         for (const key of keys)
           if (Object.hasOwn(payload, key)) result.add('shape_key_' + key.toLowerCase())
       } catch {

@@ -353,6 +353,28 @@ describe('Lotte verified all-option and Param pagination collector', () => {
     expect(JSON.stringify(result.receipt)).not.toMatch(/SYNTH|synthetic|합성|1234/)
     expect(JSON.stringify(result.rows)).not.toMatch(/synthetic-private|aprDeKeyV/)
   })
+  it('does not attach another merchant payload with the same approval date and amount', async () => {
+    const h = collectorFixture([envelope(1, 1, lazyContent({ mcNm: '다른 합성 가맹점' }))])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.receipt.issues).toContain('detail_merchant_conflict')
+    expect(result.rows[0].needsReview).toContain('detail_request_unverified')
+    expect(result.rows[0].approvalNumber).toBeUndefined()
+    expect(h.fetch).toHaveBeenCalledTimes(1)
+  })
+  it('keeps verified approval coverage when only another row has a noninterrupting detail failure', async () => {
+    const h = collectorFixture([
+      envelope(1, 1, lazyContent() + lazyContent({ aprno: 'SYNTH-002' })),
+      detailEnvelope(),
+      response('<form>unrecognized synthetic details</form>')
+    ])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.receipt.approvalComplete).toBe(true)
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows[0].needsReview).toEqual([])
+    expect(result.rows[1].needsReview).toContain('detail_response_schema_unverified')
+    expect(result.receipt.issues).toContain('detail_response_schema_unverified')
+    expect(result.receipt.complete).toBe(false)
+  })
   it.each([
     { name: 'different approval', detail: detailEnvelope({ approval: 'OTHER-SYNTH' }) },
     {
