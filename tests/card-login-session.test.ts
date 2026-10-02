@@ -3,8 +3,12 @@ import type { Tab, TabManager } from '../src/main/browser/tab-manager'
 import type { VaultService } from '../src/main/vault/service'
 import { DEFAULT_SETTINGS, type Settings } from '../src/shared/settings'
 import { createSambaTools } from '../src/main/agent/tools'
+import { pageBridge } from '../src/main/browser/page-bridge'
 import { inspectCardPage } from '../src/main/finance/card-page-diagnostics'
-import { restoreCardSession } from '../src/main/finance/card-login-session'
+import {
+  inspectLotteKeypadStatus,
+  restoreCardSession
+} from '../src/main/finance/card-login-session'
 
 vi.mock('../src/main/agent/tools', () => ({ createSambaTools: vi.fn() }))
 vi.mock('../src/main/finance/card-page-diagnostics', async (load) => {
@@ -12,7 +16,10 @@ vi.mock('../src/main/finance/card-page-diagnostics', async (load) => {
   return { ...actual, inspectCardPage: vi.fn() }
 })
 
-afterEach(() => vi.resetAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.resetAllMocks()
+})
 
 const SIGNED_OUT = { issuer: 'samsung_card', state: 'signed_out', auth: 'signed_out' } as const
 const SIGNED_IN = { issuer: 'samsung_card', state: 'ready', auth: 'signed_in' } as const
@@ -119,7 +126,7 @@ describe('card session restoration through existing KeyMaster login gates', () =
 
   it.each([
     ['locked: SYNTHETIC_PRIVATE_SECRET', 'vault_locked'],
-    ['previous failed attempt: SYNTHETIC_PRIVATE_SECRET', 'attempt_protected'],
+    ['previous failed attempt: SYNTHETIC_PRIVATE_SECRET', 'login_unconfirmed'],
     ['needs_user: captcha SYNTHETIC_PRIVATE_SECRET', 'user_verification_required'],
     ['not found: SYNTHETIC_PRIVATE_SECRET', 'saved_account_unavailable'],
     ['refused: KeyMaster access policy is Never SYNTHETIC_PRIVATE_SECRET', 'policy_blocked'],
@@ -130,6 +137,70 @@ describe('card session restoration through existing KeyMaster login gates', () =
     const result = await restoreCardSession(f.options)
     expect(result).toEqual({ state, auth: 'signed_out' })
     expect(JSON.stringify(result)).not.toContain('SYNTHETIC_PRIVATE_SECRET')
+  })
+
+  it.each([
+    'refused: Lotte Card keypad login was already attempted; do not retry',
+    'refused: Lotte Card login was already attempted; do not retry',
+    'refused: Hyundai Card PIN was already attempted. Do not retry. Complete login yourself or update the saved PIN in KeyMaster.'
+  ])('identifies only the actual persistent attempt-store rejection: %s', async (raw) => {
+    const f = fixture()
+    f.login.mockResolvedValue({ content: [{ type: 'text', text: raw }] })
+    expect(await restoreCardSession(f.options)).toEqual({
+      state: 'attempt_protected',
+      auth: 'signed_out'
+    })
+  })
+
+  it('distinguishes keypad verification failure from retry protection and returns only allowed diagnostics', async () => {
+    const f = fixture()
+    const prefix = 'refused: Lotte Card official keypad could not be verified; no submit or retry'
+    f.login.mockResolvedValue({
+      content: [
+        { type: 'text', text: `${prefix} [stage=preflight_special; reason=label_mismatch]` }
+      ]
+    })
+    expect(await restoreCardSession(f.options)).toEqual({
+      state: 'keypad_unverified',
+      auth: 'signed_out',
+      stage: 'preflight_special',
+      reason: 'label_mismatch'
+    })
+    f.login.mockResolvedValue({
+      content: [{ type: 'text', text: `${prefix} [stage=private_secret; reason=private_password]` }]
+    })
+    const unknown = await restoreCardSession(f.options)
+    expect(unknown).toEqual({ state: 'keypad_unverified', auth: 'signed_out' })
+    expect(JSON.stringify(unknown)).not.toContain('private_')
+  })
+
+  it('does not confuse a safe no-retry input stop or submitted login with an existing attempt latch', async () => {
+    const f = fixture()
+    f.login.mockResolvedValue({
+      content: [
+        {
+          type: 'text',
+          text: 'refused: Lotte Card official keypad input was not accepted; no submit or retry'
+        }
+      ]
+    })
+    expect(await restoreCardSession(f.options)).toEqual({
+      state: 'input_not_accepted',
+      auth: 'signed_out',
+      stage: 'password_input'
+    })
+    f.login.mockResolvedValue({
+      content: [
+        {
+          type: 'text',
+          text: 'needs_user: Lotte Card login was submitted once but is not confirmed; do not retry'
+        }
+      ]
+    })
+    expect(await restoreCardSession(f.options)).toEqual({
+      state: 'user_verification_required',
+      auth: 'signed_out'
+    })
   })
 
   it('does not log in another saved site after navigation during the initial inspection', async () => {
@@ -153,5 +224,73 @@ describe('card session restoration through existing KeyMaster login gates', () =
     const result = await restoreCardSession(f.options)
     expect(result.auth).not.toBe('signed_in')
     expect(createSambaTools).not.toHaveBeenCalled()
+  })
+
+  it('does not report success when post-login inspection detects same-issuer navigation', async () => {
+    const f = fixture()
+    vi.mocked(inspectCardPage).mockResolvedValueOnce(SIGNED_OUT).mockResolvedValueOnce({
+      issuer: 'samsung_card',
+      state: 'navigation_changed',
+      auth: 'signed_in'
+    })
+    const result = await restoreCardSession(f.options)
+    expect(result.auth).not.toBe('signed_in')
+    expect(result.state).not.toBe('signed_in')
+  })
+})
+
+describe('read-only Lotte keypad status projection', () => {
+  it('returns only the fixed state and reason, never input length, key characters, controls or mode', async () => {
+    const f = fixture()
+    f.setUrl('https://www.lottecard.co.kr/app/LPMANAA_V200.lc')
+    const tab = f.options.tabs.get(f.options.tabId)!
+    const read = vi.spyOn(pageBridge, 'lotteKeypad').mockResolvedValue({
+      state: 'open',
+      reason: 'label_mismatch',
+      filled: 8,
+      layout: 9,
+      mode: 'special',
+      openId: 30,
+      removeId: 31,
+      keys: [{ character: 'PRIVATE', id: 32, label: 'PRIVATE' }],
+      controls: [{ mode: 'lower', id: 33 }]
+    })
+    expect(await inspectLotteKeypadStatus(tab)).toEqual({ state: 'open', reason: 'label_mismatch' })
+    expect(read).toHaveBeenCalledOnce()
+    expect(createSambaTools).not.toHaveBeenCalled()
+  })
+
+  it('rejects other issuers before requesting keypad data', async () => {
+    const f = fixture()
+    const read = vi.spyOn(pageBridge, 'lotteKeypad')
+    expect(await inspectLotteKeypadStatus(f.options.tabs.get(f.options.tabId)!)).toEqual({
+      state: 'unsupported'
+    })
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('drops unrecognized diagnostic strings and suppresses thrown private errors', async () => {
+    const f = fixture()
+    f.setUrl('https://www.lottecard.co.kr/app/LPMANAA_V200.lc')
+    const tab = f.options.tabs.get(f.options.tabId)!
+    const read = vi.spyOn(pageBridge, 'lotteKeypad')
+    read.mockResolvedValue({ state: 'open', reason: 'PRIVATE_SECRET' } as never)
+    expect(await inspectLotteKeypadStatus(tab)).toEqual({ state: 'open' })
+    read.mockResolvedValue({ state: 'PRIVATE_SECRET' } as never)
+    expect(await inspectLotteKeypadStatus(tab)).toEqual({ state: 'unknown' })
+    read.mockRejectedValue(new Error('PRIVATE_SECRET'))
+    expect(await inspectLotteKeypadStatus(tab)).toEqual({ state: 'unknown' })
+  })
+
+  it('discards keypad diagnostics on navigation while reading', async () => {
+    const f = fixture()
+    f.setUrl('https://www.lottecard.co.kr/app/LPMANAA_V200.lc')
+    vi.spyOn(pageBridge, 'lotteKeypad').mockImplementation(async () => {
+      f.setUrl('https://unrelated.example/')
+      return { state: 'signed_in' }
+    })
+    expect(await inspectLotteKeypadStatus(f.options.tabs.get(f.options.tabId)!)).toEqual({
+      state: 'unknown'
+    })
   })
 })

@@ -1,8 +1,125 @@
-import type { TabManager } from '../browser/tab-manager'
+import type { Tab, TabManager } from '../browser/tab-manager'
 import type { VaultService } from '../vault/service'
 import type { Settings } from '../../shared/settings'
+import type { LotteKeypadReason, LotteKeypadSnapshot } from '../../shared/lotte-keypad'
 import { createSambaTools } from '../agent/tools'
+import { pageBridge } from '../browser/page-bridge'
 import { issuerForCardUrl, inspectCardPage } from './card-page-diagnostics'
+
+const KEYPAD_STATES: readonly LotteKeypadSnapshot['state'][] = [
+  'open',
+  'closed',
+  'signed_in',
+  'input_error',
+  'unknown',
+  'unsupported'
+]
+const KEYPAD_REASONS: readonly LotteKeypadReason[] = [
+  'auth_unverified',
+  'field_unverified',
+  'opener_unverified',
+  'invalid_buffer',
+  'root_unverified',
+  'visible_group_ambiguous',
+  'mode_ambiguous',
+  'label_mismatch',
+  'duplicate_delete',
+  'duplicate_character',
+  'duplicate_mode_control',
+  'unknown_label',
+  'empty_layout'
+]
+const LOGIN_STAGES = [
+  'initial_state',
+  'navigate_login',
+  'fill_username',
+  'after_username',
+  'focus_keypad',
+  'open_keypad',
+  'preflight_lower',
+  'preflight_upper',
+  'preflight_special',
+  'restore_lower',
+  'read_secret',
+  'password_input',
+  'submit',
+  'verify_session'
+] as const
+const LOGIN_REASONS = [
+  ...KEYPAD_REASONS,
+  'operation_failed',
+  'unknown_state',
+  'press_rejected',
+  'mode_control_unavailable',
+  'mode_transition_unconfirmed',
+  'username_fill_rejected',
+  'focus_rejected',
+  'keypad_remained_closed'
+] as const
+type LoginStage = (typeof LOGIN_STAGES)[number]
+type LoginReason = (typeof LOGIN_REASONS)[number]
+
+export interface CardSessionRestoreResult {
+  state: string
+  auth: string
+  stage?: LoginStage
+  reason?: LoginReason
+}
+
+/** Fixed status projection only: never expose the filled length, mode, keys or layout. */
+export async function inspectLotteKeypadStatus(
+  tab: Tab
+): Promise<{ state: LotteKeypadSnapshot['state']; reason?: LotteKeypadReason }> {
+  try {
+    const wc = tab.view.webContents
+    if (wc.isDestroyed()) return { state: 'unknown' }
+    const initialUrl = wc.getURL()
+    if (issuerForCardUrl(initialUrl) !== 'lotte_card') return { state: 'unsupported' }
+    const snapshot = await pageBridge.lotteKeypad(tab)
+    if (wc.isDestroyed() || wc.getURL() !== initialUrl) return { state: 'unknown' }
+    if (!KEYPAD_STATES.includes(snapshot.state)) return { state: 'unknown' }
+    return {
+      state: snapshot.state,
+      ...(snapshot.reason && KEYPAD_REASONS.includes(snapshot.reason)
+        ? { reason: snapshot.reason }
+        : {})
+    }
+  } catch {
+    return { state: 'unknown' }
+  }
+}
+
+function classifyLoginResult(raw: string): Omit<CardSessionRestoreResult, 'auth'> {
+  const keypadPrefix =
+    'refused: Lotte Card official keypad could not be verified; no submit or retry'
+  const diagnostics = new RegExp(
+    `${keypadPrefix} \\[stage=([a-z_]{1,40}); reason=([a-z_]{1,40})\\]`
+  ).exec(raw)
+  const safeDiagnostics: Pick<CardSessionRestoreResult, 'stage' | 'reason'> = {}
+  if (diagnostics) {
+    if ((LOGIN_STAGES as readonly string[]).includes(diagnostics[1]))
+      safeDiagnostics.stage = diagnostics[1] as LoginStage
+    if ((LOGIN_REASONS as readonly string[]).includes(diagnostics[2]))
+      safeDiagnostics.reason = diagnostics[2] as LoginReason
+  }
+  // "No submit or retry" describes many safe early stops, not an attempt-store rejection.
+  if (
+    /refused: (?:Lotte Card(?: keypad)? login|Hyundai Card PIN) was already attempted(?:;|\.)/.test(
+      raw
+    )
+  )
+    return { state: 'attempt_protected' }
+  if (raw.includes(keypadPrefix)) return { state: 'keypad_unverified', ...safeDiagnostics }
+  if (
+    raw.includes('refused: Lotte Card official keypad input was not accepted; no submit or retry')
+  )
+    return { state: 'input_not_accepted', stage: 'password_input' }
+  if (/locked/i.test(raw)) return { state: 'vault_locked' }
+  if (/needs_user|captcha|2fa/i.test(raw)) return { state: 'user_verification_required' }
+  if (/not found/i.test(raw)) return { state: 'saved_account_unavailable' }
+  if (/refused|denied|disabled/i.test(raw)) return { state: 'policy_blocked' }
+  return { state: 'login_unconfirmed' }
+}
 
 /** Reuses the existing KeyMaster gates and persistent failed-attempt protection. */
 export async function restoreCardSession(options: {
@@ -11,7 +128,7 @@ export async function restoreCardSession(options: {
   vault: VaultService
   settings: Settings
   signal: AbortSignal
-}): Promise<{ state: string; auth: string }> {
+}): Promise<CardSessionRestoreResult> {
   const { tabs, tabId, vault, settings, signal } = options
   const tab = tabs.get(tabId)
   const issuer = tab && issuerForCardUrl(tab.view.webContents.getURL())
@@ -47,19 +164,9 @@ export async function restoreCardSession(options: {
   // This adapter exposes ONLY login; no generic agent tool or model execution.
   const result = await tools.tools.find((entry) => entry.name === 'login')!.handler({}, {})
   const after = await inspectCardPage(tab)
-  if (!valid() || after.issuer !== issuer) return { state: 'navigation_changed', auth: 'unknown' }
+  if (!valid() || after.state === 'navigation_changed' || after.issuer !== issuer)
+    return { state: 'navigation_changed', auth: 'unknown' }
   if (after.auth === 'signed_in') return { state: 'signed_in', auth: 'signed_in' }
-  const raw = result.content.map((entry) => entry.text ?? '').join(' ')
-  const state = /locked/i.test(raw)
-    ? 'vault_locked'
-    : /attempt|previous|failed|retry/i.test(raw)
-      ? 'attempt_protected'
-      : /needs_user|captcha|2fa/i.test(raw)
-        ? 'user_verification_required'
-        : /not found/i.test(raw)
-          ? 'saved_account_unavailable'
-          : /refused|denied|disabled/i.test(raw)
-            ? 'policy_blocked'
-            : 'login_unconfirmed'
-  return { state, auth: after.auth }
+  const raw = result.content.map((entry) => entry.text ?? '').join('\n')
+  return { ...classifyLoginResult(raw), auth: after.auth }
 }

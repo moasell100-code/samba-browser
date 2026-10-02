@@ -4,9 +4,16 @@ import { inspectCardPage } from './card-page-diagnostics'
 // Inspection only: do not invoke functions, handlers, or send page requests.
 // Restrict this diagnostic to static query functions. Never read form values.
 const SCRIPT = String.raw`(() => {
+  const pageUrl = new URL(location.href);
+  const allowed = !pageUrl.username && !pageUrl.password && (
+    pageUrl.origin === 'https://www.lottecard.co.kr' && pageUrl.pathname === '/app/LPMCDAA_V100.lc' ||
+    ['https://www.hyundaicard.com', 'https://hyundaicard.com'].includes(pageUrl.origin) && pageUrl.pathname === '/cpa/cb/CPACB0101_01.hc' ||
+    pageUrl.origin === 'https://www.samsungcard.com' && ['/personal/card/activity/UHPPRP0801M0.jsp', '/personal/card/activity/UHPPRP0801D0.jsp', '/personal/card/activity/UHPPRP0801D8.jsp'].includes(pageUrl.pathname)
+  );
+  if (!allowed) return { state: 'unsupported', auth: 'unknown' };
   const targets = location.hostname.includes('lottecard')
     ? ['fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
-    : ['getUseGb','getUseTypeNm','getPrttPayPosbInfo','getUseGbforAcqrItm','getDate'];
+    : ['goFilter','goList','getList','getUseList','getDate','getUseGb','getUseTypeNm'];
   const controls = location.hostname.includes('lottecard')
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
   const fields = ['form1','LPMCDAAAprUseList','pageNo','pageRows','nextKey','schDv','stDv','useDv','useCdDv','uplDv','ptnBnkYn','sortDv','sortObj','listClsf','dtClsf','zoneClsf','useClsf','usplClsf','sortType','dmfrClsf','srtDt','startDt','endDt','inqTeDt','iqrySrtDt','iqryEndDt','startDtShow','endDtShow','crno','encCdno','Content','Status','code','message'];
@@ -22,7 +29,7 @@ const SCRIPT = String.raw`(() => {
   // Discover names only from static declarations. Never enumerate/read window data.
   for (const source of sources) {
     for (const m of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/g)) {
-      if (/^(?:fn)?(?:search|inq|query|more|next|load|fetch|list|aprUse|getUse|getApr|cardUse)/i.test(m[1]) && !/login|auth|pass|pay|slip|excel|download/i.test(m[1]) && !targets.includes(m[1])) targets.push(m[1]);
+      if (/^(?:fn)?(?:go|search|inq|query|more|next|load|fetch|list|aprUse|getUse|getApr|cardUse)/i.test(m[1]) && !/login|auth|pass|pay|slip|excel|download/i.test(m[1]) && !targets.includes(m[1])) targets.push(m[1]);
     }
     for (const m of source.matchAll(/["'](\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do))["']/g)) {
       if (!/\d{8,}/.test(m[1]) && !result.paths.includes(m[1])) result.paths.push(m[1]);

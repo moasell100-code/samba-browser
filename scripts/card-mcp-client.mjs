@@ -38,7 +38,7 @@ async function main() {
     const res = await fetch(endpoint, {
       method: 'POST',
       redirect: 'error',
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(toolName === 'card_collect_recent' ? 600_000 : 45_000),
       headers: {
         ...headers,
         ...(activeSession
@@ -62,7 +62,9 @@ async function main() {
       }
     })
     const initialized = await response.json()
-    if (!['jaja-card-readonly', 'jaja-card-collector'].includes(initialized.result?.serverInfo?.name))
+    if (
+      !['jaja-card-readonly', 'jaja-card-collector'].includes(initialized.result?.serverInfo?.name)
+    )
       throw new Error('Unexpected MCP server')
     session = response.headers.get('mcp-session-id')
     if (!session) throw new Error('No MCP session')

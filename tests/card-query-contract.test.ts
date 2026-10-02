@@ -146,4 +146,13 @@ describe('fixed query contract inspection redaction', () => {
     expect(result).toEqual({ state: 'signed_out', auth: 'signed_out' })
     expect(f.execute).not.toHaveBeenCalled()
   })
+
+  it('checks the exact origin inside the inspection before reading scripts', async () => {
+    const f = fixture()
+    f.dom.reconfigure({ url: 'https://www.lottecard.co.kr.evil.test/app/LPMCDAA_V100.lc' })
+    const scriptsRead = vi.fn(() => [])
+    Object.defineProperty(f.dom.window.document, 'scripts', { get: scriptsRead })
+    await inspectCardQueryContract(f.tab)
+    expect(scriptsRead).not.toHaveBeenCalled()
+  })
 })

@@ -173,7 +173,8 @@ app
           sessionName: cardSession,
           isBusy: () => ipc.agent.isRunning(),
           vault,
-          settings: () => ipc.settings.get()
+          settings: () => ipc.settings.get(),
+          collectorTokenFile: process.env.FINANCE_BROWSER_IMPORT_TOKEN_FILE
         })
         if (shuttingDown) stopCardDiagnostics()
       } catch {

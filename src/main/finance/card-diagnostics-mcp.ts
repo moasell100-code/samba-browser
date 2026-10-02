@@ -14,6 +14,7 @@ export interface CardDiagnosticsBackend {
   requests(tabId: string): unknown
   queryContract?(tabId: string): Promise<unknown>
   login?(tabId: string): Promise<unknown>
+  collect?(tabId: string, save: boolean): Promise<unknown>
   dispose(): void
 }
 
@@ -108,6 +109,14 @@ export async function startCardDiagnosticsMcp(
       'Restore a supported card session using the existing KeyMaster login and failed-attempt protection. Returns only fixed status codes; never returns credentials.',
       { tabId: z.string().uuid() },
       ({ tabId }) => backend.login!(String(tabId)),
+      false
+    )
+  if (backend.collect)
+    register(
+      'card_collect_recent',
+      'Collect all pages for today and the preceding three Korea dates with fixed issuer adapters. Optionally save to the local finance ledger. Returns only counts and completion/review status.',
+      { tabId: z.string().uuid(), save: z.boolean().default(false) },
+      ({ tabId, save }) => backend.collect!(String(tabId), save === true),
       false
     )
   const stop = (): void => backend.dispose()

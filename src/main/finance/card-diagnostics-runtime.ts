@@ -6,9 +6,12 @@ import { CardNetworkObserver } from './card-network-observer'
 import { CARD_HISTORY_URLS, inspectCardPage, issuerForCardUrl } from './card-page-diagnostics'
 import { startCardDiagnosticsMcp, type CardDiagnosticIssuer } from './card-diagnostics-mcp'
 import { inspectCardQueryContract } from './card-query-contract'
-import { restoreCardSession } from './card-login-session'
+import { restoreCardSession, inspectLotteKeypadStatus } from './card-login-session'
 import type { VaultService } from '../vault/service'
 import type { Settings } from '../../shared/settings'
+import { collectRecentCard, saveCardCollection } from './card-sync'
+import { collectSamsungApi } from './samsung-api-collector'
+import { collectLotteApi } from './lotte-api-collector'
 
 const TTL_MS = 30 * 60 * 1000
 
@@ -20,6 +23,7 @@ export async function startCardDiagnosticsRuntime(options: {
   isBusy: () => boolean
   vault?: VaultService
   settings?: () => Settings
+  collectorTokenFile?: string
 }): Promise<() => void> {
   if (!/^[a-z0-9-]{12,64}$/.test(options.sessionName)) throw new Error('Invalid diagnostic session')
   const dir = join(options.tempDir, `jaja-card-mcp-${options.sessionName}`)
@@ -177,7 +181,9 @@ export async function startCardDiagnosticsRuntime(options: {
       assertTabContext(tab, initialUrl)
       const result = await inspectCardPage(tab)
       assertTabContext(tab, initialUrl)
-      return { tabId: id, ...result }
+      const keypad = issuer === 'lotte_card' ? await inspectLotteKeypadStatus(tab) : undefined
+      assertTabContext(tab, initialUrl)
+      return { tabId: id, ...result, ...(keypad ? { keypad } : {}) }
     },
     requests(id: string) {
       const tab = getTab(id)
@@ -188,6 +194,28 @@ export async function startCardDiagnosticsRuntime(options: {
         throw new Error('Card tab changed')
       }
       return { tabId: id, ...entry.observer.snapshot() }
+    },
+    async collect(id: string, save: boolean) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      const issuer = issuerForCardUrl(url)
+      const collect =
+        issuer === 'samsung_card'
+          ? collectSamsungApi
+          : issuer === 'lotte_card'
+            ? collectLotteApi
+            : null
+      if (!collect) return { state: 'collector_unavailable' }
+      if (save && !options.collectorTokenFile) return { state: 'finance_not_configured' }
+      const result = await collectRecentCard({ tab, collect, signal: controller.signal })
+      assertTabContext(tab, url)
+      if (!save) return { state: 'preview', receipt: result.receipt }
+      const saved = await saveCardCollection(result, {
+        tokenFile: options.collectorTokenFile!,
+        signal: controller.signal
+      })
+      assertTabContext(tab, url)
+      return { state: 'saved', receipt: result.receipt, saved }
     },
     async queryContract(id: string) {
       const tab = getTab(id)

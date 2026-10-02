@@ -21,7 +21,12 @@ export const CARD_NETWORK_LIMITS = {
 
 export interface CardResponseShape {
   kind: 'json' | 'non_json' | 'empty' | 'too_large' | 'unavailable'
-  arrays: Array<{ path: string; count: number; fields?: string[] }>
+  arrays: Array<{
+    path: string
+    count: number
+    fields?: string[]
+    objectFields?: Record<string, string[]>
+  }>
   totals: Array<{ path: string; count: number }>
   truncated: boolean
   lotteHtml?: ReturnType<typeof summarizeLotteHistoryContent>
@@ -187,11 +192,13 @@ function safePath(pathname: string): { path: string; pathRedacted: boolean } {
       // suffixes may be dynamic identifiers; never let the general card-code rule admit them.
       const hyundaiSuffix = /^CPACB0101_([a-z0-9_]{1,24})\.(?:hc|json|ajax|do)$/.exec(segment)?.[1]
       const hyundaiHistoryService = !!hyundaiSuffix && !/\d{4}/.test(hyundaiSuffix)
+      const hyundaiApi = /^apiCPACB0101_\d{2}\.hc$/.test(segment)
       if (
         cardCode ||
         namedRead ||
         samsungHistoryService ||
         hyundaiHistoryService ||
+        hyundaiApi ||
         STATIC_SEGMENTS.has(segment.toLowerCase())
       )
         return segment
@@ -277,14 +284,22 @@ function responseShape(body: string, includeLotteHtml = false): CardResponseShap
     }
     if (Array.isArray(value)) {
       if (summary.arrays.length >= CARD_NETWORK_LIMITS.shapeArrays) summary.truncated = true
-      else
+      else {
+        const objectFields: Record<string, string[]> = {}
+        if (plain(value[0]))
+          for (const key of ['avUseItm', 'hipsUseItm', 'trfcUseItm']) {
+            if (plain(value[0][key]))
+              objectFields[key] = safeFields(Object.keys(value[0][key])).fields
+          }
         summary.arrays.push({
           path,
           count: value.length,
           ...(plain(value[0]) && safeFields(Object.keys(value[0])).fields.length
             ? { fields: safeFields(Object.keys(value[0])).fields }
-            : {})
+            : {}),
+          ...(Object.keys(objectFields).length ? { objectFields } : {})
         })
+      }
       return // Only schema field names; never return row values or traverse nested row data.
     }
     if (!plain(value)) return
