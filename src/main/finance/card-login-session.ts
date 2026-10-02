@@ -10,6 +10,8 @@ import {
   type CardPageDiagnostics
 } from './card-page-diagnostics'
 import { observeSamsungLoginAlerts } from './samsung-login-outcome'
+import { lotteAttempts } from './lotte-login'
+import { lotteKeypadAttempts } from './lotte-keypad-login'
 
 const KEYPAD_STATES: readonly LotteKeypadSnapshot['state'][] = [
   'open',
@@ -181,19 +183,44 @@ export async function restoreCardSession(options: {
   const tab = tabs.get(tabId)
   const wc = tab?.view.webContents
   const issuer = wc && !wc.isDestroyed() && issuerForCardUrl(wc.getURL())
+  const profile = tab?.profile
+  const origin = issuer && wc ? new URL(wc.getURL()).origin : null
   const valid = (): boolean =>
     !!tab &&
     !!wc &&
     tabs.get(tabId) === tab &&
+    typeof profile === 'string' &&
+    profile.length > 0 &&
+    tab.profile === profile &&
     tab.view.webContents === wc &&
     !wc.isDestroyed() &&
     !signal.aborted &&
     issuerForCardUrl(wc.getURL()) === issuer
   if (!tab || !issuer || !valid()) return { state: 'unavailable', auth: 'unknown' }
+  const clearConfirmedLotteAttempts = (): void => {
+    if (
+      issuer !== 'lotte_card' ||
+      !valid() ||
+      typeof profile !== 'string' ||
+      new URL(wc!.getURL()).origin !== origin
+    )
+      return
+    try {
+      // The keypad's short wait can finish before the site establishes its session.
+      // Only the later verified session may reconcile both existing failure namespaces.
+      lotteAttempts().clearSignedInProfile(profile)
+      lotteKeypadAttempts().clearSignedInProfile(profile)
+    } catch {
+      // Storage failure retains protection; never reset or replace a failed record.
+    }
+  }
   const before = await inspectCardPage(tab)
   if (!valid() || before.state === 'navigation_changed' || before.issuer !== issuer)
     return { state: 'navigation_changed', auth: 'unknown' }
-  if (before.auth === 'signed_in') return { state: 'already_signed_in', auth: 'signed_in' }
+  if (before.auth === 'signed_in') {
+    clearConfirmedLotteAttempts()
+    return { state: 'already_signed_in', auth: 'signed_in' }
+  }
   if (settings.permissionMode === 'read_only') return { state: 'read_only', auth: before.auth }
   tabs.focusTarget(tabId)
   if (!valid()) return { state: 'navigation_changed', auth: 'unknown' }
@@ -250,7 +277,10 @@ export async function restoreCardSession(options: {
         return { state: 'navigation_changed', auth: 'unknown' }
       if (after && after.state !== 'navigation_changed') {
         auth = after.auth
-        if (after.auth === 'signed_in') return { state: 'signed_in', auth: 'signed_in' }
+        if (after.auth === 'signed_in') {
+          clearConfirmedLotteAttempts()
+          return { state: 'signed_in', auth: 'signed_in' }
+        }
       }
       const outcome = terminalOutcome()
       if (outcome) return { state: outcome, auth }

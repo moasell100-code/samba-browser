@@ -6,12 +6,16 @@ import { createSambaTools } from '../src/main/agent/tools'
 import { pageBridge } from '../src/main/browser/page-bridge'
 import { inspectCardPage } from '../src/main/finance/card-page-diagnostics'
 import { observeSamsungLoginAlerts } from '../src/main/finance/samsung-login-outcome'
+import { lotteAttempts } from '../src/main/finance/lotte-login'
+import { lotteKeypadAttempts } from '../src/main/finance/lotte-keypad-login'
 import {
   inspectLotteKeypadStatus,
   restoreCardSession
 } from '../src/main/finance/card-login-session'
 
 vi.mock('../src/main/agent/tools', () => ({ createSambaTools: vi.fn() }))
+vi.mock('../src/main/finance/lotte-login', () => ({ lotteAttempts: vi.fn() }))
+vi.mock('../src/main/finance/lotte-keypad-login', () => ({ lotteKeypadAttempts: vi.fn() }))
 vi.mock('../src/main/finance/samsung-login-outcome', () => ({ observeSamsungLoginAlerts: vi.fn() }))
 vi.mock('../src/main/finance/card-page-diagnostics', async (load) => {
   const actual = await load<typeof import('../src/main/finance/card-page-diagnostics')>()
@@ -77,6 +81,93 @@ function fixture(overrides: Partial<Settings> = {}): {
 }
 
 describe('card session restoration through existing KeyMaster login gates', () => {
+  it.each(['before', 'after'] as const)(
+    'reconciles both Lotte attempt stores only after a verified signed-in session (%s)',
+    async (phase) => {
+      const f = fixture()
+      f.setUrl('https://www.lottecard.co.kr/app/LPMANAA_V200.lc')
+      const clearNative = vi.fn()
+      const clearKeypad = vi.fn()
+      vi.mocked(lotteAttempts).mockReturnValue({ clearSignedInProfile: clearNative } as ReturnType<
+        typeof lotteAttempts
+      >)
+      vi.mocked(lotteKeypadAttempts).mockReturnValue({
+        clearSignedInProfile: clearKeypad
+      } as ReturnType<typeof lotteKeypadAttempts>)
+      const signedIn = { issuer: 'lotte_card', state: 'ready', auth: 'signed_in' } as const
+      if (phase === 'before') vi.mocked(inspectCardPage).mockResolvedValue(signedIn)
+      else {
+        vi.mocked(inspectCardPage)
+          .mockResolvedValueOnce({ issuer: 'lotte_card', state: 'signed_out', auth: 'signed_out' })
+          .mockResolvedValueOnce(signedIn)
+        f.login.mockResolvedValue({
+          content: [
+            {
+              type: 'text',
+              text: 'needs_user: Lotte Card login was submitted once but is not confirmed; do not retry'
+            }
+          ]
+        })
+      }
+      expect(await restoreCardSession(f.options)).toEqual({
+        state: phase === 'before' ? 'already_signed_in' : 'signed_in',
+        auth: 'signed_in'
+      })
+      expect(clearNative).toHaveBeenCalledExactlyOnceWith('default')
+      expect(clearKeypad).toHaveBeenCalledExactlyOnceWith('default')
+      expect(f.login).toHaveBeenCalledTimes(phase === 'before' ? 0 : 1)
+    }
+  )
+  it.each(['failed', 'unknown', 'navigation', 'profile', 'tab', 'cancelled'] as const)(
+    'retains Lotte attempt protection on %s without accepting a stale success',
+    async (kind) => {
+      const f = fixture()
+      f.setUrl('https://www.lottecard.co.kr/app/LPMANAA_V200.lc')
+      const current = f.options.tabs.get(f.options.tabId)!
+      const controller = new AbortController()
+      const out = { issuer: 'lotte_card', state: 'signed_out', auth: 'signed_out' } as const
+      vi.mocked(inspectCardPage)
+        .mockResolvedValueOnce(out)
+        .mockImplementationOnce(async () => {
+          if (kind === 'failed') return out
+          if (kind === 'unknown') return { issuer: 'lotte_card', state: 'ready', auth: 'unknown' }
+          if (kind === 'profile') current.profile = 'other-synthetic-profile'
+          if (kind === 'tab') vi.spyOn(f.options.tabs, 'get').mockReturnValue({ ...current })
+          if (kind === 'cancelled') controller.abort()
+          return {
+            issuer: 'lotte_card',
+            state: kind === 'navigation' ? 'navigation_changed' : 'ready',
+            auth: 'signed_in'
+          }
+        })
+      const result = await restoreCardSession({ ...f.options, signal: controller.signal })
+      expect(result.auth).not.toBe('signed_in')
+      expect(lotteAttempts).not.toHaveBeenCalled()
+      expect(lotteKeypadAttempts).not.toHaveBeenCalled()
+    }
+  )
+  it('does not reconcile Lotte stores for another issuer or on failed storage access', async () => {
+    const f = fixture()
+    vi.mocked(inspectCardPage).mockResolvedValue(SIGNED_IN)
+    await restoreCardSession(f.options)
+    expect(lotteAttempts).not.toHaveBeenCalled()
+    expect(lotteKeypadAttempts).not.toHaveBeenCalled()
+    f.setUrl('https://www.lottecard.co.kr/app/LPMANAA_V200.lc')
+    vi.mocked(inspectCardPage).mockResolvedValue({
+      issuer: 'lotte_card',
+      state: 'ready',
+      auth: 'signed_in'
+    })
+    vi.mocked(lotteAttempts).mockImplementation(() => {
+      throw new Error('PRIVATE_STORAGE_ERROR')
+    })
+    expect(await restoreCardSession(f.options)).toEqual({
+      state: 'already_signed_in',
+      auth: 'signed_in'
+    })
+    expect(lotteKeypadAttempts).not.toHaveBeenCalled()
+    expect(f.login).not.toHaveBeenCalled()
+  })
   it('delegates only login and preserves every existing KeyMaster policy setting', async () => {
     const f = fixture({
       vaultAccessPolicy: 'never',
