@@ -12,7 +12,7 @@ const SCRIPT = String.raw`(() => {
   );
   if (!allowed) return { state: 'unsupported', auth: 'unknown' };
   const targets = location.hostname.includes('lottecard')
-    ? ['fnSetFormData','ajaxSearchFilterCallBack','ajaxInquryAprUseListCallBack','fnValidateInquryDate','fnCheckOver12Month','fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
+    ? ['fnSetFormData','ajaxSearchFilterCallBack','ajaxInquryAprUseListCallBack','setAprUseDetail','fnValidateInquryDate','fnCheckOver12Month','fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
     : ['cardSelect','convertGeneralApprovalItem','convertTrafficItem','convertHipassItem','convertPurchaseItem','recentList','rcntSummaryInfo','goFilter','goAjax','getDate','getUseGb','getUseTypeNm'];
   const controls = location.hostname.includes('lottecard')
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
@@ -28,7 +28,17 @@ const SCRIPT = String.raw`(() => {
     if (literals.has(value) || /^\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do)$/.test(value) && !/\d{8,}/.test(value)) return JSON.stringify(value);
     return '"[literal omitted]"';
   }).replace(/\b\d{4,}\b/g, '[number omitted]');
-  const result = { functions: [], handlers: [], paths: [] };
+  const result = { functions: [], handlers: [], paths: [], filterLabels: [] };
+  if (location.hostname === 'www.lottecard.co.kr') {
+    const publicLabels = new Set(['전체','신용카드','체크카드','국내','해외','승인','취소','정상','일시불','할부','일시불+할부','일시불/할부','단기카드대출','장기카드대출','단기카드대출(현금서비스)','장기카드대출(카드론)']);
+    for (const name of ['useCdDvRadio','uplDvRadio','stDvRadio','useDvRadio']) {
+      const labels = Array.from(document.querySelectorAll('input[type="radio"][name="' + name + '"]')).slice(0, 10).map(input => {
+        const label = Array.from(input.labels || []).map(item => item.textContent || '').join('').replace(/\s+/g, '');
+        return publicLabels.has(label) ? label : 'unrecognized';
+      });
+      result.filterLabels.push({ name, labels });
+    }
+  }
   const sources = Array.from(document.scripts).filter(s => !s.src).map(s => s.textContent || '').filter(s => s.length < 250000);
   // Discover names only from static declarations. Never enumerate/read window data.
   for (const source of sources) {

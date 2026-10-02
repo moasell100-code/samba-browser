@@ -52,6 +52,22 @@ function fixture(source = ''): {
 }
 
 describe('fixed query contract inspection redaction', () => {
+  it('returns only fixed public Lotte filter labels without reading option values', async () => {
+    const f = fixture()
+    f.dom.window.document.body.innerHTML =
+      '<input id="all" type="radio" name="useDvRadio"><label for="all">전체</label><input id="private" type="radio" name="useDvRadio"><label for="private">PRIVATE_LABEL</label>'
+    const readValue = vi.fn(() => {
+      throw new Error('must not read')
+    })
+    for (const input of f.dom.window.document.querySelectorAll('input'))
+      Object.defineProperty(input, 'value', { get: readValue })
+    const result = JSON.stringify(await inspectCardQueryContract(f.tab))
+    expect(result).toContain('전체')
+    expect(result).toContain('unrecognized')
+    expect(result).not.toContain('PRIVATE_LABEL')
+    expect(readValue).not.toHaveBeenCalled()
+  })
+
   it('inspects the fixed Lotte form and page callbacks without invoking them or reading values', async () => {
     const f = fixture(`function fnSetFormData() {
       window.didSetForm = true;
