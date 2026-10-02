@@ -254,12 +254,28 @@ describe('loopback-only private collection save', () => {
   })
 
   it('sends an incomplete collection unchanged for raw retention and review', async () => {
-    const collection = result(RANGE, [row()], { complete: false, issues: ['authentication_required'] })
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(saved({ complete: false, status: 'needs_review', inserted_rows: 0, review_rows: 1 }))))
+    const collection = result(RANGE, [row()], {
+      complete: false,
+      issues: ['authentication_required']
+    })
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify(
+            saved({ complete: false, status: 'needs_review', inserted_rows: 0, review_rows: 1 })
+          )
+        )
+      )
     vi.stubGlobal('fetch', fetcher)
     const output = await saveCardCollection(collection, { tokenFile: 'synthetic-token-file' })
     expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject(collection)
-    expect(output).toMatchObject({ complete: false, status: 'needs_review', inserted_rows: 0, review_rows: 1 })
+    expect(output).toMatchObject({
+      complete: false,
+      status: 'needs_review',
+      inserted_rows: 0,
+      review_rows: 1
+    })
   })
 
   it('rejects a receipt for another issuer', async () => {
@@ -314,7 +330,9 @@ describe('loopback-only private collection save', () => {
     files.readFile.mockRejectedValue(new Error('PRIVATE_LOCAL_TOKEN_PATH'))
     const fetcher = vi.fn()
     vi.stubGlobal('fetch', fetcher)
-    const failure = await saveCardCollection(result(), { tokenFile: 'synthetic-token-file' }).catch((error: unknown) => error)
+    const failure = await saveCardCollection(result(), { tokenFile: 'synthetic-token-file' }).catch(
+      (error: unknown) => error
+    )
     expect(failure).toBeInstanceOf(Error)
     expect(String(failure)).not.toContain('PRIVATE_LOCAL_TOKEN_PATH')
     expect(fetcher).not.toHaveBeenCalled()

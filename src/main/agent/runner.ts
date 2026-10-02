@@ -37,6 +37,7 @@ import { makeCounter } from './counter'
 import { startCodexMcp } from './codex-mcp'
 import { FinanceCaptureStore } from '../finance/capture-store'
 import { captureCurrentFinancePage } from '../finance/capture'
+import { createCardAgentSync } from '../finance/card-agent-sync'
 import type { SiteScriptStore } from './site-scripts-store'
 import { buildScriptsBlock } from '../../shared/site-scripts'
 import { createTextDeduper } from './dedupe'
@@ -541,12 +542,17 @@ export class AgentRunner {
         ? phones.approvePayment(phoneCtx(), req)
         : Promise.resolve({ ok: false, reason: 'declined' as const })
     const financeCaptures = new FinanceCaptureStore()
+    const syncFinance = await createCardAgentSync({
+      tokenFile: s.financeCollectorTokenFile,
+      signal: abort.signal
+    })
     const server = createSambaTools(
       this.buildToolContext({
         s,
         jobId,
         tick: () => (abort.signal.aborted ? '작업이 중단되었습니다.' : counter.tick()),
         captureFinance: (tab) => captureCurrentFinancePage(tab, financeCaptures),
+        syncFinance,
         emit,
         confirm: (action, kind = 'danger') => this.requestConfirm(action, kind, emit),
         handoff: (req) => this.requestHandoff(req, emit),
@@ -787,6 +793,7 @@ export class AgentRunner {
     jobId: string
     tick: () => string | null
     captureFinance?: ToolContext['captureFinance']
+    syncFinance?: ToolContext['syncFinance']
     emit: (e: AgentEvent) => void
     confirm: ToolContext['confirm']
     handoff: NonNullable<ToolContext['handoff']>
@@ -804,6 +811,7 @@ export class AgentRunner {
     return {
       tabs: this.tabs,
       captureFinance: o.captureFinance,
+      syncFinance: o.syncFinance,
       vault: this.vault,
       jobId,
       dangerWords: s.dangerWords,

@@ -12,6 +12,8 @@ import type { Settings } from '../../shared/settings'
 import { collectRecentCard, saveCardCollection } from './card-sync'
 import { collectSamsungApi } from './samsung-api-collector'
 import { collectLotteApi } from './lotte-api-collector'
+import { collectHyundaiApi } from './hyundai-api-collector'
+import { inspectSamsungIdLogin } from './samsung-login-preparation'
 
 const TTL_MS = 30 * 60 * 1000
 
@@ -196,8 +198,14 @@ export async function startCardDiagnosticsRuntime(options: {
       const result = await inspectCardPage(tab)
       assertTabContext(tab, initialUrl)
       const keypad = issuer === 'lotte_card' ? await inspectLotteKeypadStatus(tab) : undefined
+      const loginForm = issuer === 'samsung_card' ? await inspectSamsungIdLogin(tab) : undefined
       assertTabContext(tab, initialUrl)
-      return { tabId: id, ...result, ...(keypad ? { keypad } : {}) }
+      return {
+        tabId: id,
+        ...result,
+        ...(keypad ? { keypad } : {}),
+        ...(loginForm ? { loginForm } : {})
+      }
     },
     requests(id: string) {
       const tab = getTab(id)
@@ -214,11 +222,13 @@ export async function startCardDiagnosticsRuntime(options: {
       const url = tab.view.webContents.getURL()
       const issuer = issuerForCardUrl(url)
       const collect =
-        issuer === 'samsung_card'
-          ? collectSamsungApi
-          : issuer === 'lotte_card'
-            ? collectLotteApi
-            : null
+        issuer === 'hyundai_card'
+          ? collectHyundaiApi
+          : issuer === 'samsung_card'
+            ? collectSamsungApi
+            : issuer === 'lotte_card'
+              ? collectLotteApi
+              : null
       if (!collect) return { state: 'collector_unavailable' }
       if (save && !options.collectorTokenFile) return { state: 'finance_not_configured' }
       const result = await collectRecentCard({ tab, collect, signal: controller.signal })

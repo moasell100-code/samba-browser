@@ -4,7 +4,9 @@ import type { TabManager, Tab } from '../browser/tab-manager'
 import { pageBridge } from '../browser/page-bridge'
 import type { LoginFieldsResult } from '../browser/page-bridge'
 import type { FinanceCaptureReceipt } from '../../shared/finance-capture'
+import { CARD_AGENT_TOOL_TIMEOUT_MS, type CardAgentSync } from '../finance/card-agent-sync'
 import { financeCardIssuer } from '../finance/capture-schema'
+import { prepareSamsungIdLogin } from '../finance/samsung-login-preparation'
 import { isHyundaiCardHost, loginMethodOfSections } from '../../shared/login-method'
 import {
   HYUNDAI_PIN_USE_LOGIN,
@@ -404,6 +406,7 @@ export async function withToolTimeout<T>(
 export interface ToolContext {
   tabs: TabManager
   captureFinance?: (tab: Tab) => Promise<FinanceCaptureReceipt>
+  syncFinance?: CardAgentSync
   // Optional test/runtime override; the default store persists failed PIN attempts across restarts.
   hyundaiAttempts?: HyundaiAttempts
   lotteAttempts?: HyundaiAttempts
@@ -521,6 +524,13 @@ export async function findLoginFieldsWithFallback(
       await tabs.navigate(tab.id, known)
       await pageBridge.waitForLoad(tab)
       fields = await pageBridge.findLoginFields(tab)
+      if (
+        fields.stage === 'none' &&
+        financeCardIssuer(tab.view.webContents.getURL()) === 'samsung_card'
+      ) {
+        if ((await prepareSamsungIdLogin(tab)).state === 'ready')
+          fields = await pageBridge.findLoginFields(tab)
+      }
       if (fields.stage !== 'none') return fields
     } catch {
       // 이동 실패는 다음 단계(로그인 링크 클릭)로 넘어간다
@@ -575,7 +585,8 @@ export function createSambaTools(
     fn: () => Promise<T>,
     action?: SiteActionTool,
     // 결과에 페이지·문서 본문이 실리는 도구(앞머리만 보고 성공/실패를 가린다)
-    content = false
+    content = false,
+    options: { timeoutMs?: number; includeDialog?: boolean; safeError?: string } = {}
   ): Promise<ReturnType<typeof text>> => {
     const resolveLabel = (): string => (typeof label === 'string' ? label : label())
     // 호출 1건을 사이트 기억으로 넘긴다. 기억이 붙어 있지 않으면 아무 일도 하지 않는다
@@ -594,7 +605,11 @@ export function createSambaTools(
     try {
       // 페이지가 대화상자·무한 로딩으로 응답하지 않으면 실행 전체가 멈춘다(실기에서 14분 대기).
       // 도구 하나는 이 시간 안에 끝나야 하고, 넘기면 문구로 돌려줘 모델이 다른 길을 찾게 한다
-      const r = await withToolTimeout(fn(), TOOL_TIMEOUT_MS, () => humanWaits > 0)
+      const r = await withToolTimeout(
+        fn(),
+        options.timeoutMs ?? TOOL_TIMEOUT_MS,
+        () => humanWaits > 0
+      )
       const raw = typeof r === 'string' ? r : JSON.stringify(r)
       const ok = isToolResultOk(raw, content)
       ctx.onStep(resolveLabel(), ok)
@@ -602,13 +617,13 @@ export function createSambaTools(
       // 실행 중 자동으로 닫은 페이지 대화상자가 있으면 그 문구를 결과 앞에 알려 준다
       const dialog = ctx.tabs.takeDialogMessage?.()
       return text(
-        dialog
+        dialog && options.includeDialog !== false
           ? `${formatDialogNote(dialog)}
 ${raw}`
           : raw
       )
     } catch (e) {
-      const message = `error: ${e instanceof Error ? e.message : String(e)}`
+      const message = `error: ${options.safeError ?? (e instanceof Error ? e.message : String(e))}`
       ctx.onStep(resolveLabel(), false)
       note(false, message)
       return text(message)
@@ -1891,7 +1906,11 @@ overlays left: ${after.length}${kept}`
           }
           // 이미 로그인돼 있으면 다시 로그인하지 않는다 — 재로그인은 세션을 새로 만들어
           // 캡차·추가 인증을 불러오기 때문이다. 폼이 없을 때만 상태 힌트를 본다
-          const first = await pageBridge.findLoginFields(tab)
+          let first = await pageBridge.findLoginFields(tab)
+          if (first.stage === 'none' && financeCardIssuer(currentUrl(tab)) === 'samsung_card') {
+            if ((await prepareSamsungIdLogin(tab)).state === 'ready')
+              first = await pageBridge.findLoginFields(tab)
+          }
           if (first.stage === 'none' && !hyundai) {
             try {
               const hint = await pageBridge.signedInHint(tab)
@@ -2306,6 +2325,31 @@ overlays left: ${after.length}${kept}`
       })
   )
 
+  const syncFinance = tool(
+    'sync_finance_recent',
+    'Collect all available pages for today and the previous three Korean calendar days from the currently selected official card history tab, then save to the configured local finance app with duplicate and cancellation handling. Uses deterministic code, not model extraction. Login is separate: use login first when required. Returns counts only, never transaction values. An incomplete collection is review-only; do not claim a complete ledger update unless complete is true. Unavailable in read-only mode.',
+    {},
+    () =>
+      guard(
+        '최근 4일 카드 내역 재무앱 반영',
+        async () => {
+          if (ctx.mode === 'read_only') return READ_ONLY_REFUSAL
+          const tab = ctx.tabs.active()
+          if (!tab || activeOr(ctx) !== tab) return 'refused: select a card history tab first'
+          if (!ctx.syncFinance) return 'error: finance sync unavailable'
+          const result = await ctx.syncFinance(tab)
+          return result.ok ? result : `refused: finance sync ${result.reason}`
+        },
+        undefined,
+        false,
+        {
+          timeoutMs: CARD_AGENT_TOOL_TIMEOUT_MS,
+          includeDialog: false,
+          safeError: 'finance sync unavailable'
+        }
+      )
+  )
+
   const captureFinance = tool(
     'capture_finance_table',
     'Read visible Hyundai, Samsung, or Lotte Card transaction tables or supported lists into temporary local memory. Returns only capture metadata, ' +
@@ -2357,6 +2401,7 @@ overlays left: ${after.length}${kept}`
     probeLotteLayouts,
     probeLotteFocus,
     ...(ctx.captureFinance ? [captureFinance] : []),
+    ...(ctx.syncFinance ? [syncFinance] : []),
     findElements,
     screenshot,
     createOcrTool(ctx),
@@ -2403,6 +2448,7 @@ export const SAMBA_TOOL_NAMES = [
   'probe_lotte_keypad_layouts',
   'probe_lotte_keypad_focus',
   'capture_finance_table',
+  'sync_finance_recent',
   'find_elements',
   'screenshot',
   'ocr',

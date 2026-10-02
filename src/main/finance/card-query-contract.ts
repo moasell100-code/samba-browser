@@ -13,7 +13,7 @@ const SCRIPT = String.raw`(() => {
   if (!allowed) return { state: 'unsupported', auth: 'unknown' };
   const targets = location.hostname.includes('lottecard')
     ? ['fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
-    : ['recentList','rcntSummaryInfo','goFilter','goAjax','getDate','getUseGb','getUseTypeNm'];
+    : ['convertGeneralApprovalItem','convertTrafficItem','convertHipassItem','convertPurchaseItem','recentList','rcntSummaryInfo','goFilter','goAjax','getDate','getUseGb','getUseTypeNm'];
   const controls = location.hostname.includes('lottecard')
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
   const fields = ['form1','LPMCDAAAprUseList','pageNo','pageRows','nextKey','schDv','stDv','useDv','useCdDv','uplDv','ptnBnkYn','sortDv','sortObj','listClsf','dtClsf','zoneClsf','useClsf','usplClsf','sortType','dmfrClsf','srtDt','startDt','endDt','inqTeDt','iqrySrtDt','iqryEndDt','startDtShow','endDtShow','crno','encCdno','Content','Status','code','message'];
