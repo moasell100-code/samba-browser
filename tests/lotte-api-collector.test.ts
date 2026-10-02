@@ -557,6 +557,53 @@ describe('Lotte verified all-option and Param pagination collector', () => {
     expect(result.rows[0].needsReview).toContain('detail_response_schema_unverified')
     expect(result.rows[0].needsReview).toContain('details_unverified')
   })
+  it('accepts the official business UL with one auxiliary DIV without reading its values or labels', async () => {
+    const html = (detailEnvelope() as { Content: string }).Content
+    const extra =
+      '<div><input value="private-unused"><p>승인번호 OTHER-SYNTH 취소여부 취소</p><script>throw Error("never executed")</script></div>'
+    const h = collectorFixture([envelope(1, 1, lazyContent()), response(html + extra)])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0]).toMatchObject({
+      approvalNumber: 'SYNTH-001',
+      needsReview: [],
+      status: 'approved'
+    })
+    expect(JSON.stringify(result)).not.toMatch(/private-unused|OTHER-SYNTH|never executed/)
+  })
+  it('rejects a second business list or unrelated top-level script/form rather than guessing a detail root', async () => {
+    const html = (detailEnvelope() as { Content: string }).Content
+    for (const extra of [
+      '<div><ul><li>synthetic</li></ul></div>',
+      '<ul></ul>',
+      '<form></form>',
+      '<script>neverRead()</script>'
+    ]) {
+      const result = await collectLotteApi(
+        collectorFixture([envelope(1, 1, lazyContent()), response(html + extra)]).current,
+        RANGE
+      )
+      expect(result.rows[0].needsReview).toContain('detail_response_schema_unverified')
+      expect(result.rows[0].approvalNumber).toBeUndefined()
+    }
+  })
+  it('reports only fixed known cancellation label codes while keeping unverified meanings for review', async () => {
+    for (const [label, expected] of [
+      ['N', 'cancellation_label_2'],
+      ['unknown-private-label', 'cancellation_label_unrecognized']
+    ]) {
+      const html = (detailEnvelope() as { Content: string }).Content.replace(
+        '<span>정상</span>',
+        `<span>${label}</span>`
+      )
+      const result = await collectLotteApi(
+        collectorFixture([envelope(1, 1, lazyContent()), response(html)]).current,
+        RANGE
+      )
+      expect(result.receipt.issues).toContain(expected)
+      expect(result.rows[0].needsReview).toContain('status_unverified')
+      expect(JSON.stringify(result.receipt)).not.toContain('unknown-private-label')
+    }
+  })
   it('collects every confirmed page with exact date/all-card/all-type filters without mutating the website', async () => {
     const h = collectorFixture([envelope(1, 2), envelope(2, 2, content({ approval: 'SYNTH-002' }))])
     const before = h.dom.window.document.body.innerHTML

@@ -259,6 +259,8 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
     !['취소', '취소완료', '부분취소'].includes(cancellationLabel ?? '')
   ) {
     needsReview.push('status_unverified')
+    const label = ['없음', '미취소', 'N', 'Y'].indexOf(cancellationLabel ?? '')
+    needsReview.push(label >= 0 ? `cancellation_label_${label}` : 'cancellation_label_unrecognized')
   }
   if (
     status === 'approved' &&
@@ -568,9 +570,16 @@ function detailResponseFields(response: unknown): DetailFields | null {
     return null
   const doc = parse(content)
   const roots = elements(doc)
-  if (roots.length !== 1 || roots[0].tagName !== 'UL') return null
+  if (
+    roots.length < 1 ||
+    roots.length > 2 ||
+    roots.some((root) => root.tagName !== 'UL' && root.tagName !== 'DIV')
+  )
+    return null
+  const lists = doc.querySelectorAll('ul')
+  if (lists.length !== 1 || !roots.includes(lists[0])) return null
   if (doc.childNodes.some((node) => node.nodeType === 3 && node.text.trim())) return null
-  return detailListFields(roots[0])
+  return detailListFields(lists[0])
 }
 
 async function enrichLottePage(
