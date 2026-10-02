@@ -29,6 +29,76 @@ const issuers = [
 ] as const
 
 describe('official card capture boundaries', () => {
+  it('retains ordered Lotte cancellation amounts without treating them as reconciled expenses', () => {
+    const fields = [
+      'name',
+      'date',
+      'card',
+      'payment_type',
+      'cancellation_status',
+      'amount',
+      'secondary_amount'
+    ] as const
+    const frame: FinanceFrameCapture = {
+      origin: 'https://www.lottecard.co.kr',
+      pathname: '/app/LPMCDAA_V100.lc',
+      tables: [],
+      lists: [
+        {
+          adapter: 'lotte_history_list_v1',
+          hiddenRows: 0,
+          unrecognizedRows: 0,
+          hasMore: false,
+          rows: [
+            {
+              head: fields.map((field, index) => ({
+                field,
+                text: [
+                  'private name',
+                  '2026.09.17',
+                  'private card',
+                  '일시불',
+                  '부분취소',
+                  '12,345원',
+                  '3,456원'
+                ][index]
+              })),
+              details: [],
+              detailsVisible: false
+            }
+          ]
+        }
+      ]
+    }
+    expect(financeFrameCaptureSchema.safeParse(frame).success).toBe(true)
+    const store = new FinanceCaptureStore()
+    const receipt = store.save({ frames: [frame], failedFrames: 0, skippedFrames: 0 })
+    expect(receipt.listRowCount).toBe(1)
+    expect(receipt.issues).toContain('cancellation_amount_review')
+    expect(receipt.listSummaries?.[0].nonemptyFields).toContainEqual({
+      field: 'secondary_amount',
+      count: 1
+    })
+    expect(JSON.stringify(receipt)).not.toMatch(/private|12,345|3,456|부분취소/)
+    expect(
+      store
+        .readForReview(receipt.captureId)
+        ?.page.frames[0].lists?.[0].rows[0].head.slice(-2)
+        .map(({ text }) => text)
+    ).toEqual(['12,345원', '3,456원'])
+    for (const status of ['승인', '취소', 'unknown']) {
+      const invalid = structuredClone(frame)
+      invalid.lists![0].rows[0].head[4].text = status
+      expect(financeFrameCaptureSchema.safeParse(invalid).success).toBe(false)
+    }
+    const otherIssuer = structuredClone(frame)
+    otherIssuer.origin = 'https://www.samsungcard.com'
+    otherIssuer.pathname = '/personal/card/activity/UHPPRP0801D0.jsp'
+    otherIssuer.lists![0].adapter = 'samsung_history_list_v1'
+    expect(financeFrameCaptureSchema.safeParse(otherIssuer).success).toBe(false)
+    store.clear()
+  })
+
   it('carries the verified Lotte list through the schema and returns counts without its cells', () => {
     const doc = documentAt(
       'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc',

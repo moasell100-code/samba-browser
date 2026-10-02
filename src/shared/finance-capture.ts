@@ -27,6 +27,8 @@ export interface FinanceListRow {
       | 'payment_type'
       | 'cancellation_status'
       | 'amount'
+      // A second displayed amount, in DOM order; never interpreted as refund or balance.
+      | 'secondary_amount'
     text: string
   }>
   details: Array<{ label: string; value: string }>
@@ -91,6 +93,7 @@ export type FinanceCaptureIssue =
   | 'unrecognized_rows'
   | 'total_count_mismatch'
   | 'duplicate_rows_review'
+  | 'cancellation_amount_review'
 
 // Safe to return to a model. No financial cells, page title, account names or URL queries.
 export interface FinanceCaptureReceipt {

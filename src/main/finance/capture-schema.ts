@@ -42,14 +42,15 @@ const listRow = z
               'card',
               'payment_type',
               'cancellation_status',
-              'amount'
+              'amount',
+              'secondary_amount'
             ]),
             text: z.string().max(2000)
           })
           .strict()
       )
       .min(5)
-      .max(6),
+      .max(7),
     details: z
       .array(
         z
@@ -100,9 +101,20 @@ const list = z
             metadataCount: z.number().int().min(0).max(1000).optional(),
             amountCount: z.number().int().min(0).max(1000).optional(),
             emptyFields: z
-              .array(z.enum(['name', 'card', 'date', 'time', 'payment_type', 'amount']))
+              .array(
+                z.enum([
+                  'name',
+                  'card',
+                  'date',
+                  'time',
+                  'payment_type',
+                  'amount',
+                  'cancellation_status',
+                  'secondary_amount'
+                ])
+              )
               .min(1)
-              .max(6)
+              .max(7)
               .optional()
           })
           .strict()
@@ -118,16 +130,28 @@ const list = z
         list.unrecognizedDiagnostics.length <= list.unrecognizedRows)
   )
   .refine((list) =>
-    list.rows.every(
-      (row) =>
-        row.head.map((cell) => cell.field).join(',') ===
-        {
-          samsung_history_list_v1: 'name,date,time,card,payment_type,amount',
-          samsung_cancellation_list_v1: 'name,date,card,cancellation_status,amount',
-          samsung_refund_list_v1: 'name,sales_date,card,payment_type,cancellation_status,amount',
-          hyundai_history_list_v1: 'name,card,date,time,payment_type,amount',
-          lotte_history_list_v1: 'name,date,card,payment_type,amount'
-        }[list.adapter]
+    list.rows.every((row) =>
+      list.adapter === 'lotte_history_list_v1'
+        ? (() => {
+            const order = row.head.map((cell) => cell.field).join(',')
+            if (order === 'name,date,card,payment_type,amount') return true
+            const status = row.head.find((cell) => cell.field === 'cancellation_status')?.text
+            return (
+              (order === 'name,date,card,payment_type,cancellation_status,amount' &&
+                status === '취소') ||
+              (order ===
+                'name,date,card,payment_type,cancellation_status,amount,secondary_amount' &&
+                status === '부분취소')
+            )
+          })()
+        : row.head.map((cell) => cell.field).join(',') ===
+          {
+            samsung_history_list_v1: 'name,date,time,card,payment_type,amount',
+            samsung_cancellation_list_v1: 'name,date,card,cancellation_status,amount',
+            samsung_refund_list_v1: 'name,sales_date,card,payment_type,cancellation_status,amount',
+            hyundai_history_list_v1: 'name,card,date,time,payment_type,amount',
+            lotte_history_list_v1: 'name,date,card,payment_type,amount'
+          }[list.adapter]
     )
   )
 

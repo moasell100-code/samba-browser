@@ -99,6 +99,16 @@ export class FinanceCaptureStore {
       issues.push('details_incomplete')
     if (lists.some((list) => list.hasMore)) issues.push('more_rows_available')
     if (lists.some((list) => list.unrecognizedRows)) issues.push('unrecognized_rows')
+    // The first/second displayed amounts of a Lotte partial cancellation are kept
+    // separately. Their net/refund meaning is not established by their position.
+    if (
+      lists.some(
+        (list) =>
+          list.adapter === 'lotte_history_list_v1' &&
+          list.rows.some((row) => row.head.some((cell) => cell.field === 'cancellation_status'))
+      )
+    )
+      issues.push('cancellation_amount_review')
     if (
       lists.some(
         (list) => list.displayedTotal !== undefined && list.rows.length !== list.displayedTotal
