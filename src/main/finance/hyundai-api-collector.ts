@@ -44,7 +44,13 @@ const scopeSchema = z
     options: z
       .array(
         z
-          .object({ label: z.enum([...ALL_CARD_LABELS, 'unrecognized']), disabled: z.boolean() })
+          .object({
+            label: z.enum([...ALL_CARD_LABELS, 'unrecognized']),
+            optionLabel: z.enum([...ALL_CARD_LABELS, 'unrecognized']),
+            textEmpty: z.boolean(),
+            hasWholeWord: z.boolean(),
+            disabled: z.boolean()
+          })
           .strict()
       )
       .max(20),
@@ -97,7 +103,10 @@ const SCOPE_SCRIPT = `(() => {
     cardSelectCount: Math.min(cards.length, 1000),
     cardDisabled: cards.length === 1 ? cards[0].disabled : null,
     optionCount: Math.min(optionList.length, 1000),
-    options: optionList.slice(0, 20).map(option => ({ label: allLabels.includes(text(option)) ? text(option) : 'unrecognized', disabled: option.disabled })),
+    options: optionList.slice(0, 20).map(option => {
+      const optionLabel = (option.label || '').replace(/\\s+/g, '');
+      return { label: allLabels.includes(text(option)) ? text(option) : 'unrecognized', optionLabel: allLabels.includes(optionLabel) ? optionLabel : 'unrecognized', textEmpty: text(option) === '', hasWholeWord: text(option).includes('전체') || optionLabel.includes('전체'), disabled: option.disabled };
+    }),
     directPresent: !!direct && !direct.disabled,
     directLabels: direct ? labels.filter(label => label.htmlFor === direct.id).slice(0, 10).map(label => text(label) === '직접입력' ? '직접입력' : 'unrecognized') : [],
     recentPresent: !!recent && !recent.disabled,
@@ -160,7 +169,7 @@ function requestPlanScript(from: string, to: string): string {
     const cards = form.querySelectorAll('select[name="crno"]');
     if (cards.length !== 1 || cards[0].disabled) return fail('card_selector_unverified');
     const allCardLabels = ${JSON.stringify(ALL_CARD_LABELS)};
-    const allCards = Array.from(cards[0].options).filter(option => !option.disabled && allCardLabels.includes(text(option)));
+    const allCards = Array.from(cards[0].options).filter(option => !option.disabled && allCardLabels.includes((option.label || '').replace(/\\s+/g, '')));
     if (allCards.length !== 1) return fail('card_selector_unverified');
     const direct = fixedRadio('dtClsf_04', 'dtClsf', '직접입력');
     const recent = fixedRadio('listClsf_01', 'listClsf', null);

@@ -4,7 +4,11 @@ import type { Settings } from '../../shared/settings'
 import type { LotteKeypadReason, LotteKeypadSnapshot } from '../../shared/lotte-keypad'
 import { createSambaTools } from '../agent/tools'
 import { pageBridge } from '../browser/page-bridge'
-import { issuerForCardUrl, inspectCardPage } from './card-page-diagnostics'
+import {
+  issuerForCardUrl,
+  inspectCardPage,
+  type CardPageDiagnostics
+} from './card-page-diagnostics'
 import { observeSamsungLoginAlerts } from './samsung-login-outcome'
 
 const KEYPAD_STATES: readonly LotteKeypadSnapshot['state'][] = [
@@ -123,6 +127,48 @@ function classifyLoginResult(raw: string): Omit<CardSessionRestoreResult, 'auth'
   return { state: 'login_unconfirmed' }
 }
 
+function waitForSamsungStatus(delay: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', finish)
+      resolve()
+    }
+    const timer = setTimeout(finish, delay)
+    if (signal.aborted) finish()
+    else signal.addEventListener('abort', finish, { once: true })
+  })
+}
+
+function inspectBeforeDeadline(
+  tab: Tab,
+  deadline: number,
+  signal: AbortSignal,
+  shouldStop: () => boolean
+): Promise<CardPageDiagnostics | null> {
+  return new Promise((resolve) => {
+    let finished = false
+    const finish = (value: CardPageDiagnostics | null): void => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      clearInterval(guard)
+      signal.removeEventListener('abort', stop)
+      resolve(value)
+    }
+    const stop = (): void => finish(null)
+    const timer = setTimeout(stop, Math.max(0, deadline - Date.now()))
+    const guard = setInterval(() => {
+      if (shouldStop()) stop()
+    }, 750)
+    if (signal.aborted || Date.now() >= deadline || shouldStop()) stop()
+    else {
+      signal.addEventListener('abort', stop, { once: true })
+      void inspectCardPage(tab).then(finish, stop)
+    }
+  })
+}
+
 /** Reuses the existing KeyMaster gates and persistent failed-attempt protection. */
 export async function restoreCardSession(options: {
   tabs: TabManager
@@ -133,13 +179,16 @@ export async function restoreCardSession(options: {
 }): Promise<CardSessionRestoreResult> {
   const { tabs, tabId, vault, settings, signal } = options
   const tab = tabs.get(tabId)
-  const issuer = tab && issuerForCardUrl(tab.view.webContents.getURL())
+  const wc = tab?.view.webContents
+  const issuer = wc && !wc.isDestroyed() && issuerForCardUrl(wc.getURL())
   const valid = (): boolean =>
     !!tab &&
+    !!wc &&
     tabs.get(tabId) === tab &&
-    !tab.view.webContents.isDestroyed() &&
+    tab.view.webContents === wc &&
+    !wc.isDestroyed() &&
     !signal.aborted &&
-    issuerForCardUrl(tab.view.webContents.getURL()) === issuer
+    issuerForCardUrl(wc.getURL()) === issuer
   if (!tab || !issuer || !valid()) return { state: 'unavailable', auth: 'unknown' }
   const before = await inspectCardPage(tab)
   if (!valid() || before.state === 'navigation_changed' || before.issuer !== issuer)
@@ -169,24 +218,46 @@ export async function restoreCardSession(options: {
   try {
     if (!valid()) return { state: 'navigation_changed', auth: 'unknown' }
     const result = await tools.tools.find((entry) => entry.name === 'login')!.handler({}, {})
-    const after = await inspectCardPage(tab)
-    if (!valid() || after.state === 'navigation_changed' || after.issuer !== issuer)
-      return { state: 'navigation_changed', auth: 'unknown' }
-    if (after.auth === 'signed_in') return { state: 'signed_in', auth: 'signed_in' }
-    const outcome = alerts?.getOutcome()
-    if (
-      outcome &&
-      [
-        'wrong_credentials',
-        'input_required',
-        'security_program_required',
-        'additional_auth',
-        'captcha'
-      ].includes(outcome)
-    )
-      return { state: outcome, auth: after.auth }
     const raw = result.content.map((entry) => entry.text ?? '').join('\n')
-    return { ...classifyLoginResult(raw), auth: after.auth }
+    const waitForSamsung = issuer === 'samsung_card' && raw.startsWith('submitted:')
+    const deadline = Date.now() + 25_000
+    let auth: CardPageDiagnostics['auth'] = before.auth
+    const terminalOutcome = (): string | undefined => {
+      const outcome = alerts?.getOutcome()
+      return outcome &&
+        [
+          'wrong_credentials',
+          'input_required',
+          'security_program_required',
+          'additional_auth',
+          'captcha'
+        ].includes(outcome)
+        ? outcome
+        : undefined
+    }
+    // Samsung queues login behind netfunnel/AJAX: a click can finish before navigation
+    // starts. Keep the same one-attempt alert observer alive while checking completion.
+    for (;;) {
+      if (!valid())
+        return { state: signal.aborted ? 'cancelled' : 'navigation_changed', auth: 'unknown' }
+      const after = waitForSamsung
+        ? await inspectBeforeDeadline(tab, deadline, signal, () => !valid() || !!terminalOutcome())
+        : await inspectCardPage(tab)
+      if (!valid())
+        return { state: signal.aborted ? 'cancelled' : 'navigation_changed', auth: 'unknown' }
+      if (after && after.issuer !== issuer) return { state: 'navigation_changed', auth: 'unknown' }
+      if (after?.state === 'navigation_changed' && !waitForSamsung)
+        return { state: 'navigation_changed', auth: 'unknown' }
+      if (after && after.state !== 'navigation_changed') {
+        auth = after.auth
+        if (after.auth === 'signed_in') return { state: 'signed_in', auth: 'signed_in' }
+      }
+      const outcome = terminalOutcome()
+      if (outcome) return { state: outcome, auth }
+      if (!waitForSamsung || !after || Date.now() >= deadline)
+        return { ...classifyLoginResult(raw), auth }
+      await waitForSamsungStatus(Math.min(750, deadline - Date.now()), signal)
+    }
   } finally {
     alerts?.dispose()
   }

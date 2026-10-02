@@ -126,6 +126,25 @@ describe('fixed query contract inspection redaction', () => {
     expect(serialized).not.toContain('PRIVATE')
   })
 
+  it('inspects a static Hyundai card selector initializer without executing it', async () => {
+    const f = fixture(`function setCardSelector(vldCardList) {
+      window.didInitialize = true;
+      return vldCardList.map(card => card.crno + 'PRIVATE_CARD_NAME');
+    }`)
+    const url = 'https://www.hyundaicard.com/cpa/cb/CPACB0101_01.hc'
+    f.setUrl(url)
+    f.dom.reconfigure({ url })
+    vi.mocked(inspectCardPage).mockResolvedValue({
+      issuer: 'hyundai_card',
+      state: 'ready',
+      auth: 'signed_in'
+    })
+    const serialized = JSON.stringify(await inspectCardQueryContract(f.tab))
+    expect(serialized).toContain('setCardSelector')
+    expect(serialized).not.toContain('PRIVATE_CARD_NAME')
+    expect((f.dom.window as unknown as Record<string, unknown>).didInitialize).toBeUndefined()
+  })
+
   it('does not invoke accessor properties or event handlers while inspecting', async () => {
     const f = fixture()
     const getter = vi.fn(() => {

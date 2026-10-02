@@ -331,6 +331,37 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
     expect(result.receipt.issues).not.toContain('approval_outside_requested_range')
   })
 
+  it('uses a native option label attribute with an empty text node without exposing private labels', async () => {
+    const f = fixture()
+    const options = f.dom.window.document.querySelectorAll('option')
+    options[0].textContent = ''
+    options[0].setAttribute('label', '전체')
+    options[1].textContent = ''
+    options[1].setAttribute('label', 'PRIVATE_CARD_LABEL')
+    const inspected = await inspectHyundaiScope(f.tab)
+    expect(inspected).toMatchObject({
+      state: 'ready',
+      options: [
+        { label: 'unrecognized', optionLabel: '전체', textEmpty: true, hasWholeWord: true },
+        { label: 'unrecognized', optionLabel: 'unrecognized', textEmpty: true, hasWholeWord: false }
+      ]
+    })
+    expect(JSON.stringify(inspected)).not.toContain('PRIVATE_CARD_LABEL')
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.receipt.issues).not.toContain('card_selector_unverified')
+    expect(f.fetch).toHaveBeenCalledOnce()
+  })
+
+  it('does not accept hidden all-card text when the displayed option label is a custom card', async () => {
+    const f = fixture()
+    const option = f.dom.window.document.querySelector('option')!
+    option.textContent = '전체'
+    option.setAttribute('label', 'PRIVATE_CARD_LABEL')
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.receipt.issues).toContain('card_selector_unverified')
+    expect(f.fetch).not.toHaveBeenCalled()
+  })
+
   it('uses the fixed endpoint, existing session, redirects disabled, and form-urlencoded data', async () => {
     const f = fixture()
     await requestHyundaiApiPage(f.tab, form())

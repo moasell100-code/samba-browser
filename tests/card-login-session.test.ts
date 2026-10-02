@@ -19,6 +19,7 @@ vi.mock('../src/main/finance/card-page-diagnostics', async (load) => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.resetAllMocks()
 })
@@ -141,7 +142,10 @@ describe('card session restoration through existing KeyMaster login gates', () =
   ])('maps login output to fixed status without exposing details: %s', async (raw, state) => {
     const f = fixture()
     f.login.mockResolvedValue({ content: [{ type: 'text', text: raw }] })
-    const result = await restoreCardSession(f.options)
+    if (raw.startsWith('submitted:')) vi.useFakeTimers()
+    const pending = restoreCardSession(f.options)
+    if (raw.startsWith('submitted:')) await vi.advanceTimersByTimeAsync(25_001)
+    const result = await pending
     expect(result).toEqual({ state, auth: 'signed_out' })
     expect(JSON.stringify(result)).not.toContain('SYNTHETIC_PRIVATE_SECRET')
   })
@@ -267,6 +271,124 @@ describe('card session restoration through existing KeyMaster login gates', () =
     const result = await restoreCardSession(f.options)
     expect(result.auth).not.toBe('signed_in')
     expect(result.state).not.toBe('signed_in')
+  })
+
+  it('waits for delayed Samsung AJAX login across a same-issuer page transition without resubmitting', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({ getOutcome: () => 'unknown', dispose })
+    f.login.mockResolvedValue({
+      content: [{ type: 'text', text: 'submitted: check the page for success or captcha/2FA' }]
+    })
+    vi.mocked(inspectCardPage)
+      .mockResolvedValueOnce(SIGNED_OUT)
+      .mockResolvedValueOnce(SIGNED_OUT)
+      .mockImplementationOnce(async () => {
+        f.setUrl('https://www.samsungcard.com/personal/card/activity/UHPPRP0801M0.jsp')
+        return { ...SIGNED_IN, state: 'navigation_changed' }
+      })
+      .mockResolvedValueOnce(SIGNED_IN)
+    const pending = restoreCardSession(f.options)
+    await vi.advanceTimersByTimeAsync(749)
+    expect(dispose).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(752)
+    expect(await pending).toEqual({ state: 'signed_in', auth: 'signed_in' })
+    expect(f.login).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the alert observer until a delayed fixed error arrives', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    let outcome: 'unknown' | 'security_program_required' = 'unknown'
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({ getOutcome: () => outcome, dispose })
+    f.login.mockResolvedValue({
+      content: [{ type: 'text', text: 'submitted: check the page for success or captcha/2FA' }]
+    })
+    const pending = restoreCardSession(f.options)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(dispose).not.toHaveBeenCalled()
+    outcome = 'security_program_required'
+    await vi.advanceTimersByTimeAsync(501)
+    expect(await pending).toEqual({ state: 'security_program_required', auth: 'signed_out' })
+    expect(f.login).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('stops waiting immediately on cancellation and disposes without a new login', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    const abort = new AbortController()
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({ getOutcome: () => 'unknown', dispose })
+    f.login.mockResolvedValue({
+      content: [{ type: 'text', text: 'submitted: awaiting site response' }]
+    })
+    const pending = restoreCardSession({ ...f.options, signal: abort.signal })
+    await vi.advanceTimersByTimeAsync(100)
+    abort.abort()
+    expect(await pending).toEqual({ state: 'cancelled', auth: 'unknown' })
+    expect(f.login).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('never polls or accepts a signed-in observation from a different card after navigation', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({ getOutcome: () => 'unknown', dispose })
+    f.login.mockResolvedValue({
+      content: [{ type: 'text', text: 'submitted: awaiting site response' }]
+    })
+    const pending = restoreCardSession(f.options)
+    await vi.advanceTimersByTimeAsync(100)
+    const calls = vi.mocked(inspectCardPage).mock.calls.length
+    f.setUrl('https://www.lottecard.co.kr/app/LPMCDAA_V100.lc')
+    await vi.advanceTimersByTimeAsync(651)
+    expect(await pending).toEqual({ state: 'navigation_changed', auth: 'unknown' })
+    expect(inspectCardPage).toHaveBeenCalledTimes(calls)
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('bounds a stalled post-submit inspector to 25 seconds and retains no secret error', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({ getOutcome: () => 'unknown', dispose })
+    f.login.mockResolvedValue({
+      content: [{ type: 'text', text: 'submitted: PRIVATE_LOGIN_RESPONSE' }]
+    })
+    vi.mocked(inspectCardPage)
+      .mockResolvedValueOnce(SIGNED_OUT)
+      .mockReturnValueOnce(new Promise(() => undefined))
+    const pending = restoreCardSession(f.options)
+    await vi.advanceTimersByTimeAsync(25_001)
+    expect(await pending).toEqual({ state: 'login_unconfirmed', auth: 'signed_out' })
+    expect(f.login).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('ends a stalled inspector when a new native error arrives instead of waiting the full deadline', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    let outcome: 'unknown' | 'wrong_credentials' = 'unknown'
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({ getOutcome: () => outcome, dispose })
+    f.login.mockResolvedValue({
+      content: [{ type: 'text', text: 'submitted: awaiting site response' }]
+    })
+    vi.mocked(inspectCardPage)
+      .mockResolvedValueOnce(SIGNED_OUT)
+      .mockReturnValueOnce(new Promise(() => undefined))
+    const pending = restoreCardSession(f.options)
+    await vi.advanceTimersByTimeAsync(100)
+    outcome = 'wrong_credentials'
+    await vi.advanceTimersByTimeAsync(650)
+    expect(await pending).toEqual({ state: 'wrong_credentials', auth: 'signed_out' })
+    expect(f.login).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
   })
 })
 

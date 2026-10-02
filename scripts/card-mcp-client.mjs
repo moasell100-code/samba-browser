@@ -38,7 +38,13 @@ async function main() {
     const res = await fetch(endpoint, {
       method: 'POST',
       redirect: 'error',
-      signal: AbortSignal.timeout(toolName === 'card_collect_recent' ? 600_000 : 45_000),
+      signal: AbortSignal.timeout(
+        toolName === 'card_collect_recent'
+          ? 600_000
+          : toolName === 'card_restore_session'
+            ? 120_000
+            : 45_000
+      ),
       headers: {
         ...headers,
         ...(activeSession

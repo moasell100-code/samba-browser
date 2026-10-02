@@ -32,6 +32,13 @@ const SCRIPT = String.raw`(() => {
   for (const source of sources) {
     for (const m of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/g)) {
       if (/^(?:fn)?(?:go|search|inq|query|more|next|load|fetch|list|aprUse|getUse|getApr|cardUse)/i.test(m[1]) && !/login|auth|pass|pay|slip|excel|download/i.test(m[1]) && !targets.includes(m[1])) targets.push(m[1]);
+      if (location.hostname.includes('hyundaicard') && !targets.includes(m[1]) && !/login|auth|pass|pay|slip|excel|download/i.test(m[1])) {
+        const candidate = Object.getOwnPropertyDescriptor(window, m[1]);
+        if (candidate && typeof candidate.value === 'function') {
+          const code = Function.prototype.toString.call(candidate.value);
+          if (/vldCardList/.test(code) && code.length < 30000) targets.push(m[1]);
+        }
+      }
     }
     for (const m of source.matchAll(/["'](\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do))["']/g)) {
       if (!/\d{8,}/.test(m[1]) && !result.paths.includes(m[1])) result.paths.push(m[1]);
