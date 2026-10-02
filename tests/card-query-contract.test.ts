@@ -52,6 +52,30 @@ function fixture(source = ''): {
 }
 
 describe('fixed query contract inspection redaction', () => {
+  it('inspects the fixed Lotte form and page callbacks without invoking them or reading values', async () => {
+    const f = fixture(`function fnSetFormData() {
+      window.didSetForm = true;
+      return document.getElementById('searchValue').value;
+    }
+    function ajaxInquryAprUseListCallBack(status, data) {
+      window.didProcessPage = true;
+      return data.nextKey + 'PRIVATE_VALUE';
+    }`)
+    const readValue = vi.fn(() => {
+      throw new Error('must not read')
+    })
+    Object.defineProperty(f.dom.window.document.querySelector('input')!, 'value', {
+      get: readValue
+    })
+    const result = JSON.stringify(await inspectCardQueryContract(f.tab))
+    expect(result).toContain('fnSetFormData')
+    expect(result).toContain('ajaxInquryAprUseListCallBack')
+    expect(result).not.toContain('PRIVATE_VALUE')
+    expect(readValue).not.toHaveBeenCalled()
+    expect((f.dom.window as unknown as Record<string, unknown>).didSetForm).toBeUndefined()
+    expect((f.dom.window as unknown as Record<string, unknown>).didProcessPage).toBeUndefined()
+  })
+
   it('does not invoke query functions or read form values', async () => {
     const f = fixture(`function fnSearch() {
       window.didQuery = true;

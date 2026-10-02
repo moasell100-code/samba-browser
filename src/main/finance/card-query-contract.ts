@@ -12,7 +12,7 @@ const SCRIPT = String.raw`(() => {
   );
   if (!allowed) return { state: 'unsupported', auth: 'unknown' };
   const targets = location.hostname.includes('lottecard')
-    ? ['fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
+    ? ['fnSetFormData','ajaxSearchFilterCallBack','ajaxInquryAprUseListCallBack','fnValidateInquryDate','fnCheckOver12Month','fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
     : ['cardSelect','convertGeneralApprovalItem','convertTrafficItem','convertHipassItem','convertPurchaseItem','recentList','rcntSummaryInfo','goFilter','goAjax','getDate','getUseGb','getUseTypeNm'];
   const controls = location.hostname.includes('lottecard')
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
