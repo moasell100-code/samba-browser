@@ -141,7 +141,8 @@ const list = z
                 status === '취소') ||
               (order ===
                 'name,date,card,payment_type,cancellation_status,amount,secondary_amount' &&
-                status === '부분취소')
+                (status === '부분취소' ||
+                  /^부분취소\(-(?:\d+|\d{1,3}(?:,\d{3})+)원\)$/.test(status ?? '')))
             )
           })()
         : row.head.map((cell) => cell.field).join(',') ===

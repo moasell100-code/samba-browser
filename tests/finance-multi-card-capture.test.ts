@@ -86,7 +86,19 @@ describe('official card capture boundaries', () => {
         ?.page.frames[0].lists?.[0].rows[0].head.slice(-2)
         .map(({ text }) => text)
     ).toEqual(['12,345원', '3,456원'])
-    for (const status of ['승인', '취소', 'unknown']) {
+    const annotated = structuredClone(frame)
+    annotated.lists![0].rows[0].head[4].text = '부분취소(-8,889원)'
+    expect(financeFrameCaptureSchema.safeParse(annotated).success).toBe(true)
+    const annotatedReceipt = store.save({ frames: [annotated], failedFrames: 0, skippedFrames: 0 })
+    expect(JSON.stringify(annotatedReceipt)).not.toMatch(/8,889|부분취소/)
+    for (const status of [
+      '승인',
+      '취소',
+      'unknown',
+      '부분취소(8,889원)',
+      '부분취소(-8,88원)',
+      '부분취소(-8889원)other'
+    ]) {
       const invalid = structuredClone(frame)
       invalid.lists![0].rows[0].head[4].text = status
       expect(financeFrameCaptureSchema.safeParse(invalid).success).toBe(false)
