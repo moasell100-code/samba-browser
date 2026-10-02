@@ -8,6 +8,7 @@ interface LotteHistoryReaders {
 
 const HISTORY_PATH = '/app/LPMCDAA_V100.lc'
 const MAX_ROWS = 1000
+const PARTIAL_CANCELLATION_STATUS = /^부분취소\(-(?:\d+|\d{1,3}(?:,\d{3})+)원\)$/
 const DETAIL_LABELS = [
   '이용일시',
   '거래유형',
@@ -155,7 +156,10 @@ export function captureLotteHistoryLists(
         continue
       }
       cancellationStatus = readers.readCell(metadata[3])
-      if (cancellationStatus !== (isCancelled ? '취소' : '부분취소')) {
+      const verifiedStatus = isCancelled
+        ? cancellationStatus === '취소'
+        : cancellationStatus === '부분취소' || PARTIAL_CANCELLATION_STATUS.test(cancellationStatus)
+      if (!verifiedStatus) {
         recordUnrecognized({ ...counts, reason: 'unsupported_variant' })
         continue
       }

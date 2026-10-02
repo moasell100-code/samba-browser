@@ -234,6 +234,41 @@ describe('Lotte observed visible history list adapter', () => {
     expect(read.countRow).toHaveBeenCalledExactlyOnceWith(7)
   })
 
+  it.each(['부분취소(-1234원)', '부분취소(-1,234원)', '부분취소(-12,345,678원)'])(
+    'preserves the verified amount-bearing partial-cancellation status %s without parsing it',
+    (status) => {
+      const result = captureLotteHistoryLists(
+        docAt(root(partialRow().replace('부분취소', status))),
+        readers()
+      )[0]
+      expect(result.unrecognizedRows).toBe(0)
+      expect(result.rows[0].head.slice(4)).toEqual([
+        { field: 'cancellation_status', text: status },
+        { field: 'amount', text: '12,345원' },
+        { field: 'secondary_amount', text: '6,789원' }
+      ])
+    }
+  )
+
+  it.each([
+    '부분취소(1234원)',
+    '부분취소(+1,234원)',
+    '부분취소(-12,34원)',
+    '부분취소(-1234,567원)',
+    '부분취소(-1,234)',
+    '부분취소 (-1,234원)',
+    '부분취소(-1,234원) 기타'
+  ])('does not broaden partial-cancellation recognition to an unverified label %s', (status) => {
+    const result = captureLotteHistoryLists(
+      docAt(root(partialRow().replace('부분취소', status))),
+      readers()
+    )[0]
+    expect(result.rows).toEqual([])
+    expect(result.unrecognizedRows).toBe(1)
+    expect(result.unrecognizedDiagnostics![0].reason).toBe('unsupported_variant')
+    expect(JSON.stringify(result.unrecognizedDiagnostics)).not.toContain(status)
+  })
+
   it('requires the verified cancellation class, exact label and amount count together', () => {
     for (const html of [
       cancelledRow().replace('<span>취소</span>', '<span>부분취소</span>'),
@@ -308,6 +343,20 @@ describe('Lotte observed visible history list adapter', () => {
       expect(result.rows[0].detailsVisible).toBe(true)
       expect(result.rows[0].sourceRowId).toBeUndefined()
     }
+  })
+
+  it('keeps a recognized head while leaving the unverified six-item detail variant incomplete', () => {
+    const sixItemDetail = details()
+      .replace(/<li>취소금액[\s\S]*<\/ul>/, '</ul>')
+      .replace('포인트사용', '')
+    const result = captureLotteHistoryLists(
+      docAt(root(withDetails(cancelledRow(), sixItemDetail))),
+      readers()
+    )[0]
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0].details).toEqual([])
+    expect(result.rows[0].detailsVisible).toBe(false)
+    expect(result.rows[0].sourceRowId).toBeUndefined()
   })
 
   it('keeps cancellation and expanded-detail values out of the model receipt', () => {
