@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { lotteResponseShapeIssues } from '../src/main/finance/lotte-api-diagnostics'
 describe('Lotte structural facts', () => {
+  it('classifies masked card notation without returning the card text or digits', () => {
+    const flags = lotteResponseShapeIssues({
+      Content:
+        '<li class="toggle"><div class="info"><span>PRIVATE_DATE</span><span>PRIVATE_CARD(1*23)</span></div></li>'
+    })
+    expect(flags).toContain('shape_card_format_2')
+    expect(JSON.stringify(flags)).not.toMatch(/PRIVATE|1\*23/)
+  })
   it('never emits business text, payload values, unknown JSON keys, or attribute values', () => {
     const flags = lotteResponseShapeIssues({
       Content: `<li class="toggle"><strong>PRIVATE_MERCHANT</strong><button data-apruse='{"aprno":"PRIVATE_APPROVAL","cdno":"PRIVATE_CARD","PRIVATE_KEY":"SECRET"}' data-hidden="SECRET"><div class="useList"></div></button></li>`

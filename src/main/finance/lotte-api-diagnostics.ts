@@ -191,6 +191,21 @@ export function lotteResponseShapeIssues(value: unknown): string[] {
   }
   const row = doc.querySelector('li.toggle') ?? doc.querySelector('li.toggleON')
   if (!row) return [...result]
+  const cardText = row.querySelector('div.info')?.querySelectorAll('span')[1]?.text ?? ''
+  const cardShapes = [
+    /\(\d{4}\)$/,
+    /\(\d{4}\)/,
+    /\([\d*]{4}\)$/,
+    /\([\d*]{4}\)/,
+    /\[\d{4}\]/,
+    /\d{4}\s*$/,
+    /\d{4}/,
+    /\*{1,12}[\d*]{4}/,
+    /\(\s*\d{4}\s*\)/,
+    /(?<![\d*])[\d*]{4}(?![\d*])/
+  ]
+  for (const [index, pattern] of cardShapes.entries())
+    if (pattern.test(cardText)) result.add('shape_card_format_' + index)
   const detail = row.querySelector('div.useList')
   result.add(
     detail

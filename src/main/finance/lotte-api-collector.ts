@@ -58,6 +58,48 @@ const DETAIL_LABELS = [
   '매입금액',
   '취소일자'
 ] as const
+const DETAIL_METHOD_LABELS = [
+  '신용',
+  '체크',
+  '신용거래',
+  '체크거래',
+  '신용승인',
+  '체크승인',
+  '신용카드',
+  '체크카드',
+  '승인',
+  '구매',
+  '물품구매',
+  '일시불',
+  '할부',
+  '일시불승인',
+  '일시불(국내)',
+  '일시불(해외)',
+  '국내승인',
+  '해외승인',
+  '정상승인',
+  '신용판매',
+  '체크판매',
+  '신용구매',
+  '일시불판매',
+  '신용판매(일시불)',
+  '신용판매(할부)',
+  '일시불 승인',
+  '카드승인',
+  '국내일시불',
+  '해외일시불'
+] as const
+const CANCELLATION_EXTRA_LABELS = [
+  '',
+  '-',
+  '--',
+  '해당없음',
+  '취소아님',
+  '취소안됨',
+  '정상승인',
+  '승인',
+  '승인완료'
+] as const
 const MAX_TEXT = 2000
 const REQUEST_MS = 20_000
 const SAFE_ERRORS = new Set([
@@ -219,7 +261,13 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
   const method = metadata[2]
   if (method !== '일시불' && method !== '할부') needsReview.push('transaction_type_unverified')
   const detailMethod = details?.get('거래유형')
-  if (detailMethod && detailMethod !== method) needsReview.push('transaction_type_conflict')
+  if (detailMethod && detailMethod !== method) {
+    needsReview.push('transaction_type_conflict')
+    const label = (DETAIL_METHOD_LABELS as readonly string[]).indexOf(detailMethod)
+    needsReview.push(
+      label >= 0 ? `detail_method_label_${label}` : 'detail_method_label_unrecognized'
+    )
+  }
   const detailDate = details?.get('이용일시') ? date(details.get('이용일시')!) : null
   const approvedAt = detailDate ?? headDate
   if (detailDate && detailDate.slice(0, 10) !== headDate.slice(0, 10))
@@ -260,7 +308,14 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
   ) {
     needsReview.push('status_unverified')
     const label = ['없음', '미취소', 'N', 'Y'].indexOf(cancellationLabel ?? '')
-    needsReview.push(label >= 0 ? `cancellation_label_${label}` : 'cancellation_label_unrecognized')
+    const extra = (CANCELLATION_EXTRA_LABELS as readonly string[]).indexOf(cancellationLabel ?? '')
+    needsReview.push(
+      label >= 0
+        ? `cancellation_label_${label}`
+        : extra >= 0
+          ? `cancellation_extra_label_${extra}`
+          : 'cancellation_label_unrecognized'
+    )
   }
   if (
     status === 'approved' &&

@@ -197,6 +197,37 @@ describe('Lotte private API normalization', () => {
     ).rows[0]
     expect(conflict.needsReview).toContain('transaction_type_conflict')
   })
+  it('returns only fixed detail-method indices and retains unexpected semantics for review', () => {
+    for (const [label, code] of [
+      ['신용', 'detail_method_label_0'],
+      ['정상승인', 'detail_method_label_18'],
+      ['신용판매', 'detail_method_label_19'],
+      ['해외일시불', 'detail_method_label_28'],
+      ['private-method-value', 'detail_method_label_unrecognized']
+    ]) {
+      const html = content().replace(
+        '거래유형<input value="not-a-business-value"><span>일시불</span>',
+        `거래유형<input value="not-a-business-value"><span>${label}</span>`
+      )
+      const row = parseLotteApiResponse(response(html)).rows[0]
+      expect(row.needsReview).toContain('transaction_type_conflict')
+      expect(row.needsReview).toContain(code)
+      expect(JSON.stringify(row)).not.toContain('private-method-value')
+    }
+  })
+  it('identifies public blank/hyphen cancellation labels by index without accepting them as normal', () => {
+    for (const [label, code] of [
+      ['', 'cancellation_extra_label_0'],
+      ['-', 'cancellation_extra_label_1'],
+      ['승인완료', 'cancellation_extra_label_8']
+    ]) {
+      const row = parseLotteApiResponse(
+        response(content().replace('<span>정상</span>', `<span>${label}</span>`))
+      ).rows[0]
+      expect(row.needsReview).toContain('status_unverified')
+      expect(row.needsReview).toContain(code)
+    }
+  })
   it('flags disagreement between explicit cancellation amount and exact partial-cancellation label', () => {
     const row = parseLotteApiResponse(response(content({ kind: 'partial', refund: '4,000원' })))
       .rows[0]
