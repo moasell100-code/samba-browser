@@ -132,6 +132,13 @@ export async function startCardDiagnosticsRuntime(options: {
       const existing = options.tabs.list().find((tab) => issuerForCardUrl(tab.url) === issuer)
       const id = existing?.id ?? options.tabs.create({ url: 'about:blank' }).id
       const tab = options.tabs.get(id)!
+      assertLiveTab(tab)
+      if (!existing) {
+        // create() starts navigation asynchronously; its URL can still be empty here.
+        // Finish only this newly created blank document before attaching the observer.
+        await tab.view.webContents.loadURL('about:blank')
+        assertTabContext(tab, 'about:blank')
+      }
       const initialUrl = tab.view.webContents.getURL()
       await observe(tab, issuer, initialUrl)
       assertTabContext(tab, initialUrl)

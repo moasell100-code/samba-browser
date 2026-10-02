@@ -106,7 +106,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   })
   return { promise, resolve }
 }
-async function fixture(): Promise<{
+async function fixture(options: { fresh?: boolean } = {}): Promise<{
   tab: Tab
   tabs: { get: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> }
   wc: EventEmitter & { loadURL: ReturnType<typeof vi.fn> }
@@ -116,7 +116,8 @@ async function fixture(): Promise<{
   setBusy: () => void
   destroy: () => void
 }> {
-  let url = LOTTE
+  let url = options.fresh ? '' : LOTTE
+  let created = !options.fresh
   let destroyed = false
   let busy = false
   const wc = Object.assign(new EventEmitter(), {
@@ -132,8 +133,11 @@ async function fixture(): Promise<{
   } as unknown as Tab
   const tabs = {
     get: vi.fn((id: string) => (id === tab.id ? tab : undefined)),
-    list: () => [{ id: tab.id, url, loading: false }],
-    create: vi.fn(() => tab)
+    list: () => (created ? [{ id: tab.id, url, loading: false }] : []),
+    create: vi.fn(() => {
+      created = true
+      return tab
+    })
   }
   const stop = await startCardDiagnosticsRuntime({
     tabs: tabs as unknown as TabManager,
@@ -180,6 +184,43 @@ afterEach(async () => {
 })
 
 describe('card diagnostics runtime lifetime', () => {
+  it('finishes a new tab empty-to-about:blank transition before observing or opening history', async () => {
+    const h = await fixture({ fresh: true })
+    const wait = deferred()
+    h.wc.loadURL.mockImplementationOnce(async (url: string) => {
+      expect(url).toBe('about:blank')
+      await wait.promise
+      h.setUrl('about:blank')
+    })
+    const pending = h.backend.openHistory('lotte_card')
+    expect(h.tabs.create).toHaveBeenCalledExactlyOnceWith({ url: 'about:blank' })
+    expect(h.wc.loadURL).toHaveBeenCalledExactlyOnceWith('about:blank')
+    expect(fixtureState.observers).toHaveLength(0)
+    wait.resolve()
+    await expect(pending).resolves.toMatchObject({ state: 'ready' })
+    expect(h.wc.loadURL.mock.calls.map(([url]) => url)).toEqual(['about:blank', LOTTE])
+    expect(fixtureState.observers).toHaveLength(1)
+  })
+
+  it.each(['stop', 'busy', 'navigate', 'destroy'] as const)(
+    'does not attach or open history after %s during new blank preparation',
+    async (change) => {
+      const h = await fixture({ fresh: true })
+      const wait = deferred()
+      h.wc.loadURL.mockImplementationOnce(() => wait.promise)
+      const pending = h.backend.openHistory('lotte_card')
+      const rejected = expect(pending).rejects.toThrow()
+      h.setUrl(change === 'navigate' ? SAMSUNG : 'about:blank')
+      if (change === 'stop') h.stop()
+      else if (change === 'busy') h.setBusy()
+      else if (change === 'destroy') h.destroy()
+      wait.resolve()
+      await rejected
+      expect(fixtureState.observers).toHaveLength(0)
+      expect(h.wc.loadURL).toHaveBeenCalledExactlyOnceWith('about:blank')
+    }
+  )
+
   it('opens only the fixed history route, reuses an active observer, and cleans up its listener', async () => {
     const h = await fixture()
     await h.backend.openHistory('lotte_card')

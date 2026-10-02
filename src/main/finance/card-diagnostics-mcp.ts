@@ -47,11 +47,22 @@ export async function startCardDiagnosticsMcp(
         try {
           const value = await callback(args)
           return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] }
-        } catch {
+        } catch (error) {
           // Errors from Electron/pages may contain URLs, inputs, or response bodies.
+          const safeErrors = new Set([
+            'Card tab changed',
+            'Card tab unavailable',
+            'Card diagnostics unavailable',
+            'Card observation unavailable',
+            'No observer'
+          ])
+          const message =
+            error instanceof Error && safeErrors.has(error.message)
+              ? error.message
+              : 'Card diagnostic unavailable for this tab'
           return {
             isError: true,
-            content: [{ type: 'text' as const, text: 'Card diagnostic unavailable for this tab' }]
+            content: [{ type: 'text' as const, text: message }]
           }
         }
       }
