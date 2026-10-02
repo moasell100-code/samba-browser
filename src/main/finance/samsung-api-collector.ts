@@ -8,6 +8,8 @@ const HISTORY_PATH = '/personal/card/activity/UHPPRP0801M0.jsp'
 const PAGE_SIZE = 10
 const REQUEST_MS = 15_000
 const RUN_MS = 120_000
+const INITIAL_SESSION_WAIT_MS = 10_000
+const SESSION_POLL_MS = 250
 const MAX_ROWS = 10_000
 type Mode = 'approval' | 'cancellation'
 
@@ -314,6 +316,21 @@ async function bounded<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
   }
 }
 
+async function sessionPause(signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const finish = (aborted = false): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      if (aborted) reject(new QueryStopped('aborted'))
+      else resolve()
+    }
+    const abort = (): void => finish(true)
+    const timer = setTimeout(finish, SESSION_POLL_MS)
+    if (signal.aborted) abort()
+    else signal.addEventListener('abort', abort, { once: true })
+  })
+}
+
 export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, options = {}) => {
   const started = Date.now()
   const rows: CardApiRow[] = []
@@ -345,12 +362,66 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
   }
   const wc = tab.view.webContents
   let initialUrl = ''
-  const guard = async (): Promise<void> => {
+  const assertContext = (): void => {
     if (options.signal?.aborted) throw new QueryStopped('aborted')
     if (Date.now() - started >= RUN_MS) throw new QueryStopped('run_time_limit')
-    if (wc.isDestroyed() || wc.getURL() !== initialUrl) throw new QueryStopped('navigation_changed')
-    const auth = await bounded(pageBridge.cardSession(tab), options.signal)
-    if (wc.isDestroyed() || wc.getURL() !== initialUrl) throw new QueryStopped('navigation_changed')
+    if (tab.view.webContents !== wc || wc.isDestroyed() || wc.getURL() !== initialUrl)
+      throw new QueryStopped('navigation_changed')
+  }
+  const guard = async (): Promise<void> => {
+    assertContext()
+    let auth = await bounded(pageBridge.cardSession(tab), options.signal)
+    assertContext()
+    // A freshly restored history page may not have rendered its signed-in markers yet.
+    // This bounded wait reads session markers only; an API response is never retried.
+    if (pages === 0 && auth.issuer === ISSUER && auth.state === 'unknown') {
+      const readiness = new AbortController()
+      const signal = options.signal
+        ? AbortSignal.any([options.signal, readiness.signal])
+        : readiness.signal
+      let contextChanged = false
+      const interrupt = (): void => {
+        contextChanged = true
+        readiness.abort()
+      }
+      const navigate = (
+        _event: unknown,
+        _url: string,
+        _inPlace: boolean,
+        mainFrame: boolean
+      ): void => {
+        if (mainFrame) interrupt()
+      }
+      const timer = setTimeout(() => readiness.abort(), INITIAL_SESSION_WAIT_MS)
+      const contextWatch = setInterval(() => {
+        try {
+          assertContext()
+        } catch {
+          interrupt()
+        }
+      }, SESSION_POLL_MS)
+      wc.on('did-start-navigation', navigate)
+      wc.on('destroyed', interrupt)
+      try {
+        while (auth.issuer === ISSUER && auth.state === 'unknown') {
+          await sessionPause(signal)
+          assertContext()
+          auth = await bounded(pageBridge.cardSession(tab), signal)
+          assertContext()
+        }
+      } catch (error) {
+        assertContext()
+        if (contextChanged) throw new QueryStopped('navigation_changed')
+        if (readiness.signal.aborted) throw new QueryStopped('session_unverified')
+        throw error
+      } finally {
+        clearTimeout(timer)
+        clearInterval(contextWatch)
+        readiness.abort()
+        wc.removeListener('did-start-navigation', navigate)
+        wc.removeListener('destroyed', interrupt)
+      }
+    }
     if (auth.issuer !== ISSUER || auth.state !== 'signed_in')
       throw new QueryStopped(auth.state === 'signed_out' ? 'signed_out' : 'session_unverified')
   }

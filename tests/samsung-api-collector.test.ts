@@ -1,4 +1,5 @@
 import { webcrypto } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { JSDOM } from 'jsdom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Tab } from '../src/main/browser/tab-manager'
@@ -63,10 +64,12 @@ function fixture(handler?: (query: Query, index: number) => void): {
   calls: Query[]
   execute: ReturnType<typeof vi.fn>
   condition: Record<string, unknown>
-  setUrl: (url: string) => void
+  setUrl: (url: string, notify?: boolean) => void
+  destroy: () => void
   auth: ReturnType<typeof vi.spyOn<typeof pageBridge, 'cardSession'>>
 } {
   let current = URL
+  let destroyed = false
   const dom = new JSDOM('<input id="start_day" value="2026.01.01">', {
     url: URL,
     runScripts: 'outside-only'
@@ -100,19 +103,31 @@ function fixture(handler?: (query: Query, index: number) => void): {
     expect(userGesture).toBe(false)
     return dom.window.eval(script)
   })
-  const tab = {
-    view: {
-      webContents: {
-        getURL: () => current,
-        isDestroyed: () => false,
-        executeJavaScript: execute
-      }
-    }
-  } as unknown as Tab
+  const webContents = Object.assign(new EventEmitter(), {
+    getURL: () => current,
+    isDestroyed: () => destroyed,
+    executeJavaScript: execute
+  })
+  const tab = { view: { webContents } } as unknown as Tab
   const auth = vi
     .spyOn(pageBridge, 'cardSession')
     .mockResolvedValue({ issuer: 'samsung_card', state: 'signed_in' })
-  return { tab, dom, calls, execute, condition, setUrl: (url) => (current = url), auth }
+  return {
+    tab,
+    dom,
+    calls,
+    execute,
+    condition,
+    setUrl: (url, notify = true) => {
+      current = url
+      if (notify) webContents.emit('did-start-navigation', {}, url, false, true)
+    },
+    destroy: () => {
+      destroyed = true
+      webContents.emit('destroyed')
+    },
+    auth
+  }
 }
 
 describe('Samsung fixed private statement API collector', () => {
@@ -638,6 +653,144 @@ describe('Samsung fixed private statement API collector', () => {
     expect(result.rows).toEqual([])
     expect(result.receipt.issues).toEqual(['aborted'])
   })
+
+  it('waits only for initial unknown Samsung markers, then performs each API query once', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    f.auth
+      .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'unknown' })
+      .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'unknown' })
+    const pending = collectSamsungApi(f.tab, RANGE)
+    await vi.advanceTimersByTimeAsync(249)
+    expect(f.auth).toHaveBeenCalledTimes(1)
+    expect(f.execute).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.auth).toHaveBeenCalledTimes(2)
+    expect(f.execute).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(250)
+    const result = await pending
+    expect(result.receipt.approvalComplete).toBe(true)
+    expect(f.calls.map((query) => query.service)).toEqual(['SHPPRP0801S51', 'SHPPRP0801S12'])
+    expect(f.tab.view.webContents.listenerCount('did-start-navigation')).toBe(0)
+    expect(f.tab.view.webContents.listenerCount('destroyed')).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([
+    { issuer: 'samsung_card', state: 'signed_out', issue: 'signed_out' },
+    { issuer: 'lotte_card', state: 'unknown', issue: 'session_unverified' },
+    { issuer: 'lotte_card', state: 'signed_in', issue: 'session_unverified' }
+  ] as const)('does not wait for initial $issuer/$state', async ({ issuer, state, issue }) => {
+    vi.useFakeTimers()
+    const f = fixture()
+    f.auth.mockResolvedValue({ issuer, state })
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.receipt.issues).toEqual([issue])
+    expect(result.receipt.elapsedMs).toBe(0)
+    expect(f.auth).toHaveBeenCalledTimes(1)
+    expect(f.execute).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['unknown', 'pending'] as const)(
+    'bounds initial $s session reads to ten seconds without any API requests',
+    async (read) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      f.auth.mockResolvedValue({ issuer: 'samsung_card', state: 'unknown' })
+      if (read === 'pending') {
+        f.auth
+          .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'unknown' })
+          .mockImplementation(() => new Promise(() => undefined))
+      }
+      const pending = collectSamsungApi(f.tab, RANGE)
+      await vi.advanceTimersByTimeAsync(10_000)
+      const result = await pending
+      expect(result.receipt).toMatchObject({
+        issues: ['session_unverified'],
+        elapsedMs: 10_000,
+        pages: 0,
+        approvalComplete: false
+      })
+      expect(f.auth).toHaveBeenCalledTimes(read === 'pending' ? 2 : 40)
+      expect(f.execute).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it.each(['signed_out', 'wrong_issuer'] as const)(
+    'ends initial marker waiting immediately on $s',
+    async (change) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      f.auth
+        .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'unknown' })
+        .mockResolvedValueOnce(
+          change === 'signed_out'
+            ? { issuer: 'samsung_card', state: 'signed_out' }
+            : { issuer: 'lotte_card', state: 'unknown' }
+        )
+      const pending = collectSamsungApi(f.tab, RANGE)
+      await vi.advanceTimersByTimeAsync(250)
+      const result = await pending
+      expect(result.receipt.issues).toEqual([
+        change === 'signed_out' ? 'signed_out' : 'session_unverified'
+      ])
+      expect(f.auth).toHaveBeenCalledTimes(2)
+      expect(f.execute).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it.each(['abort', 'navigation', 'destroy', 'replace', 'silent_url'] as const)(
+    'interrupts initial marker waiting immediately on %s even during a pending read',
+    async (change) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      const originalContents = f.tab.view.webContents
+      const controller = new AbortController()
+      f.auth
+        .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'unknown' })
+        .mockImplementation(() => new Promise(() => undefined))
+      const pending = collectSamsungApi(f.tab, RANGE, { signal: controller.signal })
+      await vi.advanceTimersByTimeAsync(250)
+      if (change === 'abort') controller.abort()
+      else if (change === 'navigation') f.setUrl('https://www.samsungcard.com/personal/main.jsp')
+      else if (change === 'destroy') f.destroy()
+      else if (change === 'replace')
+        Object.defineProperty(f.tab.view, 'webContents', { value: {}, configurable: true })
+      else f.setUrl('https://www.samsungcard.com/personal/main.jsp', false)
+      if (change === 'replace' || change === 'silent_url') await vi.advanceTimersByTimeAsync(250)
+      const result = await pending
+      expect(result.receipt.issues).toEqual([change === 'abort' ? 'aborted' : 'navigation_changed'])
+      expect(result.receipt.elapsedMs).toBe(
+        change === 'replace' || change === 'silent_url' ? 500 : 250
+      )
+      expect(f.auth).toHaveBeenCalledTimes(2)
+      expect(f.execute).not.toHaveBeenCalled()
+      expect(originalContents.listenerCount('did-start-navigation')).toBe(0)
+      expect(originalContents.listenerCount('destroyed')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it.each([2, 3])(
+    'does not wait for unknown markers after the first API request (read %s)',
+    async (read) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      for (let index = 1; index < read; index++)
+        f.auth.mockResolvedValueOnce({ issuer: 'samsung_card', state: 'signed_in' })
+      f.auth.mockResolvedValueOnce({ issuer: 'samsung_card', state: 'unknown' })
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.receipt.issues).toEqual(['session_unverified'])
+      expect(result.receipt.elapsedMs).toBe(0)
+      expect(result.receipt.approvalComplete).toBe(false)
+      expect(f.auth).toHaveBeenCalledTimes(read)
+      expect(f.calls).toHaveLength(1)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
 
   it('times out a nonresponding service without retrying or returning partial response text', async () => {
     vi.useFakeTimers()
