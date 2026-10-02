@@ -11,7 +11,7 @@ const SCRIPT = String.raw`(() => {
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
   const fields = ['form1','LPMCDAAAprUseList','pageNo','pageRows','nextKey','schDv','stDv','useDv','useCdDv','uplDv','ptnBnkYn','sortDv','sortObj','listClsf','dtClsf','zoneClsf','useClsf','usplClsf','sortType','dmfrClsf','srtDt','startDt','endDt','inqTeDt','iqrySrtDt','iqryEndDt','startDtShow','endDtShow','crno','encCdno','Content','Status','code','message'];
   const literals = new Set([...fields, ...fields.map(f => '#' + f)]);
-  const clean = source => source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60/g, token => {
+  const clean = source => source.includes(String.fromCharCode(96)) ? '[template source omitted]' : source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60/g, token => {
     if (token.startsWith('//') || token.startsWith('/*')) return '';
     const value = token.slice(1, -1);
     if (literals.has(value) || /^\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do)$/.test(value) && !/\d{8,}/.test(value)) return JSON.stringify(value);

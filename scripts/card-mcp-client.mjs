@@ -62,7 +62,7 @@ async function main() {
       }
     })
     const initialized = await response.json()
-    if (initialized.result?.serverInfo?.name !== 'jaja-card-readonly')
+    if (!['jaja-card-readonly', 'jaja-card-collector'].includes(initialized.result?.serverInfo?.name))
       throw new Error('Unexpected MCP server')
     session = response.headers.get('mcp-session-id')
     if (!session) throw new Error('No MCP session')
