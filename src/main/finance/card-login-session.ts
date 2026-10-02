@@ -116,6 +116,7 @@ function classifyLoginResult(raw: string): Omit<CardSessionRestoreResult, 'auth'
     return { state: 'input_not_accepted', stage: 'password_input' }
   if (/locked/i.test(raw)) return { state: 'vault_locked' }
   if (/needs_user|captcha|2fa/i.test(raw)) return { state: 'user_verification_required' }
+  if (/fields not found/i.test(raw)) return { state: 'login_fields_unavailable' }
   if (/not found/i.test(raw)) return { state: 'saved_account_unavailable' }
   if (/refused|denied|disabled/i.test(raw)) return { state: 'policy_blocked' }
   return { state: 'login_unconfirmed' }

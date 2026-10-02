@@ -133,7 +133,21 @@ export async function startCardDiagnosticsRuntime(options: {
           const entry = observed.get(tab.id)
           const observing =
             entry?.issuer === issuer && entry?.observer.snapshot().state === 'watching'
-          return issuer ? [{ tabId: tab.id, issuer, loading: tab.loading, observing }] : []
+          const pathname = new URL(tab.url).pathname
+          const staticPath =
+            /^[\/A-Za-z_-]+\/[A-Z]{4,8}\d{4}[A-Z0-9]{2,3}\.jsp$/.test(pathname) ||
+            /^\/(?:app\/[A-Z]{5,8}_[A-Z]\d{3}\.lc|cpa\/cb\/CPACB0101_01\.hc)$/.test(pathname)
+          return issuer
+            ? [
+                {
+                  tabId: tab.id,
+                  issuer,
+                  loading: tab.loading,
+                  observing,
+                  ...(staticPath ? { pathname } : {})
+                }
+              ]
+            : []
         })
       }
     },
