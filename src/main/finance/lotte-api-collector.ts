@@ -8,6 +8,7 @@ import { lotteResponseShapeIssues } from './lotte-api-diagnostics'
 
 const HISTORY = 'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc'
 const QUERY = 'https://www.lottecard.co.kr/app/LPMCDAA_A102.lc'
+const DETAIL_QUERY = 'https://www.lottecard.co.kr/app/LPMCDAA_P103.lc'
 const REQUEST_FIELDS = [
   'encCdno',
   'endDt',
@@ -26,6 +27,25 @@ const REQUEST_FIELDS = [
   'useDv'
 ] as const
 export type LotteApiForm = Readonly<Record<(typeof REQUEST_FIELDS)[number], string>>
+const DETAIL_FIELDS = [
+  'aprDeAm',
+  'aprDeKeyV',
+  'aprDtti',
+  'encCdno',
+  'deDt',
+  'gramFlwSeq',
+  'auPartId',
+  'aprno',
+  'aprTrc',
+  'byRc',
+  'byCanRc',
+  'mcNm',
+  'lono',
+  'type',
+  'mildolYn',
+  'aprRsc'
+] as const
+type DetailFields = ReadonlyMap<string, string>
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 const DETAIL_LABELS = [
   '이용일시',
@@ -150,7 +170,10 @@ function detailFields(row: HTMLElement): Map<string, string> | null {
   if (boxes.length !== 1) return null
   const lists = elements(boxes[0]).filter((node) => node.tagName === 'UL')
   if (lists.length !== 1) return null
-  const pairs = elements(lists[0])
+  return detailListFields(lists[0])
+}
+function detailListFields(list: HTMLElement): Map<string, string> | null {
+  const pairs = elements(list)
   if (pairs.length !== DETAIL_LABELS.length || pairs.some((node) => node.tagName !== 'LI'))
     return null
   const result = new Map<string, string>()
@@ -169,7 +192,7 @@ function detailFields(row: HTMLElement): Map<string, string> | null {
   }
   return result
 }
-function rowFromHtml(row: HTMLElement): CardApiRow | null {
+function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiRow | null {
   const children = elements(row)
   const heading = children.find((node) => node.tagName === 'STRONG')!
   const info = children.find((node) => node.tagName === 'DIV' && node.classList.contains('info'))!
@@ -189,7 +212,7 @@ function rowFromHtml(row: HTMLElement): CardApiRow | null {
     headAmount === null
   )
     return null
-  const details = detailFields(row)
+  const details = verifiedDetails ?? detailFields(row)
   const needsReview: string[] = []
   if (!details) needsReview.push('details_unverified')
   if (!/[₩원]/.test(amounts[0] ?? '')) needsReview.push('currency_unverified')
@@ -297,7 +320,11 @@ function rowFromHtml(row: HTMLElement): CardApiRow | null {
 }
 
 /** Private normalized rows only. The caller must return receipt metadata, never this payload, to MCP. */
-export function parseLotteApiResponse(parsed: unknown): LotteApiPage {
+export function parseLotteApiResponse(
+  parsed: unknown,
+  detailOverrides: ReadonlyMap<number, DetailFields> = new Map(),
+  detailIssues: ReadonlyMap<number, string> = new Map()
+): LotteApiPage {
   const status = own(own(parsed, 'Status'), 'code')
   if (status !== 0 && status !== '0')
     return { rows: [], issues: ['response_status_unverified'], rowCount: null }
@@ -309,12 +336,14 @@ export function parseLotteApiResponse(parsed: unknown): LotteApiPage {
   const root = summary.root === 'full' ? doc.querySelector('#useCardList')! : doc
   const rows: CardApiRow[] = []
   const issues = new Set<string>()
-  for (const element of elements(root)) {
-    const row = rowFromHtml(element)
+  for (const [index, element] of elements(root).entries()) {
+    const row = rowFromHtml(element, detailOverrides.get(index))
     if (!row) {
       issues.add('unrecognized_rows')
       continue
     }
+    const detailIssue = detailIssues.get(index)
+    if (detailIssue) row.needsReview.push(detailIssue)
     rows.push(row)
   }
   const seen = new Map<string, CardApiRow>()
@@ -344,17 +373,27 @@ export async function requestLotteApiPage(
   form: LotteApiForm,
   signal?: AbortSignal
 ): Promise<unknown> {
+  return requestLotteForm(tab, form, 'list', signal)
+}
+
+/** Both endpoints and their request field allowlists are fixed, never caller supplied. */
+async function requestLotteForm(
+  tab: Tab,
+  form: Readonly<Record<string, string>>,
+  kind: 'list' | 'detail',
+  signal?: AbortSignal
+): Promise<unknown> {
   if (signal?.aborted) throw new Error('lotte_request_cancelled')
+  const fields: readonly string[] = kind === 'list' ? REQUEST_FIELDS : DETAIL_FIELDS
+  const endpoint = kind === 'list' ? QUERY : DETAIL_QUERY
   const keys = Object.keys(form)
-  if (
-    keys.length !== REQUEST_FIELDS.length ||
-    keys.some((key) => !(REQUEST_FIELDS as readonly string[]).includes(key))
-  )
+  if (keys.length !== fields.length || keys.some((key) => !fields.includes(key)))
     throw new Error('lotte_request_invalid')
   const body = new URLSearchParams()
-  for (const name of REQUEST_FIELDS) {
+  for (const name of fields) {
     const value = own(form, name)
-    const limit = name === 'nextKey' ? 8192 : name === 'encCdno' ? 2048 : 128
+    const limit =
+      name === 'nextKey' ? 8192 : name === 'encCdno' ? 2048 : name === 'mcNm' ? 512 : 128
     if (
       typeof value !== 'string' ||
       value.length > limit ||
@@ -380,7 +419,7 @@ export async function requestLotteApiPage(
   let response: Response | undefined
   try {
     response = await bounded(
-      wc.session.fetch(QUERY, {
+      wc.session.fetch(endpoint, {
         method: 'POST',
         credentials: 'include',
         redirect: 'error',
@@ -395,7 +434,7 @@ export async function requestLotteApiPage(
       signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
     )
     assertContext()
-    if (!response.ok || (response.url && response.url !== QUERY) || !response.body)
+    if (!response.ok || (response.url && response.url !== endpoint) || !response.body)
       throw new Error('lotte_response_unavailable')
     const length = response.headers.get('content-length')
     if (length && (!/^\d+$/.test(length) || Number(length) > MAX_RESPONSE_BYTES))
@@ -437,6 +476,175 @@ export async function requestLotteApiPage(
   }
 }
 
+function payloadDate(value: string): string | null {
+  if (/^\d{8}(?:\d{6})?$/.test(value)) {
+    const day = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
+    return date(
+      value.length === 14
+        ? `${day} ${value.slice(8, 10)}:${value.slice(10, 12)}:${value.slice(12, 14)}`
+        : day
+    )
+  }
+  return date(value)
+}
+
+/** One known transaction payload within this exact row. JSON parsing never executes page code. */
+function detailRequest(
+  element: HTMLElement,
+  row: CardApiRow,
+  mildolYn: unknown
+): Readonly<Record<string, string>> | null {
+  if (typeof mildolYn !== 'string' || mildolYn.length > 128) return null
+  const candidates = element.querySelectorAll('[data-object]')
+  if (candidates.length !== 1) return null
+  const button = candidates[0]
+  const siblings = elements(element)
+  const next = siblings[siblings.indexOf(button) + 1]
+  if (
+    button.tagName !== 'BUTTON' ||
+    button.parentNode !== element ||
+    !next ||
+    next.tagName !== 'DIV' ||
+    !next.classList.contains('useList')
+  )
+    return null
+  const raw = candidates[0].getAttribute('data-object')!
+  if (raw.length > 16000) return null
+  let payload: unknown
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const result: Record<string, string> = {}
+  for (const name of DETAIL_FIELDS) {
+    if (name === 'lono' || name === 'type') {
+      result[name] = ''
+      continue
+    }
+    if (name === 'mildolYn') {
+      result[name] = mildolYn
+      continue
+    }
+    const value = own(payload, name === 'encCdno' ? 'cdno' : name)
+    if (typeof value !== 'string' && !(typeof value === 'number' && Number.isSafeInteger(value)))
+      return null
+    const valueText = String(value)
+    const limit = name === 'encCdno' ? 2048 : name === 'mcNm' ? 512 : 128
+    if (
+      valueText.length > limit ||
+      [...valueText].some((character) => character.charCodeAt(0) < 32)
+    )
+      return null
+    result[name] = valueText
+  }
+  const transactionCode = integer(result.aprTrc, 19)
+  if (
+    transactionCode === null ||
+    !result.encCdno ||
+    !/^[A-Za-z0-9-]{1,80}$/.test(result.aprno) ||
+    /^-+$/.test(result.aprno)
+  )
+    return null
+  const approved = payloadDate(result.aprDtti)
+  if (!approved || approved.slice(0, 10) !== row.approvedAt.slice(0, 10)) return null
+  const amount = krw(result.aprDeAm)
+  if (row.status === 'approved' && (amount === null || amount !== row.amount)) return null
+  return result
+}
+
+/** P103's Content is inserted by the official callback into this row's empty div.useList. */
+function detailResponseFields(response: unknown): DetailFields | null {
+  const status = own(own(response, 'Status'), 'code')
+  const content = own(response, 'Content')
+  if (
+    (status !== 0 && status !== '0') ||
+    typeof content !== 'string' ||
+    Buffer.byteLength(content) > MAX_RESPONSE_BYTES
+  )
+    return null
+  const doc = parse(content)
+  const roots = elements(doc)
+  if (roots.length !== 1 || roots[0].tagName !== 'UL') return null
+  if (doc.childNodes.some((node) => node.nodeType === 3 && node.text.trim())) return null
+  return detailListFields(roots[0])
+}
+
+async function enrichLottePage(
+  tab: Tab,
+  response: unknown,
+  mildolYn: unknown,
+  budget: { remaining: number },
+  signal?: AbortSignal
+): Promise<{ page: LotteApiPage; interruption?: string }> {
+  const original = parseLotteApiResponse(response)
+  if (original.rowCount === null) return { page: original }
+  const doc = parse(own(response, 'Content') as string)
+  const root = doc.querySelector('#useCardList') ?? doc
+  const overrides = new Map<number, DetailFields>()
+  const flags = new Map<number, string>()
+  const diagnostics = new Set<string>()
+  let interruption: string | undefined
+  for (const [index, element] of elements(root).entries()) {
+    const row = rowFromHtml(element)
+    if (!row || !row.needsReview.includes('details_unverified')) continue
+    // Loans and unknown payment types have a different official detail workflow.
+    if (row.needsReview.includes('transaction_type_unverified')) continue
+    const form = detailRequest(element, row, mildolYn)
+    if (!form) {
+      flags.set(index, 'detail_request_unverified')
+      continue
+    }
+    if (budget.remaining <= 0) {
+      interruption = 'detail_request_limit'
+      flags.set(index, interruption)
+      break
+    }
+    budget.remaining--
+    try {
+      const detail = await requestLotteForm(tab, form, 'detail', signal)
+      const fields = detailResponseFields(detail)
+      if (!fields) {
+        flags.set(index, 'detail_response_schema_unverified')
+        for (const issue of lotteResponseShapeIssues(detail)) diagnostics.add(issue)
+        continue
+      }
+      const approved = fields.get('이용일시') && date(fields.get('이용일시')!)
+      const expected = payloadDate(form.aprDtti)
+      if (
+        !approved ||
+        !expected ||
+        approved.slice(0, 10) !== expected.slice(0, 10) ||
+        (expected.includes('T') && approved !== expected) ||
+        fields.get('승인번호') !== form.aprno
+      ) {
+        flags.set(index, 'detail_identity_conflict')
+        continue
+      }
+      overrides.set(index, fields)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : ''
+      interruption = signal?.aborted
+        ? 'cancelled'
+        : reason === 'lotte_authentication_required'
+          ? 'authentication_required'
+          : reason === 'lotte_navigation_changed'
+            ? 'navigation_changed'
+            : reason === 'lotte_request_timeout'
+              ? 'request_timeout'
+              : 'detail_collection_unavailable'
+      flags.set(index, 'detail_collection_unavailable')
+      break
+    }
+  }
+  const page = parseLotteApiResponse(response, overrides, flags)
+  page.issues = [...new Set([...page.issues, ...diagnostics])]
+  return {
+    page,
+    ...(interruption ? { interruption } : {})
+  }
+}
+
 /** Official form/radio semantics only; values stay in private main-process memory. No DOM writes. */
 function requestPlanScript(from: string, to: string): string {
   return `(() => {
@@ -462,8 +670,14 @@ function requestPlanScript(from: string, to: string): string {
       filters[name] = matched[0].value;
     }
     if (!/^[1-9][0-9]{0,3}$/.test(original.pageRows) || Number(original.pageRows) > 1000) return { ok: false };
+    let mildolYn = null;
+    const detailForms = document.querySelectorAll('form[name="LPMCDAAArsUseDetail"]');
+    if (detailForms.length === 1) {
+      const fields = [...detailForms[0].querySelectorAll('input')].filter(field => field.name === 'mildolYn');
+      if (fields.length === 1 && fields[0].value.length <= 128) mildolYn = fields[0].value;
+    }
     const data = { ...original, ...filters, encCdno: '', startDt: ${JSON.stringify(from.replaceAll('-', ''))}, endDt: ${JSON.stringify(to.replaceAll('-', ''))}, pageNo: '1', nextKey: '', sortDv: '0' };
-    return { ok: true, data, scope: JSON.stringify({original, filters}) };
+    return { ok: true, data, mildolYn, scope: JSON.stringify({original, filters, mildolYn}) };
   })()`
 }
 
@@ -525,6 +739,7 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
     let expectedPage = 1
     let total: number | null = null
     let valid = true
+    const detailBudget = { remaining: 1000 }
     const seen = new Map<string, CardApiRow>()
     for (;;) {
       if (options.signal?.aborted) return result(['cancelled'])
@@ -565,7 +780,7 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
         if (echo !== undefined && String(echo) !== request[name])
           return result(['response_scope_mismatch'])
       }
-      const page = parseLotteApiResponse(response)
+      let page = parseLotteApiResponse(response)
       if (
         page.rowCount === null ||
         page.rows.some((row) => row.needsReview.includes('details_unverified'))
@@ -577,14 +792,41 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
           ...(totalPages === 0 ? ['empty_response_schema_unverified'] : []),
           ...page.issues
         ])
-      for (const issue of page.issues) issues.add(issue)
-      if (page.rowCount !== page.rows.length || page.issues.length) valid = false
       if (
         (totalPages === 0 && page.rowCount !== 0) ||
         (totalPages > 0 && page.rowCount === 0) ||
         page.rowCount > Number(request.pageRows)
       )
         return result(['page_count_mismatch'])
+      const enriched = await enrichLottePage(
+        tab,
+        response,
+        own(plan, 'mildolYn'),
+        detailBudget,
+        options.signal
+      )
+      page = enriched.page
+      if (page.rowCount === null) return result(['response_schema_unverified'])
+      let interruption = enriched.interruption
+      if (!interruption) {
+        try {
+          const afterDetails = await bounded(
+            wc.executeJavaScript(planScript, false),
+            options.signal
+          )
+          if (own(afterDetails, 'ok') !== true || own(afterDetails, 'scope') !== scope)
+            interruption = 'query_scope_changed'
+          if (wc.isDestroyed() || wc.getURL() !== initial) interruption = 'navigation_changed'
+        } catch (error) {
+          interruption = options.signal?.aborted
+            ? 'cancelled'
+            : error instanceof Error && error.message === 'lotte_request_timeout'
+              ? 'request_timeout'
+              : 'query_scope_unavailable'
+        }
+      }
+      for (const issue of page.issues) issues.add(issue)
+      if (page.rowCount !== page.rows.length || page.issues.length) valid = false
       for (const row of page.rows) {
         if (!(
           (row.approvedAt.slice(0, 10) >= range.from && row.approvedAt.slice(0, 10) <= range.to) ||
@@ -609,6 +851,7 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
         for (const issue of row.needsReview) issues.add(issue)
         rows.push(row)
       }
+      if (interruption) return result([interruption])
       if (totalPages === 0 || currentPage === totalPages) {
         approvalComplete = valid
         return result()

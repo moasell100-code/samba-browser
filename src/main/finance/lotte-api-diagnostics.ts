@@ -44,6 +44,40 @@ export function lotteResponseShapeIssues(value: unknown): string[] {
   for (const node of doc.childNodes)
     if (node.nodeType === 1 && tags.has((node as HTMLElement).tagName))
       result.add(`shape_top_${(node as HTMLElement).tagName.toLowerCase()}`)
+  const knownLabels = [
+    '이용일시',
+    '거래유형',
+    '승인번호',
+    '취소여부',
+    '포인트사용',
+    '매입여부',
+    '취소금액',
+    '매입금액',
+    '취소일자',
+    '이용일자',
+    '이용금액',
+    '승인금액',
+    '승인일시',
+    '카드번호',
+    '사용카드',
+    '가맹점명',
+    '거래일시'
+  ]
+  const roots = doc.childNodes.filter((node) => node.nodeType === 1) as HTMLElement[]
+  if (roots.some((node) => node.tagName === 'UL')) {
+    result.add('shape_detail_top_count_' + roots.length)
+    const pairs = doc.querySelectorAll('ul > li')
+    result.add('shape_detail_pair_count_' + pairs.length)
+    for (const pair of pairs.slice(0, 30)) {
+      const directText = pair.childNodes
+        .filter((node) => node.nodeType === 3)
+        .map((node) => node.text)
+        .join('')
+        .replace(/\s+/g, '')
+      const index = knownLabels.indexOf(directText)
+      if (index >= 0) result.add('shape_detail_label_' + index)
+    }
+  }
   const publicEmpty = [
     '이용내역이없습니다.',
     '조회내역이없습니다.',
@@ -63,6 +97,33 @@ export function lotteResponseShapeIssues(value: unknown): string[] {
     if (doc.querySelector('.' + name)) result.add(`shape_empty_class_${name.toLowerCase()}`)
   const empty = doc.querySelector('.noData')
   if (empty) {
+    const emptyText = empty.text.replace(/\s+/g, '')
+    if (!emptyText) result.add('shape_empty_text_blank')
+    if (emptyText.length < 150) result.add('shape_empty_text_length_' + emptyText.length)
+    const count =
+      param && typeof param === 'object'
+        ? Object.getOwnPropertyDescriptor(param, 'totalCnt')?.value
+        : undefined
+    result.add(
+      count === 0 || count === '0'
+        ? 'shape_empty_totalcnt_zero'
+        : count === undefined
+          ? 'shape_empty_totalcnt_absent'
+          : 'shape_empty_totalcnt_other'
+    )
+    for (const [index, phrase] of [
+      '조회된이용내역이없습니다',
+      '조회하신이용내역이없습니다',
+      '조회내역이없습니다',
+      '이용내역이없습니다',
+      '내역이없습니다',
+      '내용이없습니다',
+      '데이터가없습니다',
+      '조회된내역이없습니다',
+      '이용내역없음',
+      '조회결과가없습니다'
+    ].entries())
+      if (emptyText.includes(phrase)) result.add('shape_empty_phrase_' + index)
     const vocabulary = [
       '조회하신',
       '선택하신',

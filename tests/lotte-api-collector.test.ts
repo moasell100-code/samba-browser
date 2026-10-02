@@ -61,6 +61,32 @@ function content(
 function response(html = content()): unknown {
   return { Status: { code: 0 }, Content: html }
 }
+function lazyContent(payloadOverrides: Record<string, unknown> = {}): string {
+  const payload = {
+    aprDeAm: '10000',
+    aprDeKeyV: 'synthetic-private-key',
+    aprDtti: '20261002123456',
+    cdno: 'synthetic-private-card',
+    deDt: '20261002',
+    gramFlwSeq: '1',
+    auPartId: '1',
+    aprno: 'SYNTH-001',
+    aprTrc: '0',
+    byRc: 'synthetic-code',
+    byCanRc: 'synthetic-code',
+    mcNm: '합성가맹점',
+    aprRsc: '0',
+    ...payloadOverrides
+  }
+  const encoded = JSON.stringify(payload).replaceAll('&', '&amp;').replaceAll('"', '&quot;')
+  return content({ details: false }).replace(
+    '</li>',
+    `<button data-type="synthetic" data-object="${encoded}"></button><div class="useList"></div></li>`
+  )
+}
+function detailEnvelope(options: Parameters<typeof content>[0] = {}): unknown {
+  return response(content(options).match(/<ul>[\s\S]*<\/ul>/)![0])
+}
 function tab(url = URL): Tab {
   return {
     view: {
@@ -261,6 +287,7 @@ function collectorFixture(responses: unknown[] = [envelope()]): {
   const html = `<form name="LPMCDAAAprUseList">${Object.entries(FORM)
     .map(([name, value]) => `<input type="hidden" name="${name}" value="${value}">`)
     .join('')}</form>
+    <form name="LPMCDAAArsUseDetail"><input name="mildolYn" value="synthetic-default"></form>
     <input type="checkbox" id="useCarditemAll">
     ${['useCdDv', 'uplDv', 'useDv', 'stDv'].map((name) => `<label><input type="radio" name="${name}Radio" value="A_${name}">전체</label><label><input type="radio" name="${name}Radio" value="selected" checked>다른 옵션</label>`).join('')}`
   const dom = new JSDOM(html, { url: URL, runScripts: 'outside-only' })
@@ -297,6 +324,114 @@ function collectorFixture(responses: unknown[] = [envelope()]): {
 }
 
 describe('Lotte verified all-option and Param pagination collector', () => {
+  it('enriches a lazy row using its exact official P103 form and matching labelled response', async () => {
+    const h = collectorFixture([envelope(1, 1, lazyContent()), detailEnvelope()])
+    const before = h.dom.window.document.body.innerHTML
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0]).toMatchObject({
+      approvalNumber: 'SYNTH-001',
+      approvedAt: '2026-10-02T12:34:56+09:00',
+      needsReview: [],
+      status: 'approved'
+    })
+    expect(result.receipt.approvalComplete).toBe(true)
+    expect(h.fetch).toHaveBeenCalledTimes(2)
+    expect(h.fetch.mock.calls[1][0]).toBe('https://www.lottecard.co.kr/app/LPMCDAA_P103.lc')
+    const options = h.fetch.mock.calls[1][1]
+    expect(options).toMatchObject({ method: 'POST', credentials: 'include', redirect: 'error' })
+    const sent = Object.fromEntries(new URLSearchParams(options.body))
+    expect(Object.keys(sent)).toHaveLength(16)
+    expect(sent).toMatchObject({
+      aprno: 'SYNTH-001',
+      encCdno: 'synthetic-private-card',
+      mildolYn: 'synthetic-default',
+      lono: '',
+      type: ''
+    })
+    expect(sent).not.toHaveProperty('cdno')
+    expect(h.dom.window.document.body.innerHTML).toBe(before)
+    expect(JSON.stringify(result.receipt)).not.toMatch(/SYNTH|synthetic|합성|1234/)
+    expect(JSON.stringify(result.rows)).not.toMatch(/synthetic-private|aprDeKeyV/)
+  })
+  it.each([
+    { name: 'different approval', detail: detailEnvelope({ approval: 'OTHER-SYNTH' }) },
+    {
+      name: 'different timestamp',
+      detail: response(
+        (detailEnvelope() as { Content: string }).Content.replace('12:34:56', '12:34:57')
+      )
+    }
+  ])('keeps a lazy row for review when P103 refers to a $name', async ({ detail }) => {
+    const result = await collectLotteApi(
+      collectorFixture([envelope(1, 1, lazyContent()), detail]).current,
+      RANGE
+    )
+    expect(result.rows[0].approvalNumber).toBeUndefined()
+    expect(result.rows[0].needsReview).toEqual(
+      expect.arrayContaining(['details_unverified', 'detail_identity_conflict'])
+    )
+  })
+  it('uses labelled detail cancellation evidence even when the lazy list header appears normal', async () => {
+    const result = await collectLotteApi(
+      collectorFixture([envelope(1, 1, lazyContent()), detailEnvelope({ refund: '-1,000원' })])
+        .current,
+      RANGE
+    )
+    expect(result.rows[0]).toMatchObject({ status: 'unknown', netAmount: null })
+    expect(result.rows[0].needsReview).toContain('cancellation_state_conflict')
+  })
+  it.each([
+    { name: 'loan detail route', payload: { aprTrc: '20' } },
+    { name: 'wrong original date', payload: { aprDtti: '20260928123456' } },
+    { name: 'conflicting amount', payload: { aprDeAm: '9999' } },
+    { name: 'missing card reference', payload: { cdno: '' } },
+    { name: 'nested approval value', payload: { aprno: { value: 'SYNTH-001' } } }
+  ])('does not request P103 for $name', async ({ payload }) => {
+    const h = collectorFixture([envelope(1, 1, lazyContent(payload))])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0].needsReview).toContain('detail_request_unverified')
+    expect(h.fetch).toHaveBeenCalledTimes(1)
+  })
+  it('requires a unique direct button payload followed by its own empty details box', async () => {
+    const sample = lazyContent()
+    for (const html of [
+      sample.replace('<button ', '<a ').replace('</button>', '</a>'),
+      sample.replace('</button>', '</button><span>unrelated</span>'),
+      sample.replace('</li>', '<button data-object="{}"></button></li>')
+    ]) {
+      const h = collectorFixture([envelope(1, 1, html)])
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.rows[0].needsReview).toContain('detail_request_unverified')
+      expect(h.fetch).toHaveBeenCalledTimes(1)
+    }
+  })
+  it('preserves every list row if a later detail request fails and never exposes the raw error', async () => {
+    const h = collectorFixture()
+    h.fetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(envelope(1, 1, lazyContent() + lazyContent({ aprno: 'SYNTH-002' })))
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(detailEnvelope())))
+      .mockRejectedValueOnce(new Error('private remote credentials'))
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows[0].needsReview).toEqual([])
+    expect(result.rows[1].needsReview).toContain('detail_collection_unavailable')
+    expect(result.receipt.approvalComplete).toBe(false)
+    expect(result.receipt.issues).toContain('detail_collection_unavailable')
+    expect(JSON.stringify(result.receipt)).not.toContain('private')
+  })
+  it('does not treat a login page or malformed P103 Content as transaction details', async () => {
+    const h = collectorFixture([
+      envelope(1, 1, lazyContent()),
+      response('<form><input name="password"></form>')
+    ])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0].needsReview).toContain('detail_response_schema_unverified')
+    expect(result.rows[0].needsReview).toContain('details_unverified')
+  })
   it('collects every confirmed page with exact date/all-card/all-type filters without mutating the website', async () => {
     const h = collectorFixture([envelope(1, 2), envelope(2, 2, content({ approval: 'SYNTH-002' }))])
     const before = h.dom.window.document.body.innerHTML
