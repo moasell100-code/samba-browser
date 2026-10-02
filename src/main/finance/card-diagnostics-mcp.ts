@@ -12,6 +12,7 @@ export interface CardDiagnosticsBackend {
   openHistory(issuer: CardDiagnosticIssuer): Promise<unknown>
   inspect(tabId: string): Promise<unknown>
   requests(tabId: string): unknown
+  queryContract?(tabId: string): Promise<unknown>
   dispose(): void
 }
 
@@ -92,6 +93,13 @@ export async function startCardDiagnosticsMcp(
     { tabId: z.string().uuid() },
     ({ tabId }) => backend.requests(String(tabId))
   )
+  if (backend.queryContract)
+    register(
+      'card_query_contract',
+      'Read sanitized static history-query functions and non-account filter enums. Does not invoke them or return account values.',
+      { tabId: z.string().uuid() },
+      ({ tabId }) => backend.queryContract!(String(tabId))
+    )
   const stop = (): void => backend.dispose()
   signal.addEventListener('abort', stop, { once: true })
   try {

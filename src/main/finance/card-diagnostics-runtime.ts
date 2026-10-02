@@ -5,6 +5,7 @@ import { isTabAlive } from '../browser/tab-manager'
 import { CardNetworkObserver } from './card-network-observer'
 import { CARD_HISTORY_URLS, inspectCardPage, issuerForCardUrl } from './card-page-diagnostics'
 import { startCardDiagnosticsMcp, type CardDiagnosticIssuer } from './card-diagnostics-mcp'
+import { inspectCardQueryContract } from './card-query-contract'
 
 const TTL_MS = 30 * 60 * 1000
 
@@ -182,6 +183,13 @@ export async function startCardDiagnosticsRuntime(options: {
         throw new Error('Card tab changed')
       }
       return { tabId: id, ...entry.observer.snapshot() }
+    },
+    async queryContract(id: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      const result = await inspectCardQueryContract(tab)
+      assertTabContext(tab, url)
+      return result
     },
     dispose() {
       disposed = true
