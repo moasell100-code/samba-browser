@@ -6,6 +6,7 @@ import type { CardApiCollector, CardApiResult, CardApiRow } from './card-api-typ
 import { summarizeLotteHistoryContent } from './lotte-response-summary'
 import { lotteResponseShapeIssues } from './lotte-api-diagnostics'
 import { lotteMethodDiagnostics } from './lotte-method-diagnostics'
+import { lotteCardIdentityDiagnostics } from './lotte-card-identity-diagnostics'
 
 const HISTORY = 'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc'
 const QUERY = 'https://www.lottecard.co.kr/app/LPMCDAA_A102.lc'
@@ -730,7 +731,10 @@ async function enrichLottePage(
       overrides.set(index, fields)
       const identity = cardIdentities.get(form.encCdno)
       if (identity) cardOverrides.set(index, identity)
-      else if (!row.cardLast4) diagnostics.add('card_reference_not_in_selector')
+      else if (!row.cardLast4) {
+        diagnostics.add('card_reference_not_in_selector')
+        for (const issue of lotteCardIdentityDiagnostics(detail)) diagnostics.add(issue)
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : ''
       interruption = signal?.aborted

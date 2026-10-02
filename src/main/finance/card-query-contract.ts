@@ -37,7 +37,8 @@ const SCRIPT = String.raw`(() => {
       const nodes = [root,...root.querySelectorAll('*')].slice(0,50);
       const facts = nodes.map(node => ({tag:node.tagName, classes:Array.from(node.classList).filter(name=>/^[a-zA-Z][a-zA-Z_-]{0,40}$/.test(name)).slice(0,5), dataNames:node.getAttributeNames().filter(name=>/^data-[a-z-]{1,40}$/.test(name))})).filter(node=>node.dataNames.length || ['INPUT','LABEL'].includes(node.tag));
       const label = Array.from(input.labels || []).map(item=>item.textContent || '').join(' ');
-      result.cardSelectorSchema.push({rootTag:root.tagName,nodes:facts,hasMaskedNumber:/[\d*]{4}[- ]?[\d*]{4}[- ]?[\d*]{4}[- ]?[\d*]{4}/.test(label),hasSuffix:/\([\d*]{4}\)/.test(label),hasFourDigitToken:/(?<![\d*])[\d*]{4}(?![\d*])/.test(label)});
+      const words = ['이전','해지','정지','보유','전체','선불','후불','신용','체크','가족'];
+      result.cardSelectorSchema.push({rootTag:root.tagName,nodes:facts,hasMaskedNumber:/[\d*]{4}[- ]?[\d*]{4}[- ]?[\d*]{4}[- ]?[\d*]{4}/.test(label),hasSuffix:/\([\d*]{4}\)/.test(label),hasFourDigitToken:/(?<![\d*])[\d*]{4}(?![\d*])/.test(label), numberTokenLengths:(label.match(/[\d*]+/g)||[]).slice(0,12).map(token=>Math.min(token.length,30)),publicTokens:words.filter(word=>label.includes(word))});
     }
     const publicLabels = new Set(['전체','신용카드','체크카드','국내','해외','승인','취소','정상','일시불','할부','일시불+할부','일시불/할부','단기카드대출','장기카드대출','단기카드대출(현금서비스)','장기카드대출(카드론)']);
     for (const name of ['useCdDvRadio','uplDvRadio','stDvRadio','useDvRadio']) {
