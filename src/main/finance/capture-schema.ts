@@ -81,7 +81,8 @@ const list = z
       'samsung_history_list_v1',
       'samsung_cancellation_list_v1',
       'samsung_refund_list_v1',
-      'hyundai_history_list_v1'
+      'hyundai_history_list_v1',
+      'lotte_history_list_v1'
     ]),
     rows: z.array(listRow).max(1000),
     hiddenRows: z.number().int().nonnegative(),
@@ -93,7 +94,7 @@ const list = z
         z
           .object({
             rowIndex: z.number().int().min(0).max(999),
-            reason: z.enum(['link_count', 'field_count', 'empty_fields']),
+            reason: z.enum(['link_count', 'field_count', 'empty_fields', 'unsupported_variant']),
             linkCount: z.number().int().min(0).max(1000),
             nameCount: z.number().int().min(0).max(1000).optional(),
             metadataCount: z.number().int().min(0).max(1000).optional(),
@@ -113,7 +114,7 @@ const list = z
   .refine(
     (list) =>
       !list.unrecognizedDiagnostics?.length ||
-      (list.adapter === 'hyundai_history_list_v1' &&
+      (['hyundai_history_list_v1', 'lotte_history_list_v1'].includes(list.adapter) &&
         list.unrecognizedDiagnostics.length <= list.unrecognizedRows)
   )
   .refine((list) =>
@@ -124,7 +125,8 @@ const list = z
           samsung_history_list_v1: 'name,date,time,card,payment_type,amount',
           samsung_cancellation_list_v1: 'name,date,card,cancellation_status,amount',
           samsung_refund_list_v1: 'name,sales_date,card,payment_type,cancellation_status,amount',
-          hyundai_history_list_v1: 'name,card,date,time,payment_type,amount'
+          hyundai_history_list_v1: 'name,card,date,time,payment_type,amount',
+          lotte_history_list_v1: 'name,date,card,payment_type,amount'
         }[list.adapter]
     )
   )
@@ -214,14 +216,17 @@ export const financeFrameCaptureSchema = z
         list.adapter === 'hyundai_history_list_v1'
           ? financeCardIssuer(frame.origin) === 'hyundai_card' &&
             frame.pathname === '/cpa/cb/CPACB0101_01.hc'
-          : financeCardIssuer(frame.origin) === 'samsung_card' &&
-            (frame.pathname === '/personal/card/activity/UHPPRP0801M0.jsp' ||
-              frame.pathname ===
-                {
-                  samsung_history_list_v1: '/personal/card/activity/UHPPRP0801D0.jsp',
-                  samsung_cancellation_list_v1: '/personal/card/activity/UHPPRP0801D8.jsp',
-                  samsung_refund_list_v1: '/personal/card/activity/UHPPRP0801DF.jsp'
-                }[list.adapter])
+          : list.adapter === 'lotte_history_list_v1'
+            ? financeCardIssuer(frame.origin) === 'lotte_card' &&
+              frame.pathname === '/app/LPMCDAA_V100.lc'
+            : financeCardIssuer(frame.origin) === 'samsung_card' &&
+              (frame.pathname === '/personal/card/activity/UHPPRP0801M0.jsp' ||
+                frame.pathname ===
+                  {
+                    samsung_history_list_v1: '/personal/card/activity/UHPPRP0801D0.jsp',
+                    samsung_cancellation_list_v1: '/personal/card/activity/UHPPRP0801D8.jsp',
+                    samsung_refund_list_v1: '/personal/card/activity/UHPPRP0801DF.jsp'
+                  }[list.adapter])
       )
   )
 

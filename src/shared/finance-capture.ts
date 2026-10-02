@@ -40,6 +40,7 @@ export interface FinanceListCapture {
     | 'samsung_cancellation_list_v1'
     | 'samsung_refund_list_v1'
     | 'hyundai_history_list_v1'
+    | 'lotte_history_list_v1'
   rows: FinanceListRow[]
   hiddenRows: number
   unrecognizedRows: number
@@ -48,7 +49,7 @@ export interface FinanceListCapture {
   unrecognizedDiagnostics?: Array<{
     // Zero-based DOM row index. Only the first five failed rows are reported.
     rowIndex: number
-    reason: 'link_count' | 'field_count' | 'empty_fields'
+    reason: 'link_count' | 'field_count' | 'empty_fields' | 'unsupported_variant'
     linkCount: number
     nameCount?: number
     metadataCount?: number

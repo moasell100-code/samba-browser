@@ -6,6 +6,7 @@ import type {
   FinanceTableCell
 } from '../shared/finance-capture'
 import { captureHyundaiHistoryLists } from './page-finance-hyundai'
+import { captureLotteHistoryLists } from './page-finance-lotte'
 
 // Kept in preload so this does not introduce a shared runtime chunk.
 export const FINANCE_CAPTURE_LIMITS = {
@@ -312,6 +313,11 @@ export function captureFinanceTables(doc: Document = document): FinanceFrameCapt
   const lists = [
     ...samsungHistoryLists(doc, url, budget),
     ...captureHyundaiHistoryLists(doc, {
+      isHidden,
+      readCell: (el) => readCell(el, budget),
+      countRow: (columns) => countRow(budget, columns)
+    }),
+    ...captureLotteHistoryLists(doc, {
       isHidden,
       readCell: (el) => readCell(el, budget),
       countRow: (columns) => countRow(budget, columns)

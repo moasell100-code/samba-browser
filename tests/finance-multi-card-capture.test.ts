@@ -29,6 +29,43 @@ const issuers = [
 ] as const
 
 describe('official card capture boundaries', () => {
+  it('carries the verified Lotte list through the schema and returns counts without its cells', () => {
+    const doc = documentAt(
+      'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc',
+      `<ul id="useCardList" class="useCardList type02"><li class="toggle">
+      <strong>private merchant</strong><div class="info"><span>2026.09.17</span>
+      <span>private card</span><span>일시불</span></div><em><span>12,345원</span></em>
+      <div class="useList" hidden>private detail</div></li></ul><button>더보기</button>`
+    )
+    const frame = captureFinanceTables(doc)
+    expect(financeFrameCaptureSchema.safeParse(frame).success).toBe(true)
+    expect(frame.lists?.[0].adapter).toBe('lotte_history_list_v1')
+    expect(frame.lists?.[0].rows[0].head.map(({ field }) => field)).toEqual([
+      'name',
+      'date',
+      'card',
+      'payment_type',
+      'amount'
+    ])
+    const receipt = new FinanceCaptureStore().save({
+      frames: [frame],
+      failedFrames: 0,
+      skippedFrames: 0
+    })
+    expect(receipt.issuer).toBe('lotte_card')
+    expect(receipt.listRowCount).toBe(1)
+    expect(receipt.issues).toContain('details_incomplete')
+    expect(receipt.issues).toContain('more_rows_available')
+    expect(JSON.stringify(receipt)).not.toMatch(/private|12,345|2026\.09\.17/)
+    expect(
+      financeFrameCaptureSchema.safeParse({ ...frame, origin: 'https://www.samsungcard.com' })
+        .success
+    ).toBe(false)
+    expect(
+      financeFrameCaptureSchema.safeParse({ ...frame, pathname: '/app/LPMANAA_V200.lc' }).success
+    ).toBe(false)
+  })
+
   it.each(issuers)('preserves raw cells from %s and returns only %s metadata', (origin, issuer) => {
     const url = `${origin}/history?account=private-query`
     const doc = documentAt(
