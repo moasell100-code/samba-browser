@@ -163,7 +163,7 @@ describe('temporary card read-only network observation', () => {
       status: 200,
       response: {
         kind: 'json',
-        arrays: [{ path: '$.data.list', count: 1 }],
+        arrays: [{ path: '$.data.list', count: 1, fields: ['amount', 'approval', 'name'] }],
         totals: [{ path: '$.data.totalCnt', count: 1 }],
         truncated: false
       }
@@ -454,7 +454,7 @@ describe('temporary card read-only network observation', () => {
     await f.finish()
     expect(f.observer.snapshot().records[0].response).toEqual({
       kind: 'json',
-      arrays: [{ path: '$.data.rows', count: 1 }],
+      arrays: [{ path: '$.data.rows', count: 1, fields: ['card', 'nested', 'totalCount'] }],
       totals: [{ path: '$.data.totalCnt', count: 1 }],
       truncated: false
     })

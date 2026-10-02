@@ -2,19 +2,22 @@ import type { Tab } from '../browser/tab-manager'
 import { inspectCardPage } from './card-page-diagnostics'
 
 // Inspection only: do not invoke functions, handlers, or send page requests.
-// Restrict this diagnostic to static query functions and non-account filter enums.
+// Restrict this diagnostic to static query functions. Never read form values.
 const SCRIPT = String.raw`(() => {
   const targets = location.hostname.includes('lottecard')
     ? ['fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
     : ['getUseGb','getUseTypeNm','getPrttPayPosbInfo','getUseGbforAcqrItm','getDate'];
   const controls = location.hostname.includes('lottecard')
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
-  const clean = source => source
-    .replace(/(['"\x60])([^'"\x60\r\n]{161,})\1/g, '"[long literal omitted]"')
-    .replace(/\b\d{4,}\b/g, '[number omitted]')
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email omitted]')
-    .replace(/(['"])([A-Za-z0-9+/=_-]{40,})\1/g, '"[opaque literal omitted]"');
-  const result = { functions: [], handlers: [], filters: [], paths: [] };
+  const fields = ['form1','LPMCDAAAprUseList','pageNo','pageRows','nextKey','schDv','stDv','useDv','useCdDv','uplDv','ptnBnkYn','sortDv','sortObj','listClsf','dtClsf','zoneClsf','useClsf','usplClsf','sortType','dmfrClsf','srtDt','startDt','endDt','inqTeDt','iqrySrtDt','iqryEndDt','startDtShow','endDtShow','crno','encCdno','Content','Status','code','message'];
+  const literals = new Set([...fields, ...fields.map(f => '#' + f)]);
+  const clean = source => source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60/g, token => {
+    if (token.startsWith('//') || token.startsWith('/*')) return '';
+    const value = token.slice(1, -1);
+    if (literals.has(value) || /^\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do)$/.test(value) && !/\d{8,}/.test(value)) return JSON.stringify(value);
+    return '"[literal omitted]"';
+  }).replace(/\b\d{4,}\b/g, '[number omitted]');
+  const result = { functions: [], handlers: [], paths: [] };
   const sources = Array.from(document.scripts).filter(s => !s.src).map(s => s.textContent || '').filter(s => s.length < 250000);
   // Discover names only from static declarations. Never enumerate/read window data.
   for (const source of sources) {
@@ -46,11 +49,6 @@ const SCRIPT = String.raw`(() => {
       budget -= source.length;
       result.handlers.push({ id, source: clean(source) });
     }
-  }
-  const fields = new Set(['pageNo','pageRows','nextKey','schDv','stDv','useDv','useCdDv','uplDv','ptnBnkYn','sortDv','sortObj','listClsf','dtClsf','zoneClsf','useClsf','usplClsf','sortType','dmfrClsf']);
-  for (const el of document.querySelectorAll('input,select')) {
-    if (!fields.has(el.name) || !/^[A-Za-z0-9_-]{0,3}$/.test(el.value)) continue;
-    result.filters.push({name: el.name, id: el.id, type: el.type, value: el.value, checked: !!el.checked});
   }
   return result;
 })()`

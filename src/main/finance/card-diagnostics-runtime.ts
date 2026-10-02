@@ -6,6 +6,9 @@ import { CardNetworkObserver } from './card-network-observer'
 import { CARD_HISTORY_URLS, inspectCardPage, issuerForCardUrl } from './card-page-diagnostics'
 import { startCardDiagnosticsMcp, type CardDiagnosticIssuer } from './card-diagnostics-mcp'
 import { inspectCardQueryContract } from './card-query-contract'
+import { restoreCardSession } from './card-login-session'
+import type { VaultService } from '../vault/service'
+import type { Settings } from '../../shared/settings'
 
 const TTL_MS = 30 * 60 * 1000
 
@@ -15,6 +18,8 @@ export async function startCardDiagnosticsRuntime(options: {
   tempDir: string
   sessionName: string
   isBusy: () => boolean
+  vault?: VaultService
+  settings?: () => Settings
 }): Promise<() => void> {
   if (!/^[a-z0-9-]{12,64}$/.test(options.sessionName)) throw new Error('Invalid diagnostic session')
   const dir = join(options.tempDir, `jaja-card-mcp-${options.sessionName}`)
@@ -191,6 +196,22 @@ export async function startCardDiagnosticsRuntime(options: {
       assertTabContext(tab, url)
       return result
     },
+    ...(options.vault && options.settings
+      ? {
+          async login(id: string) {
+            const tab = getTab(id)
+            const result = await restoreCardSession({
+              tabs: options.tabs,
+              tabId: tab.id,
+              vault: options.vault!,
+              settings: options.settings!(),
+              signal: controller.signal
+            })
+            assertLiveTab(tab)
+            return result
+          }
+        }
+      : {}),
     dispose() {
       disposed = true
       for (const entry of observed.values()) release(entry)

@@ -13,6 +13,7 @@ export interface CardDiagnosticsBackend {
   inspect(tabId: string): Promise<unknown>
   requests(tabId: string): unknown
   queryContract?(tabId: string): Promise<unknown>
+  login?(tabId: string): Promise<unknown>
   dispose(): void
 }
 
@@ -20,13 +21,14 @@ export async function startCardDiagnosticsMcp(
   backend: CardDiagnosticsBackend,
   signal: AbortSignal
 ): Promise<CodexMcpBridge> {
-  const server = new McpServer({ name: 'jaja-card-readonly', version: '1.0.0' })
+  const server = new McpServer({ name: 'jaja-card-collector', version: '1.1.0' })
   const tools: Array<{ name: string }> = []
   function register(
     name: string,
     description: string,
     inputSchema: z.ZodRawShape,
-    callback: (args: Record<string, unknown>) => unknown | Promise<unknown>
+    callback: (args: Record<string, unknown>) => unknown | Promise<unknown>,
+    readOnlyHint = true
   ): void {
     tools.push({ name })
     server.registerTool(
@@ -34,7 +36,7 @@ export async function startCardDiagnosticsMcp(
       {
         description,
         inputSchema,
-        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true }
+        annotations: { readOnlyHint, destructiveHint: false, openWorldHint: true }
       },
       async (args) => {
         if (signal.aborted || backend.isBusy()) {
@@ -96,9 +98,17 @@ export async function startCardDiagnosticsMcp(
   if (backend.queryContract)
     register(
       'card_query_contract',
-      'Read sanitized static history-query functions and non-account filter enums. Does not invoke them or return account values.',
+      'Read sanitized static history-query functions. Never reads form values, invokes query functions, or returns account data.',
       { tabId: z.string().uuid() },
       ({ tabId }) => backend.queryContract!(String(tabId))
+    )
+  if (backend.login)
+    register(
+      'card_restore_session',
+      'Restore a supported card session using the existing KeyMaster login and failed-attempt protection. Returns only fixed status codes; never returns credentials.',
+      { tabId: z.string().uuid() },
+      ({ tabId }) => backend.login!(String(tabId)),
+      false
     )
   const stop = (): void => backend.dispose()
   signal.addEventListener('abort', stop, { once: true })

@@ -21,7 +21,7 @@ export const CARD_NETWORK_LIMITS = {
 
 export interface CardResponseShape {
   kind: 'json' | 'non_json' | 'empty' | 'too_large' | 'unavailable'
-  arrays: Array<{ path: string; count: number }>
+  arrays: Array<{ path: string; count: number; fields?: string[] }>
   totals: Array<{ path: string; count: number }>
   truncated: boolean
   lotteHtml?: ReturnType<typeof summarizeLotteHistoryContent>
@@ -159,7 +159,8 @@ function historyUrl(value: unknown, issuer: FinanceCardIssuer): boolean {
 function fieldName(value: string): string | null {
   return /^[A-Za-z_$][A-Za-z0-9_$.-]{0,63}$/.test(value) &&
     !/\d{5}/.test(value) &&
-    !SENSITIVE_KEY.test(value)
+    !SENSITIVE_KEY.test(value) &&
+    !/private/i.test(value)
     ? value
     : null
 }
@@ -276,8 +277,15 @@ function responseShape(body: string, includeLotteHtml = false): CardResponseShap
     }
     if (Array.isArray(value)) {
       if (summary.arrays.length >= CARD_NETWORK_LIMITS.shapeArrays) summary.truncated = true
-      else summary.arrays.push({ path, count: value.length })
-      return // Row elements can contain IDs, money and names; never inspect any element.
+      else
+        summary.arrays.push({
+          path,
+          count: value.length,
+          ...(plain(value[0]) && safeFields(Object.keys(value[0])).fields.length
+            ? { fields: safeFields(Object.keys(value[0])).fields }
+            : {})
+        })
+      return // Only schema field names; never return row values or traverse nested row data.
     }
     if (!plain(value)) return
     const keys = Object.keys(value)

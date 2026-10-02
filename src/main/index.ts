@@ -171,7 +171,9 @@ app
           tabs,
           tempDir: app.getPath('temp'),
           sessionName: cardSession,
-          isBusy: () => ipc.agent.isRunning()
+          isBusy: () => ipc.agent.isRunning(),
+          vault,
+          settings: () => ipc.settings.get()
         })
         if (shuttingDown) stopCardDiagnostics()
       } catch {
