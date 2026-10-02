@@ -2336,9 +2336,22 @@ overlays left: ${after.length}${kept}`
       })
   )
 
+  const inspectLotteHistoryLayout = tool(
+    'inspect_lotte_history_layout',
+    'Inspect only the public structural shape of the first visible Lotte Card history list row on its exact official history page. Returns bounded tags, allowlisted static CSS identifiers, counts and text-kind flags; never transaction text, values, dynamic identifiers or secrets. Read-only diagnostic; does not capture or import transactions, authenticate a session, or prove completeness.',
+    {},
+    () =>
+      guard('롯데 이용내역 구조 확인 (거래값 제외)', async () => {
+        const tab = activeOr(ctx)
+        if (!tab) return 'no active tab'
+        return pageBridge.lotteHistoryLayout(tab)
+      })
+  )
+
   const tools = [
     getPage,
     inspectCardLogin,
+    inspectLotteHistoryLayout,
     probeLotteInput,
     probeLotteOfficialKeypad,
     probeLotteLayouts,
@@ -2384,6 +2397,7 @@ overlays left: ${after.length}${kept}`
 export const SAMBA_TOOL_NAMES = [
   'get_page',
   'inspect_card_login',
+  'inspect_lotte_history_layout',
   'probe_lotte_keyboard',
   'probe_lotte_keypad',
   'probe_lotte_keypad_layouts',

@@ -29,6 +29,11 @@ import type { CardSessionSnapshot } from '../../shared/card-session'
 import type { LotteAuthSnapshot } from '../../shared/lotte-auth'
 import type { LotteKeypadSnapshot } from '../../shared/lotte-keypad'
 import { isLotteOrigin } from '../finance/lotte-login'
+import type { LotteHistoryLayout } from '../../shared/lotte-history-layout'
+import {
+  isLotteHistoryLayoutUrl,
+  lotteHistoryLayoutSchema
+} from '../finance/lotte-history-layout-schema'
 
 // preload 가 실행되는 격리 월드 id. Electron 의 WorldId.ISOLATED_WORLD = 999
 export const ISOLATED_WORLD_ID = 999
@@ -555,6 +560,17 @@ export const pageBridge = {
       return wc.getURL() === url ? result : { state: 'unknown' }
     } catch {
       return { state: 'unknown' }
+    }
+  },
+  lotteHistoryLayout: async (tab: Tab): Promise<LotteHistoryLayout> => {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (!isLotteHistoryLayoutUrl(url)) return { state: 'unsupported' }
+    try {
+      const result = await call(wc, '__samba.lotteHistoryLayout()', lotteHistoryLayoutSchema)
+      return wc.getURL() === url ? result : { state: 'unavailable' }
+    } catch {
+      return { state: 'unavailable' }
     }
   },
   pressLotteKeypad: async (

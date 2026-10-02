@@ -61,6 +61,7 @@ import { installPageTranslate, type ImageOverlayDto } from './page-translate'
 import { installJajaConnection } from './page-jaja'
 import { captureFinanceTables } from './page-finance'
 import { readCardSession } from './page-card-session'
+import { readLotteHistoryLayout } from './page-lotte-history-layout'
 import { readLotteAuth, focusLottePassword, submitLotteLogin } from './page-lotte-auth'
 import { submitLotteKeypad, focusLotteKeypadPassword } from './page-lotte-keypad'
 
@@ -89,6 +90,7 @@ if (!isExtensionDocument) {
   const api = {
     financeTables: () => captureFinanceTables(),
     cardSession: () => readCardSession(),
+    lotteHistoryLayout: () => readLotteHistoryLayout(),
     lotteAuth: () => readLotteAuth(),
     lotteKeypad: () => lotteKeypad(),
     pressLotteKeypad: (id: number, expectedLength: number, layout: number) =>
