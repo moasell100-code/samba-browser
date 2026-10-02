@@ -66,6 +66,11 @@ const LABELS = new Set([
   '승인일시',
   '취소일시',
   '매입일자',
+  '이용일시',
+  '거래유형',
+  '포인트사용',
+  '매입여부',
+  '매입금액',
   '더보기'
 ])
 const STATUS_LABELS = new Set(['취소', '부분취소', '승인취소'])
@@ -121,23 +126,21 @@ function describe(el: Element, depth: number): LotteHistoryLayoutNode {
     hasUnlistedId: el.hasAttribute('id') && !id,
     visibleChildCount: Math.min(children.length, 1000)
   }
-  if (children.length === 0) {
-    // Direct text nodes only, never hidden descendants, field values, or arbitrary attributes.
-    let text = ''
-    for (const child of Array.from(el.childNodes)) {
-      if (child.nodeType === 3) text += (child.textContent ?? '').slice(0, 257)
-      if (text.length > 256) break
-    }
-    const exactStatus = STATUS_LABELS.has(text.trim()) ? text.trim() : undefined
-    text = text.replace(/\s+/g, '').trim()
+  // Direct text nodes only. Detail li labels sit beside a value span: inspect the label
+  // without concatenating any descendant value, hidden text, field value or attribute.
+  let text = ''
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeType === 3) text += (child.textContent ?? '').slice(0, 257)
+    if (text.length > 256) break
+  }
+  const exactStatus = STATUS_LABELS.has(text.trim()) ? text.trim() : undefined
+  text = text.replace(/\s+/g, '').trim()
+  if (exactStatus || LABELS.has(text)) {
+    node.textKind = 'fixed_label'
+    node.label = exactStatus ?? text
+  } else if (children.length === 0) {
     if (!text) node.textKind = 'empty'
-    else if (exactStatus) {
-      node.textKind = 'fixed_label'
-      node.label = exactStatus
-    } else if (LABELS.has(text)) {
-      node.textKind = 'fixed_label'
-      node.label = text
-    } else if (
+    else if (
       /^(?:\d{2}|\d{4})[./-]\d{1,2}[./-]\d{1,2}(?:\.?|[T ]?\d{1,2}:\d{2}(?::\d{2})?)$/.test(text)
     )
       node.textKind = 'date_like'

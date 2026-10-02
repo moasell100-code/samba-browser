@@ -15,6 +15,31 @@ afterEach(() => {
 })
 
 describe('bounded Lotte public history shape diagnostic', () => {
+  it('keeps observed direct detail labels separate from child span values', () => {
+    const labels = [
+      '이용일시',
+      '거래유형',
+      '승인번호',
+      '취소여부',
+      '포인트사용',
+      '매입여부',
+      '취소금액',
+      '매입금액',
+      '취소일자'
+    ]
+    const doc = at(
+      `<ul id="useCardList"><li><strong>private-title</strong><div class="useList"><ul>${labels.map((label) => `<li>${label}<span>private-value</span></li>`).join('')}</ul></div></li></ul>`
+    )
+    const result = readLotteHistoryLayout(doc)
+    expect(result.representative?.flatMap(({ label }) => (label ? [label] : []))).toEqual(labels)
+    expect(
+      result.representative?.filter(
+        ({ tag, label, visibleChildCount }) => tag === 'li' && !!label && visibleChildCount === 1
+      )
+    ).toHaveLength(9)
+    expect(JSON.stringify(result)).not.toMatch(/private/)
+    expect(lotteHistoryLayoutSchema.safeParse(result).success).toBe(true)
+  })
   it('adds only the first visible row for each distinct cancellation shape with original row indexes', () => {
     const doc = at(`<ul id="useCardList"><li><strong>normal-private</strong></li>
       <li hidden class="cancel"><em class="parttot">hidden-private</em></li>
