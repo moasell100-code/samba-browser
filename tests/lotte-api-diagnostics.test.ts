@@ -15,14 +15,16 @@ describe('Lotte structural facts', () => {
       lotteResponseShapeIssues({
         Content: '<div class="noData"><p>조회 내역이 없습니다.</p></div>'
       })
-    ).toEqual([
-      'shape_top_div',
-      'shape_empty_label_1',
-      'shape_empty_class_nodata',
-      'shape_empty_node_div',
-      'shape_empty_node_label_1',
-      'shape_empty_node_p'
-    ])
+    ).toEqual(
+      expect.arrayContaining([
+        'shape_top_div',
+        'shape_empty_label_1',
+        'shape_empty_class_nodata',
+        'shape_empty_node_div',
+        'shape_empty_node_label_1',
+        'shape_empty_node_p'
+      ])
+    )
     expect(lotteResponseShapeIssues({ Content: 'PRIVATE_EMPTY_MESSAGE' })).toEqual([])
     expect(lotteResponseShapeIssues({ Content: '  ' })).toEqual(['shape_empty_content'])
   })

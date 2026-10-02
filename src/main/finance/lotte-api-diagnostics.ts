@@ -63,6 +63,63 @@ export function lotteResponseShapeIssues(value: unknown): string[] {
     if (doc.querySelector('.' + name)) result.add(`shape_empty_class_${name.toLowerCase()}`)
   const empty = doc.querySelector('.noData')
   if (empty) {
+    const vocabulary = [
+      '조회하신',
+      '선택하신',
+      '조건에',
+      '해당하는',
+      '이용내역이',
+      '없습니다.',
+      '없습니다',
+      '조회된',
+      '내역이',
+      '기간에',
+      '해당',
+      '카드',
+      '승인',
+      '이용',
+      '내역은',
+      '없어요.',
+      '조회',
+      '결과가',
+      '데이터가',
+      '일치하는',
+      '검색된',
+      '기간의',
+      '이용내역은',
+      '조회내역이',
+      '거래내역이',
+      '거래',
+      '존재하지',
+      '않습니다.',
+      '기간',
+      '해당기간에',
+      '검색',
+      '정보가',
+      '요청하신',
+      '내역',
+      '이용내역',
+      '승인내역이',
+      '조회하신기간에',
+      '조회하신기간의',
+      '조건과'
+    ]
+    const words = empty.textContent
+      .replace(/\u00a0/g, ' ')
+      .trim()
+      .split(/\s+/)
+    const codes = words.map((word) => vocabulary.indexOf(word))
+    if (codes.length <= 20 && codes.every((code) => code >= 0))
+      result.add('shape_empty_words_' + codes.join('_'))
+    const direct = empty.childNodes.filter((node) => node.nodeType === 1)
+    result.add('shape_empty_children_' + direct.length)
+    result.add('shape_empty_roots_' + doc.querySelectorAll('.noData').length)
+    result.add('shape_top_elements_' + doc.childNodes.filter((node) => node.nodeType === 1).length)
+    const parentTag = empty.parentNode?.tagName
+    if (parentTag && tags.has(parentTag))
+      result.add('shape_empty_parent_' + parentTag.toLowerCase())
+    if (doc.querySelector('#useCardList') === empty.parentNode)
+      result.add('shape_empty_parent_usecardlist')
     for (const child of [empty, ...empty.querySelectorAll('*')].slice(0, 20)) {
       if (tags.has(child.tagName)) result.add('shape_empty_node_' + child.tagName.toLowerCase())
       const matched = publicEmpty
