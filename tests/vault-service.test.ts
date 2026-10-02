@@ -63,6 +63,66 @@ describe('VaultService', () => {
     vi.useRealTimers()
   })
 
+  it('rotates the Lotte login attempt revision only when its saved username actually changes', async () => {
+    await vault.setup('master-pw')
+    const account = vault.upsertAccount({
+      host: 'www.lottecard.co.kr',
+      username: 'synthetic-old-id',
+      label: 'unit-lotte'
+    })
+    vault.putItem({ accountId: account.id, type: 'login', label: 'test', value: SECRET })
+    const before = vault.loginSecretRevision(account.id)
+    vault.upsertAccount({
+      id: account.id,
+      host: 'lottecard.co.kr',
+      username: 'synthetic-old-id',
+      label: 'renamed',
+      isDefault: true
+    })
+    expect(vault.loginSecretRevision(account.id)).toBe(before)
+    vault.upsertAccount({
+      id: account.id,
+      host: 'www.lottecard.co.kr',
+      username: 'synthetic-corrected-id'
+    })
+    const corrected = vault.loginSecretRevision(account.id)
+    expect(corrected).toMatch(/^[a-f0-9]{64}$/)
+    expect(corrected).not.toBe(before)
+    expect(corrected).not.toContain('synthetic')
+    expect(vault.getSecretForFill(account.id, 'login')).toBe(SECRET)
+    vault.upsertAccount({
+      id: account.id,
+      host: 'lottecard.co.kr',
+      username: 'synthetic-corrected-id',
+      tags: ['changed-tag']
+    })
+    expect(vault.loginSecretRevision(account.id)).toBe(corrected)
+  })
+
+  it.each(['www.hyundaicard.com', 'www.samsungcard.com', 'other.lottecard.co.kr'])(
+    'does not rotate another host login revision on username metadata edit: %s',
+    async (host) => {
+      await vault.setup('master-pw')
+      const account = vault.upsertAccount({ host, username: 'synthetic-old-id' })
+      vault.putItem({ accountId: account.id, type: 'login', label: 'test', value: SECRET })
+      const before = vault.loginSecretRevision(account.id)
+      vault.upsertAccount({ id: account.id, host, username: 'synthetic-new-id' })
+      expect(vault.loginSecretRevision(account.id)).toBe(before)
+    }
+  )
+
+  it('does not rotate a Lotte login revision on host reassignment or by reading existing metadata', async () => {
+    await vault.setup('master-pw')
+    const account = vault.upsertAccount({ host: 'other.example', username: 'synthetic-old-id' })
+    vault.putItem({ accountId: account.id, type: 'login', label: 'test', value: SECRET })
+    const before = vault.loginSecretRevision(account.id)
+    vault.upsertAccount({ id: account.id, host: 'lottecard.co.kr', username: 'synthetic-new-id' })
+    expect(vault.loginSecretRevision(account.id)).toBe(before)
+    vault.listAccounts('lottecard.co.kr')
+    vault.getAccount(account.id)
+    expect(vault.loginSecretRevision(account.id)).toBe(before)
+  })
+
   it('login secret revision ignores metadata edits and changes only when secret is rewritten', async () => {
     await vault.setup('master-pw')
     const account = vault.upsertAccount({

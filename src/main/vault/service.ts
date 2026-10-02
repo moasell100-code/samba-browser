@@ -976,8 +976,9 @@ export class VaultService {
     return this.repo.listItems(accountId)
   }
 
-  // Main-process-only opaque revision for a failed-login latch. Neither metadata edits nor
-  // vault re-encryption may unblock it. Only an explicit credential write rotates this value.
+  // Main-process-only opaque revision for a failed-login latch. Display metadata edits and
+  // vault re-encryption never unblock it. Explicit password writes, or an actual Lotte ID
+  // correction on the same account, rotate it because both are login credentials.
   loginSecretRevision(accountId: number): string | null {
     const row = this.repo.findItemRow(accountId, 'login')
     if (!row) return null
@@ -1007,7 +1008,27 @@ export class VaultService {
     // 계정 자체를 잃어버리는 것보다 정규화 실패를 허용하는 편이 안전하다
     const normalized = normalizeHost(input.host)
     const host = normalized || input.host
-    const row = this.repo.upsertAccount({ ...input, host })
+    const row = this.repo.transaction(() => {
+      const previous = input.id ? this.repo.getAccount(input.id) : null
+      const updated = this.repo.upsertAccount({ ...input, host })
+      // normalizeHost removes www. Keep this limited to an explicit edit of the same Lotte
+      // account. Do not change revisions during reads or reinterpret existing failed records.
+      if (
+        previous &&
+        previous.id === updated.id &&
+        host === 'lottecard.co.kr' &&
+        normalizeHost(previous.host) === 'lottecard.co.kr' &&
+        previous.username !== updated.username
+      ) {
+        const login = this.repo.findItemRow(updated.id, 'login')
+        if (login)
+          this.repo.setMeta(
+            `login_secret_revision:${login.id}`,
+            Buffer.from(randomBytes(32).toString('hex'), 'utf8')
+          )
+      }
+      return updated
+    })
     this.record('accounts', row.id, 'upsert')
     const types = this.repo.itemTypesByAccount()
     return {
