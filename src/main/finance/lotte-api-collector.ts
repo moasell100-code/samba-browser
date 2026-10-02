@@ -4,6 +4,7 @@ import { pageBridge } from '../browser/page-bridge'
 import type { Tab } from '../browser/tab-manager'
 import type { CardApiCollector, CardApiResult, CardApiRow } from './card-api-types'
 import { summarizeLotteHistoryContent } from './lotte-response-summary'
+import { lotteResponseShapeIssues } from './lotte-api-diagnostics'
 
 const HISTORY = 'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc'
 const QUERY = 'https://www.lottecard.co.kr/app/LPMCDAA_A102.lc'
@@ -565,6 +566,12 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
           return result(['response_scope_mismatch'])
       }
       const page = parseLotteApiResponse(response)
+      if (
+        page.rowCount === null ||
+        page.rows.some((row) => row.needsReview.includes('details_unverified'))
+      ) {
+        for (const issue of lotteResponseShapeIssues(response)) issues.add(issue)
+      }
       if (page.rowCount === null)
         return result([
           ...(totalPages === 0 ? ['empty_response_schema_unverified'] : []),
