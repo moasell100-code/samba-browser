@@ -96,6 +96,13 @@ function tab(url = URL): Tab {
 }
 
 describe('Lotte private API normalization', () => {
+  it('accepts the public credit approval instrument label independently of the payment method', () => {
+    const html = content().replace(
+      '거래유형<input value="not-a-business-value"><span>일시불</span>',
+      '거래유형<input value="not-a-business-value"><span>신용 승인</span>'
+    )
+    expect(parseLotteApiResponse(response(html)).rows[0].needsReview).toEqual([])
+  })
   it('normalizes verified transaction fields and labelled server-supplied details without input values', () => {
     const result = parseLotteApiResponse(response())
     expect(result.issues).toEqual([])

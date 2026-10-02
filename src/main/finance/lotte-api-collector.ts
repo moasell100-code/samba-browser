@@ -279,9 +279,10 @@ function rowFromHtml(
   const method = metadata[2]
   if (method !== '일시불' && method !== '할부') needsReview.push('transaction_type_unverified')
   const detailMethod = details?.get('거래유형')
+  const instrument = detailMethod?.replace(/\s+/g, '')
   const detailMethodCompatible =
     detailMethod === method ||
-    ((detailMethod === '신용' || detailMethod === '체크') &&
+    (['신용', '체크', '신용승인', '체크승인'].includes(instrument ?? '') &&
       (method === '일시불' || method === '할부'))
   if (detailMethod && !detailMethodCompatible) {
     needsReview.push('transaction_type_conflict')
@@ -729,6 +730,7 @@ async function enrichLottePage(
       overrides.set(index, fields)
       const identity = cardIdentities.get(form.encCdno)
       if (identity) cardOverrides.set(index, identity)
+      else if (!row.cardLast4) diagnostics.add('card_reference_not_in_selector')
     } catch (error) {
       const reason = error instanceof Error ? error.message : ''
       interruption = signal?.aborted
@@ -790,7 +792,7 @@ function requestPlanScript(from: string, to: string): string {
     for (const input of choices) {
       const item = input.closest('li');
       const idx = input.getAttribute('data-idx');
-      if (!item || !idx || !/^[0-9]{1,4}$/.test(idx)) continue;
+      if (!item || !idx || idx.length > 128) continue;
       const images = [...item.querySelectorAll('img[data-enccdno][data-idx]')].filter(image => image.getAttribute('data-idx') === idx);
       const labels = [...(input.labels || [])];
       if (images.length !== 1 || labels.length !== 1 || !item.contains(labels[0])) continue;
@@ -962,6 +964,12 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
         options.signal
       )
       page = enriched.page
+      if (page.rows.some((row) => row.needsReview.includes('identity_unverified'))) {
+        issues.add(`card_selector_known_${cardIdentities.size}`)
+        issues.add(
+          `card_identified_rows_${page.rows.filter((row) => row.cardLast4 && row.approvalNumber).length}`
+        )
+      }
       for (const issue of enriched.diagnostics) issues.add(issue)
       if (page.rowCount === null) return result(['response_schema_unverified'])
       let interruption = enriched.interruption
