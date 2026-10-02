@@ -2,7 +2,7 @@ import { parse, type HTMLElement, type Node } from 'node-html-parser'
 
 export interface LotteHistoryContentSummary {
   format: 'html' | 'other'
-  root: 'full' | 'fragment' | 'unrecognized'
+  root: 'full' | 'fragment' | 'empty' | 'unrecognized'
   rowCount: number | null
 }
 
@@ -107,6 +107,31 @@ export function summarizeLotteHistoryContent(parsed: unknown): LotteHistoryConte
       blockTextElements: { script: true, style: true, pre: true }
     })
     if (!bounded(doc)) return unknown
+    const top = elements(doc)
+    if (
+      top.length === 1 &&
+      top[0].tagName === 'LI' &&
+      top[0].classList.contains('noData') &&
+      top[0].classList.length === 1 &&
+      Object.keys(top[0].attributes).every((name) => name === 'class') &&
+      !unavailable(top[0]) &&
+      elements(top[0]).length === 0 &&
+      doc.childNodes.every(
+        (node) =>
+          node.nodeType === 8 || node === top[0] || (node.nodeType === 3 && !node.text.trim())
+      ) &&
+      [
+        '조회하신조건에맞는내역이없습니다.',
+        '조회하신조건과일치하는내역이없습니다.',
+        '조회하신조건에해당하는내역이없습니다.',
+        '조회하신이용내역이없습니다.',
+        '조회된이용내역이없습니다.',
+        '조회된내역이없습니다.',
+        '조회내역이없습니다.',
+        '이용내역이없습니다.'
+      ].includes(top[0].text.replace(/\s+/g, ''))
+    )
+      return { format: 'html', root: 'empty', rowCount: 0 }
     const candidates = doc.querySelectorAll('#useCardList')
     if (candidates.length) {
       if (candidates.length !== 1) return unknown

@@ -381,15 +381,52 @@ describe('Lotte verified all-option and Param pagination collector', () => {
     expect(result.rows[0].needsReview).toContain('cancellation_state_conflict')
   })
   it.each([
-    { name: 'loan detail route', payload: { aprTrc: '20' } },
-    { name: 'wrong original date', payload: { aprDtti: '20260928123456' } },
-    { name: 'conflicting amount', payload: { aprDeAm: '9999' } },
-    { name: 'missing card reference', payload: { cdno: '' } },
-    { name: 'nested approval value', payload: { aprno: { value: 'SYNTH-001' } } }
-  ])('does not request P103 for $name', async ({ payload }) => {
+    {
+      name: 'loan detail route',
+      payload: { aprTrc: '20' },
+      reason: 'detail_transaction_code_unverified'
+    },
+    {
+      name: 'wrong original date',
+      payload: { aprDtti: '20260928123456' },
+      reason: 'detail_approval_date_conflict'
+    },
+    {
+      name: 'unknown date format',
+      payload: { aprDtti: 'private invalid date' },
+      reason: 'detail_approval_date_format_unverified'
+    },
+    {
+      name: 'conflicting amount',
+      payload: { aprDeAm: '9999' },
+      reason: 'detail_approval_amount_conflict'
+    },
+    {
+      name: 'unknown amount format',
+      payload: { aprDeAm: 'private invalid amount' },
+      reason: 'detail_approval_amount_format_unverified'
+    },
+    {
+      name: 'missing card reference',
+      payload: { cdno: '' },
+      reason: 'detail_card_reference_unverified'
+    },
+    {
+      name: 'nested approval value',
+      payload: { aprno: { value: 'SYNTH-001' } },
+      reason: 'detail_field_type_aprno'
+    },
+    {
+      name: 'oversized known field',
+      payload: { aprRsc: 'X'.repeat(129) },
+      reason: 'detail_field_format_aprRsc'
+    }
+  ])('does not request P103 for $name', async ({ payload, reason }) => {
     const h = collectorFixture([envelope(1, 1, lazyContent(payload))])
     const result = await collectLotteApi(h.current, RANGE)
     expect(result.rows[0].needsReview).toContain('detail_request_unverified')
+    expect(result.receipt.issues).toContain(reason)
+    expect(JSON.stringify(result.receipt)).not.toMatch(/SYNTH|private|synthetic/)
     expect(h.fetch).toHaveBeenCalledTimes(1)
   })
   it('requires a unique direct button payload followed by its own empty details box', async () => {
@@ -404,6 +441,41 @@ describe('Lotte verified all-option and Param pagination collector', () => {
       expect(result.rows[0].needsReview).toContain('detail_request_unverified')
       expect(h.fetch).toHaveBeenCalledTimes(1)
     }
+  })
+  it('reports fixed structural reasons without exposing payload data', async () => {
+    const sample = lazyContent()
+    const cases = [
+      [
+        sample.replace('<button ', '<a ').replace('</button>', '</a>'),
+        'detail_payload_tag_unverified'
+      ],
+      [
+        sample.replace('</button>', '</button><span>unrelated</span>'),
+        'detail_payload_sibling_unverified'
+      ],
+      [
+        sample.replace('</li>', '<button data-object="{}"></button></li>'),
+        'detail_payload_count_unverified'
+      ],
+      [
+        sample.replace('<button ', '<div><button ').replace('</button>', '</button></div>'),
+        'detail_payload_parent_unverified'
+      ],
+      [
+        sample.replace(/data-object="[^"]*"/, 'data-object="private-invalid-json"'),
+        'detail_payload_json_unverified'
+      ]
+    ]
+    for (const [html, reason] of cases) {
+      const result = await collectLotteApi(collectorFixture([envelope(1, 1, html)]).current, RANGE)
+      expect(result.receipt.issues).toContain(reason)
+      expect(JSON.stringify(result.receipt)).not.toContain('private-invalid-json')
+    }
+    const h = collectorFixture([envelope(1, 1, sample)])
+    h.dom.window.document.querySelector('form[name="LPMCDAAArsUseDetail"]')!.remove()
+    expect((await collectLotteApi(h.current, RANGE)).receipt.issues).toContain(
+      'detail_default_unverified'
+    )
   })
   it('preserves every list row if a later detail request fails and never exposes the raw error', async () => {
     const h = collectorFixture()
@@ -488,6 +560,28 @@ describe('Lotte verified all-option and Param pagination collector', () => {
       const result = await collectLotteApi(collectorFixture([value]).current, RANGE)
       expect(result.receipt.approvalComplete).toBe(false)
       expect(result.rows).toEqual([])
+    }
+  })
+  it('accepts the confirmed empty marker only with the exact terminal page-one contract', async () => {
+    const html = '<li class="noData">조회하신 조건에 맞는 내역이 없습니다.</li>'
+    const good = await collectLotteApi(
+      collectorFixture([envelope(1, 1, html, { nextPageNo: 1 })]).current,
+      RANGE
+    )
+    expect(good.rows).toEqual([])
+    expect(good.receipt).toMatchObject({
+      approvalComplete: true,
+      pages: 1,
+      rowCount: 0,
+      complete: false
+    })
+    for (const value of [
+      envelope(1, 1, html, { nextPageNo: 2 }),
+      envelope(1, 2, html, { nextPageNo: 1 })
+    ]) {
+      const result = await collectLotteApi(collectorFixture([value]).current, RANGE)
+      expect(result.receipt.approvalComplete).toBe(false)
+      expect(result.receipt.issues).toContain('page_count_mismatch')
     }
   })
   it.each([

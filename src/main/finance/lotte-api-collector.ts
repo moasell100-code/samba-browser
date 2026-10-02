@@ -331,6 +331,7 @@ export function parseLotteApiResponse(
   const summary = summarizeLotteHistoryContent(parsed)
   if (summary.root === 'unrecognized')
     return { rows: [], issues: ['response_schema_unverified'], rowCount: null }
+  if (summary.root === 'empty') return { rows: [], issues: [], rowCount: 0 }
   const content = own(parsed, 'Content') as string
   const doc = parse(content)
   const root = summary.root === 'full' ? doc.querySelector('#useCardList')! : doc
@@ -493,28 +494,26 @@ function detailRequest(
   element: HTMLElement,
   row: CardApiRow,
   mildolYn: unknown
-): Readonly<Record<string, string>> | null {
-  if (typeof mildolYn !== 'string' || mildolYn.length > 128) return null
+): { ok: true; form: Readonly<Record<string, string>> } | { ok: false; reason: string } {
+  if (typeof mildolYn !== 'string' || mildolYn.length > 128)
+    return { ok: false, reason: 'detail_default_unverified' }
   const candidates = element.querySelectorAll('[data-object]')
-  if (candidates.length !== 1) return null
+  if (candidates.length !== 1) return { ok: false, reason: 'detail_payload_count_unverified' }
   const button = candidates[0]
   const siblings = elements(element)
   const next = siblings[siblings.indexOf(button) + 1]
-  if (
-    button.tagName !== 'BUTTON' ||
-    button.parentNode !== element ||
-    !next ||
-    next.tagName !== 'DIV' ||
-    !next.classList.contains('useList')
-  )
-    return null
+  if (button.tagName !== 'BUTTON') return { ok: false, reason: 'detail_payload_tag_unverified' }
+  if (button.parentNode !== element)
+    return { ok: false, reason: 'detail_payload_parent_unverified' }
+  if (!next || next.tagName !== 'DIV' || !next.classList.contains('useList'))
+    return { ok: false, reason: 'detail_payload_sibling_unverified' }
   const raw = candidates[0].getAttribute('data-object')!
-  if (raw.length > 16000) return null
+  if (raw.length > 16000) return { ok: false, reason: 'detail_payload_limit' }
   let payload: unknown
   try {
     payload = JSON.parse(raw)
   } catch {
-    return null
+    return { ok: false, reason: 'detail_payload_json_unverified' }
   }
   const result: Record<string, string> = {}
   for (const name of DETAIL_FIELDS) {
@@ -528,29 +527,31 @@ function detailRequest(
     }
     const value = own(payload, name === 'encCdno' ? 'cdno' : name)
     if (typeof value !== 'string' && !(typeof value === 'number' && Number.isSafeInteger(value)))
-      return null
+      return { ok: false, reason: `detail_field_type_${name}` }
     const valueText = String(value)
     const limit = name === 'encCdno' ? 2048 : name === 'mcNm' ? 512 : 128
     if (
       valueText.length > limit ||
       [...valueText].some((character) => character.charCodeAt(0) < 32)
     )
-      return null
+      return { ok: false, reason: `detail_field_format_${name}` }
     result[name] = valueText
   }
   const transactionCode = integer(result.aprTrc, 19)
-  if (
-    transactionCode === null ||
-    !result.encCdno ||
-    !/^[A-Za-z0-9-]{1,80}$/.test(result.aprno) ||
-    /^-+$/.test(result.aprno)
-  )
-    return null
+  if (transactionCode === null) return { ok: false, reason: 'detail_transaction_code_unverified' }
+  if (!result.encCdno) return { ok: false, reason: 'detail_card_reference_unverified' }
+  if (!/^[A-Za-z0-9-]{1,80}$/.test(result.aprno) || /^-+$/.test(result.aprno))
+    return { ok: false, reason: 'detail_approval_number_unverified' }
   const approved = payloadDate(result.aprDtti)
-  if (!approved || approved.slice(0, 10) !== row.approvedAt.slice(0, 10)) return null
+  if (!approved) return { ok: false, reason: 'detail_approval_date_format_unverified' }
+  if (approved.slice(0, 10) !== row.approvedAt.slice(0, 10))
+    return { ok: false, reason: 'detail_approval_date_conflict' }
   const amount = krw(result.aprDeAm)
-  if (row.status === 'approved' && (amount === null || amount !== row.amount)) return null
-  return result
+  if (row.status === 'approved' && amount === null)
+    return { ok: false, reason: 'detail_approval_amount_format_unverified' }
+  if (row.status === 'approved' && amount !== row.amount)
+    return { ok: false, reason: 'detail_approval_amount_conflict' }
+  return { ok: true, form: result }
 }
 
 /** P103's Content is inserted by the official callback into this row's empty div.useList. */
@@ -578,7 +579,7 @@ async function enrichLottePage(
   signal?: AbortSignal
 ): Promise<{ page: LotteApiPage; interruption?: string }> {
   const original = parseLotteApiResponse(response)
-  if (original.rowCount === null) return { page: original }
+  if (original.rowCount === null || original.rowCount === 0) return { page: original }
   const doc = parse(own(response, 'Content') as string)
   const root = doc.querySelector('#useCardList') ?? doc
   const overrides = new Map<number, DetailFields>()
@@ -590,11 +591,13 @@ async function enrichLottePage(
     if (!row || !row.needsReview.includes('details_unverified')) continue
     // Loans and unknown payment types have a different official detail workflow.
     if (row.needsReview.includes('transaction_type_unverified')) continue
-    const form = detailRequest(element, row, mildolYn)
-    if (!form) {
+    const prepared = detailRequest(element, row, mildolYn)
+    if (!prepared.ok) {
       flags.set(index, 'detail_request_unverified')
+      diagnostics.add(prepared.reason)
       continue
     }
+    const form = prepared.form
     if (budget.remaining <= 0) {
       interruption = 'detail_request_limit'
       flags.set(index, interruption)
@@ -794,7 +797,14 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
         ])
       if (
         (totalPages === 0 && page.rowCount !== 0) ||
-        (totalPages > 0 && page.rowCount === 0) ||
+        (totalPages > 0 &&
+          page.rowCount === 0 &&
+          !(
+            summarizeLotteHistoryContent(response).root === 'empty' &&
+            currentPage === 1 &&
+            totalPages === 1 &&
+            integer(own(param, 'nextPageNo'), 10000) === 1
+          )) ||
         page.rowCount > Number(request.pageRows)
       )
         return result(['page_count_mismatch'])

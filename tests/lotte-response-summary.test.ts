@@ -14,6 +14,22 @@ function summarize(Content: string): ReturnType<typeof summarizeLotteHistoryCont
 }
 
 describe('Lotte response Content structure summary', () => {
+  it('recognizes only a sole visible public no-data marker without financial children', () => {
+    expect(summarize('<li class="noData">조회하신 조건에 맞는 내역이 없습니다.</li>')).toEqual({
+      format: 'html',
+      root: 'empty',
+      rowCount: 0
+    })
+    for (const html of [
+      '<li class="noData">조회 요청에 실패했습니다.</li>',
+      '<li class="noData" hidden>조회하신 조건에 맞는 내역이 없습니다.</li>',
+      '<li class="noData"><input value="secret">조회하신 조건에 맞는 내역이 없습니다.</li>',
+      '<li class="noData">조회하신 조건에 맞는 내역이 없습니다.</li>' + row(),
+      '<li class="noData">PRIVATE_RESPONSE</li>'
+    ])
+      expect(summarize(html)).toEqual(UNKNOWN)
+  })
+
   it('counts only direct transaction rows in a unique verified full root', () => {
     expect(summarize(full(row() + row()))).toEqual({ format: 'html', root: 'full', rowCount: 2 })
   })
