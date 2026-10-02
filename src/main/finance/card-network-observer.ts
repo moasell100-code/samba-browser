@@ -2,6 +2,7 @@ import type { WebContents } from 'electron'
 import { createHash } from 'node:crypto'
 import type { FinanceCardIssuer } from '../../shared/finance-capture'
 import { ensureDebuggerAttached } from '../browser/emulation'
+import { summarizeLotteHistoryContent } from './lotte-response-summary'
 
 export const CARD_NETWORK_LIMITS = {
   durationMs: 120_000,
@@ -23,6 +24,7 @@ export interface CardResponseShape {
   arrays: Array<{ path: string; count: number }>
   totals: Array<{ path: string; count: number }>
   truncated: boolean
+  lotteHtml?: ReturnType<typeof summarizeLotteHistoryContent>
 }
 export interface CardNetworkRecord {
   origin: string
@@ -171,6 +173,7 @@ function safePath(pathname: string): { path: string; pathRedacted: boolean } {
       if (!segment) return ''
       // Published card screen/function filenames are stable routes, unlike numeric record IDs.
       const cardCode =
+        !segment.startsWith('CPACB0101_') &&
         /^(?:[A-Z]{3,10}\d{4}(?:_[A-Z0-9]{2,8}|[A-Z0-9]{2,4})|LPMCDAA_[A-Z]\d{3})\.(?:hc|lc|jsp|do)$/.test(
           segment
         )
@@ -179,9 +182,10 @@ function safePath(pathname: string): { path: string; pathRedacted: boolean } {
           segment
         )
       const samsungHistoryService = /^SHPPRP0801S\d{2}$/.test(segment)
-      // The fixed history screen code and bounded operation number are static route names.
-      // Only the literal ajax suffix is recognized; arbitrary IDs/names remain redacted.
-      const hyundaiHistoryService = /^CPACB0101_\d{2}(?:_?ajax)?\.(?:hc|json|ajax)$/.test(segment)
+      // The fixed history screen family uses short lowercase operation names. Longer numeric
+      // suffixes may be dynamic identifiers; never let the general card-code rule admit them.
+      const hyundaiSuffix = /^CPACB0101_([a-z0-9_]{1,24})\.(?:hc|json|ajax|do)$/.exec(segment)?.[1]
+      const hyundaiHistoryService = !!hyundaiSuffix && !/\d{4}/.test(hyundaiSuffix)
       if (
         cardCode ||
         namedRead ||
@@ -253,7 +257,7 @@ function requestFields(request: Record<string, unknown>): { fields: string[]; tr
 function emptyShape(kind: CardResponseShape['kind']): CardResponseShape {
   return { kind, arrays: [], totals: [], truncated: false }
 }
-function responseShape(body: string): CardResponseShape {
+function responseShape(body: string, includeLotteHtml = false): CardResponseShape {
   if (Buffer.byteLength(body) > CARD_NETWORK_LIMITS.bodyBytes) return emptyShape('too_large')
   if (!body.trim()) return emptyShape('empty')
   let parsed: unknown
@@ -263,6 +267,7 @@ function responseShape(body: string): CardResponseShape {
     return emptyShape('non_json')
   }
   const summary = emptyShape('json')
+  if (includeLotteHtml) summary.lotteHtml = summarizeLotteHistoryContent(parsed)
   let visited = 0
   const walk = (value: unknown, path: string, depth: number): void => {
     if (++visited > CARD_NETWORK_LIMITS.shapeNodes || depth > CARD_NETWORK_LIMITS.shapeDepth) {
@@ -548,7 +553,10 @@ export class CardNetworkObserver {
           result.base64Encoded === true
             ? Buffer.from(result.body, 'base64').toString('utf8')
             : result.body
-        pending.record.response = responseShape(body)
+        pending.record.response = responseShape(
+          body,
+          this.issuer === 'lotte_card' && pending.record.path === '/app/LPMCDAA_A102.lc'
+        )
       }
     } catch {
       if (this.generation === generation) pending.record.response = emptyShape('unavailable')

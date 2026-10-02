@@ -103,6 +103,33 @@ afterEach(() => {
 })
 
 describe('temporary card read-only network observation', () => {
+  it('summarizes Lotte Content HTML only on the observed history endpoint without exposing rows', async () => {
+    const f = fixture('lotte_card', 'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc')
+    await f.observer.start()
+    f.setBody(
+      JSON.stringify({
+        Content:
+          '<ul id="useCardList" class="useCardList type02"><li><strong>private-shop</strong><div class="info"><span>2026.10.01</span><span>private-card</span><span>일시불</span></div><em><span>990원</span></em></li></ul>'
+      })
+    )
+    const endpoint = 'https://www.lottecard.co.kr/app/LPMCDAA_A102.lc'
+    f.request('history', {}, { url: endpoint })
+    f.response('history', { url: endpoint, mimeType: 'text/html' })
+    await f.finish('history')
+    expect(f.observer.snapshot().records[0].response?.lotteHtml).toEqual({
+      format: 'html',
+      root: 'full',
+      rowCount: 1
+    })
+    const other = 'https://www.lottecard.co.kr/app/LPMCDAA_A103.lc'
+    f.request('other', {}, { url: other })
+    f.response('other', { url: other, mimeType: 'application/json' })
+    await f.finish('other')
+    expect(f.observer.snapshot().records[1].response?.lotteHtml).toBeUndefined()
+    expect(JSON.stringify(f.observer.snapshot())).not.toMatch(
+      /private-shop|private-card|990원|<li>/
+    )
+  })
   it('attaches before navigation and returns only field names, array counts and known totals', async () => {
     const f = fixture('hyundai_card', 'about:blank')
     await f.observer.start()
@@ -318,13 +345,19 @@ describe('temporary card read-only network observation', () => {
       'CPACB0101_02.ajax',
       'CPACB0101_01_ajax.json',
       'CPACB0101_01ajax.json',
+      'CPACB0101_01_list.do',
+      'CPACB0101_select_his123.hc',
       'CPACB0101_123456789.json',
-      'CPACB0101_01_privateCustomer.json'
+      'CPACB0101_01_privateCustomer.json',
+      'CPACB0101_1234.do',
+      'CPACB0101_abcdefghijklmnopqrstuvwxyz.json'
     ]
     for (const [index, filename] of filenames.entries())
       f.request(`route-${index}`, {}, { url: `https://www.hyundaicard.com/cpa/cb/${filename}` })
     expect(f.observer.snapshot().records.map(({ path }) => path)).toEqual([
-      ...filenames.slice(0, 4).map((filename) => `/cpa/cb/${filename}`),
+      ...filenames.slice(0, 6).map((filename) => `/cpa/cb/${filename}`),
+      '/cpa/cb/[redacted]',
+      '/cpa/cb/[redacted]',
       '/cpa/cb/[redacted]',
       '/cpa/cb/[redacted]'
     ])
