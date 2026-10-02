@@ -7,7 +7,7 @@ export const CARD_NETWORK_LIMITS = {
   durationMs: 120_000,
   requests: 50,
   pendingBodies: 4,
-  bodyBytes: 256 * 1024,
+  bodyBytes: 2 * 1024 * 1024,
   requestBytes: 16 * 1024,
   bodyTimeoutMs: 3_000,
   shapeNodes: 200,
@@ -122,7 +122,7 @@ const TOTAL_FIELDS = new Set([
 type Pending = {
   record: CardNetworkRecord
   target: string
-  json: boolean
+  bodyEligible: boolean
   responseUrlVerified: boolean
 }
 
@@ -179,10 +179,14 @@ function safePath(pathname: string): { path: string; pathRedacted: boolean } {
           segment
         )
       const samsungHistoryService = /^SHPPRP0801S\d{2}$/.test(segment)
+      // The fixed history screen code and bounded operation number are static route names.
+      // Only the literal ajax suffix is recognized; arbitrary IDs/names remain redacted.
+      const hyundaiHistoryService = /^CPACB0101_\d{2}(?:_?ajax)?\.(?:hc|json|ajax)$/.test(segment)
       if (
         cardCode ||
         namedRead ||
         samsungHistoryService ||
+        hyundaiHistoryService ||
         STATIC_SEGMENTS.has(segment.toLowerCase())
       )
         return segment
@@ -451,7 +455,7 @@ export class CardNetworkObserver {
     this.pending.set(requestId, {
       record,
       target: targetKey(url),
-      json: false,
+      bodyEligible: false,
       responseUrlVerified: false
     })
   }
@@ -476,9 +480,16 @@ export class CardNetworkObserver {
       response.status <= 599
     )
       pending.record.status = response.status
-    pending.json =
-      typeof response.mimeType === 'string' &&
-      /^(?:application|text)\/(?:[\w.+-]+\+)?json(?:;|$)/i.test(response.mimeType)
+    const mime = typeof response.mimeType === 'string' ? response.mimeType : ''
+    const jsonMime = /^(?:application|text)\/(?:[\w.+-]+\+)?json(?:;|$)/i.test(mime)
+    // This observed read-only history endpoint may label its JSON as HTML/plain text.
+    // It is still parsed as JSON only; actual HTML is never summarized or returned.
+    const lotteHistoryText =
+      this.issuer === 'lotte_card' &&
+      url.origin === 'https://www.lottecard.co.kr' &&
+      url.pathname === '/app/LPMCDAA_A102.lc' &&
+      /^text\/(?:html|plain)(?:;|$)/i.test(mime)
+    pending.bodyEligible = jsonMime || lotteHistoryText
     pending.responseUrlVerified = true
   }
 
@@ -486,7 +497,7 @@ export class CardNetworkObserver {
     const pending = this.pending.get(requestId)
     this.pending.delete(requestId)
     if (!pending || !pending.responseUrlVerified) return
-    if (!pending.json) {
+    if (!pending.bodyEligible) {
       pending.record.response = emptyShape('non_json')
       return
     }

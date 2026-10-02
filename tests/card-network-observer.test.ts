@@ -310,6 +310,97 @@ describe('temporary card read-only network observation', () => {
     expect(JSON.stringify(f.observer.snapshot())).not.toMatch(/customer|12345678|87654321/)
   })
 
+  it('preserves bounded Hyundai history JSON/ajax filenames but redacts dynamic suffixes', async () => {
+    const f = fixture()
+    await f.observer.start()
+    const filenames = [
+      'CPACB0101_01.json',
+      'CPACB0101_02.ajax',
+      'CPACB0101_01_ajax.json',
+      'CPACB0101_01ajax.json',
+      'CPACB0101_123456789.json',
+      'CPACB0101_01_privateCustomer.json'
+    ]
+    for (const [index, filename] of filenames.entries())
+      f.request(`route-${index}`, {}, { url: `https://www.hyundaicard.com/cpa/cb/${filename}` })
+    expect(f.observer.snapshot().records.map(({ path }) => path)).toEqual([
+      ...filenames.slice(0, 4).map((filename) => `/cpa/cb/${filename}`),
+      '/cpa/cb/[redacted]',
+      '/cpa/cb/[redacted]'
+    ])
+    expect(JSON.stringify(f.observer.snapshot())).not.toMatch(/123456789|privateCustomer/)
+  })
+
+  it.each(['text/html', 'text/plain; charset=UTF-8'])(
+    'tries JSON only for the exact Lotte history endpoint with %s MIME',
+    async (mimeType) => {
+      const f = fixture('lotte_card', 'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc')
+      await f.observer.start()
+      const endpoint = 'https://www.lottecard.co.kr/app/LPMCDAA_A102.lc'
+      f.request('json', {}, { url: endpoint })
+      f.response('json', { url: endpoint, mimeType })
+      await f.finish('json')
+      expect(f.observer.snapshot().records[0].response?.kind).toBe('json')
+
+      f.setBody('<html><body>private-transaction 99887766</body></html>')
+      f.request('html', {}, { url: endpoint })
+      f.response('html', { url: endpoint, mimeType })
+      await f.finish('html')
+      expect(f.observer.snapshot().records[1].response).toEqual({
+        kind: 'non_json',
+        arrays: [],
+        totals: [],
+        truncated: false
+      })
+
+      const other = 'https://www.lottecard.co.kr/app/LPMCDAA_A103.lc'
+      f.request('other', {}, { url: other })
+      f.response('other', { url: other, mimeType })
+      await f.finish('other')
+      expect(
+        f.send.mock.calls.filter(([method]) => method === 'Network.getResponseBody')
+      ).toHaveLength(2)
+      expect(JSON.stringify(f.observer.snapshot())).not.toMatch(/private|99887766/)
+    }
+  )
+
+  it('summarizes a large history body within the 2MiB bound without preserving its rows', async () => {
+    const f = fixture()
+    await f.observer.start()
+    const body = JSON.stringify({
+      bdy: { useList: [{ privateData: 'x'.repeat(300 * 1024) }], totalCount: 1 }
+    })
+    f.setBody(body)
+    f.request()
+    f.response()
+    await f.finish(undefined, Buffer.byteLength(body))
+    expect(CARD_NETWORK_LIMITS.bodyBytes).toBe(2 * 1024 * 1024)
+    expect(f.observer.snapshot().records[0].response).toEqual({
+      kind: 'json',
+      arrays: [{ path: '$.bdy.useList', count: 1 }],
+      totals: [{ path: '$.bdy.totalCount', count: 1 }],
+      truncated: false
+    })
+    expect(JSON.stringify(f.observer.snapshot())).not.toMatch(/privateData|xxxx/)
+  })
+
+  it('never holds more than four pending response-body commands', async () => {
+    const f = fixture()
+    await f.observer.start()
+    f.send.mockImplementation(async () => new Promise(() => {}))
+    for (let index = 0; index < 5; index++) {
+      f.request(`pending-${index}`)
+      f.response(`pending-${index}`)
+      void f.finish(`pending-${index}`)
+    }
+    expect(
+      f.send.mock.calls.filter(([method]) => method === 'Network.getResponseBody')
+    ).toHaveLength(4)
+    expect(f.observer.snapshot().records[4].response?.kind).toBe('unavailable')
+    expect(f.observer.snapshot().limitReached).toBe(true)
+    await vi.advanceTimersByTimeAsync(CARD_NETWORK_LIMITS.bodyTimeoutMs)
+  })
+
   it('never traverses transaction rows and does not treat totals of money as record counts', async () => {
     const f = fixture()
     await f.observer.start()
