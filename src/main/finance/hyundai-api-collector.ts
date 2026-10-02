@@ -270,14 +270,18 @@ export interface HyundaiApiPage {
   reportedTotal: number | null
 }
 
-async function bounded<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+async function bounded<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = 20_000
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   let abort: (() => void) | undefined
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('hyundai_request_timeout')), 20_000)
+        timer = setTimeout(() => reject(new Error('hyundai_request_timeout')), timeoutMs)
         timer.unref?.()
         abort = () => reject(new Error('hyundai_request_cancelled'))
         if (signal?.aborted) abort()
@@ -287,6 +291,70 @@ async function bounded<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
   } finally {
     if (timer) clearTimeout(timer)
     if (abort) signal?.removeEventListener('abort', abort)
+  }
+}
+
+/** Only the first DOM plan may be awaiting the site's asynchronous form initialization. */
+async function initialRequestPlan(
+  tab: Tab,
+  wc: Tab['view']['webContents'],
+  url: string,
+  script: string,
+  signal?: AbortSignal
+): Promise<unknown> {
+  const deadline = Date.now() + 10_000
+  const stopped = new AbortController()
+  const combined = signal ? AbortSignal.any([signal, stopped.signal]) : stopped.signal
+  const assertContext = (): void => {
+    if (signal?.aborted) throw new Error('hyundai_request_cancelled')
+    if (tab.view.webContents !== wc || wc.isDestroyed() || wc.getURL() !== url)
+      throw new Error('hyundai_navigation_changed')
+  }
+  const watch = setInterval(() => {
+    try {
+      assertContext()
+    } catch {
+      stopped.abort()
+    }
+  }, 250)
+  let lastPlan: unknown
+  try {
+    for (;;) {
+      assertContext()
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return lastPlan
+      let plan: unknown
+      try {
+        plan = await bounded(wc.executeJavaScript(script, false), combined, remaining)
+      } catch (error) {
+        assertContext()
+        if (error instanceof Error && error.message === 'hyundai_request_timeout' && lastPlan)
+          return lastPlan
+        throw error
+      }
+      assertContext()
+      const issue = own(plan, 'issue')
+      if (
+        own(plan, 'ok') !== false ||
+        (issue !== 'request_schema_unverified' && issue !== 'card_selector_unverified')
+      )
+        return plan
+      lastPlan = plan
+      const delay = Math.min(250, deadline - Date.now())
+      if (delay <= 0) return lastPlan
+      await new Promise<void>((resolve) => {
+        const finish = (): void => {
+          clearTimeout(timer)
+          combined.removeEventListener('abort', finish)
+          resolve()
+        }
+        const timer = setTimeout(finish, delay)
+        if (combined.aborted) finish()
+        else combined.addEventListener('abort', finish, { once: true })
+      })
+    }
+  } finally {
+    clearInterval(watch)
   }
 }
 
@@ -762,10 +830,10 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       if (pages >= maxPages) return result(['page_limit'])
       if (wc.isDestroyed() || wc.getURL() !== url) return result(['navigation_changed'])
       const iso = new Date(day).toISOString().slice(0, 10)
-      const plan: unknown = await bounded(
-        wc.executeJavaScript(requestPlanScript(iso, iso), false),
-        options.signal
-      )
+      const plan: unknown =
+        pages === 0
+          ? await initialRequestPlan(tab, wc, url, requestPlanScript(iso, iso), options.signal)
+          : await bounded(wc.executeJavaScript(requestPlanScript(iso, iso), false), options.signal)
       if (options.signal?.aborted) return result(['cancelled'])
       if (wc.isDestroyed() || wc.getURL() !== url) return result(['navigation_changed'])
       if (own(plan, 'ok') !== true) {

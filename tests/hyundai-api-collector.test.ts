@@ -14,6 +14,7 @@ const HISTORY = 'https://www.hyundaicard.com/cpa/cb/CPACB0101_01.hc'
 const QUERY = 'https://www.hyundaicard.com/cpa/cb/apiCPACB0101_21.hc'
 const windows: JSDOM[] = []
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   for (const dom of windows.splice(0)) dom.window.close()
 })
@@ -425,6 +426,125 @@ describe('Hyundai private approval response normalization', () => {
 })
 
 describe('Hyundai fixed authenticated read-only request and daily collector', () => {
+  it.each(['form', 'card_selector'] as const)(
+    'waits only for initial %s readiness before making one HTTP query',
+    async (kind) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      const element = f.dom.window.document.querySelector(kind === 'form' ? 'form' : 'select')!
+      const parent = element.parentNode!
+      const next = element.nextSibling
+      element.remove()
+      const pending = collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      await vi.advanceTimersByTimeAsync(749)
+      expect(f.fetch).not.toHaveBeenCalled()
+      parent.insertBefore(element, next)
+      await vi.advanceTimersByTimeAsync(1)
+      const result = await pending
+      expect(result.receipt.pages).toBe(1)
+      expect(result.rows).toHaveLength(1)
+      expect(f.fetch).toHaveBeenCalledOnce()
+      expect(f.execute).toHaveBeenCalledTimes(4)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it.each(['request_schema_unverified', 'card_selector_unverified'])(
+    'retains %s after the exact bounded DOM-only readiness window',
+    async (issue) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      f.execute.mockResolvedValue({ ok: false, issue })
+      const pending = collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect((await pending).receipt).toMatchObject({
+        pages: 0,
+        issues: [issue],
+        elapsedMs: 10_000
+      })
+      expect(f.execute).toHaveBeenCalledTimes(40)
+      expect(f.fetch).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it('does not wait for a different history page or malformed success schema', async () => {
+    vi.useFakeTimers()
+    for (const plan of [
+      { ok: false, issue: 'history_page_required' },
+      { ok: true, data: null }
+    ]) {
+      const f = fixture()
+      f.execute.mockResolvedValue(plan)
+      const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      expect(result.receipt.elapsedMs).toBe(0)
+      expect(f.execute).toHaveBeenCalledOnce()
+      expect(f.fetch).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  })
+
+  it.each(['navigation', 'tab', 'cancelled'] as const)(
+    'stops initial DOM waiting on %s without any HTTP request',
+    async (kind) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      const controller = new AbortController()
+      f.execute.mockResolvedValue({ ok: false, issue: 'request_schema_unverified' })
+      const pending = collectHyundaiApi(
+        f.tab,
+        { from: '2026-10-02', to: '2026-10-02' },
+        { signal: controller.signal }
+      )
+      await vi.advanceTimersByTimeAsync(100)
+      if (kind === 'navigation') f.setUrl('https://www.hyundaicard.com/cpm/mb/CPMMB0101_01.hc')
+      if (kind === 'tab')
+        Object.defineProperty(f.tab.view, 'webContents', { value: { ...f.tab.view.webContents } })
+      if (kind === 'cancelled') controller.abort()
+      await vi.advanceTimersByTimeAsync(150)
+      expect((await pending).receipt.issues).toEqual([
+        kind === 'cancelled' ? 'cancelled' : 'hyundai_navigation_changed'
+      ])
+      expect(f.execute).toHaveBeenCalledOnce()
+      expect(f.fetch).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it('bounds a stalled DOM read within the same initial deadline and preserves the last known issue', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    f.execute
+      .mockResolvedValueOnce({ ok: false, issue: 'card_selector_unverified' })
+      .mockImplementation(() => new Promise(() => {}))
+    const pending = collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect((await pending).receipt).toMatchObject({
+      pages: 0,
+      issues: ['card_selector_unverified'],
+      elapsedMs: 10_000
+    })
+    expect(f.execute).toHaveBeenCalledTimes(2)
+    expect(f.fetch).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not retry a changed schema after an earlier successful daily query', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    const execute = f.execute.getMockImplementation()!
+    f.execute
+      .mockImplementationOnce(execute)
+      .mockResolvedValue({ ok: false, issue: 'request_schema_unverified' })
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-01', to: '2026-10-02' })
+    expect(result.receipt.pages).toBe(1)
+    expect(result.receipt.issues).toContain('request_schema_unverified')
+    expect(result.receipt.elapsedMs).toBe(0)
+    expect(f.fetch).toHaveBeenCalledOnce()
+    expect(f.execute).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('recovers a capped day only after individual card echoes, totals and original snapshot all agree', async () => {
     const f = cappedFixture()
     const before = f.dom.window.document.querySelector('form')!.outerHTML
@@ -801,11 +921,14 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
   })
 
   it('does not accept hidden all-card text when the displayed option label is a custom card', async () => {
+    vi.useFakeTimers()
     const f = fixture()
     const option = f.dom.window.document.querySelector('option')!
     option.textContent = '전체'
     option.setAttribute('label', 'PRIVATE_CARD_LABEL')
-    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    const pending = collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    await vi.advanceTimersByTimeAsync(10_000)
+    const result = await pending
     expect(result.receipt.issues).toContain('card_selector_unverified')
     expect(f.fetch).not.toHaveBeenCalled()
   })
@@ -813,6 +936,7 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
   it.each(['개인 카드 전체', '가족 카드 전체', '전체(본인)', 'PRIVATE_CARD_NAME 전체'])(
     'does not accept the partial or custom label %s merely because it contains the whole word',
     async (label) => {
+      vi.useFakeTimers()
       const f = fixture()
       f.dom.window.document.querySelector('option')!.textContent = label
       const inspected = await inspectHyundaiScope(f.tab)
@@ -822,7 +946,9 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
           { label: 'unrecognized', optionLabel: 'unrecognized', hasWholeWord: false }
         ]
       })
-      const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      const pending = collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      await vi.advanceTimersByTimeAsync(10_000)
+      const result = await pending
       expect(result.receipt.issues).toContain('card_selector_unverified')
       expect(f.fetch).not.toHaveBeenCalled()
     }
@@ -919,11 +1045,12 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
   })
 
   it('does not guess missing all-card/custom-date controls or date formats', async () => {
+    vi.useFakeTimers()
     const f = fixture()
     f.dom.window.document.querySelector('label[for="dtClsf_04"]')!.textContent = 'unknown'
-    expect(
-      (await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })).receipt.issues
-    ).toEqual(['request_schema_unverified'])
+    const pending = collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect((await pending).receipt.issues).toEqual(['request_schema_unverified'])
     expect(f.fetch).not.toHaveBeenCalled()
   })
 
