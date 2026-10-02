@@ -40,7 +40,16 @@ function approval(overrides: Record<string, unknown> = {}): object {
 function payload(items: object[] = [approval()], day = '20261002', total = items.length): object {
   return {
     bdy: {
-      rcntSummaryInfo: { totUseCnt: total, srtDt: day, endDt: day },
+      rcntSummaryInfo: {
+        totUseCnt: total,
+        srtDt: day,
+        endDt: day,
+        crno: 'ALL_PRIVATE_CARDS',
+        zoneClsf: 'ALL_PRIVATE_ZONE',
+        useClsf: 'ALL_PRIVATE_USE',
+        usplClsf: 'ALL_PRIVATE_MERCHANTS',
+        dtClsf: 'PRIVATE_CUSTOM_PERIOD'
+      },
       rcntAvItm: items,
       privateUnrelatedField: 'PRIVATE_UNRELATED_FIELD'
     }
@@ -307,6 +316,7 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
       directPresent: true,
       directLabels: ['직접입력'],
       recentPresent: true,
+      regionFilterEmpty: false,
       allRadioCounts: { useClsf: 1, usplClsf: 1, zoneClsf: 1 },
       dateFormats: { start: 'compact', end: 'compact' }
     })
@@ -318,6 +328,17 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
     ])
       expect(JSON.stringify(inspected)).not.toContain(secret)
     expect(f.fetch).not.toHaveBeenCalled()
+  })
+
+  it('reports only whether the fixed hidden regional control is exactly empty', async () => {
+    const f = fixture()
+    const region = f.dom.window.document.querySelector<HTMLInputElement>('input[name="dmfrClsf"]')!
+    region.value = ''
+    expect(await inspectHyundaiScope(f.tab)).toMatchObject({ regionFilterEmpty: true })
+    region.value = 'PRIVATE_REGIONAL_VALUE'
+    const snapshot = await inspectHyundaiScope(f.tab)
+    expect(snapshot).toMatchObject({ regionFilterEmpty: false })
+    expect(JSON.stringify(snapshot)).not.toContain('PRIVATE_REGIONAL_VALUE')
   })
 
   it('retains a recent cancellation of an older approval using the renderer cancellation date', async () => {
@@ -488,6 +509,18 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
       (await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })).receipt.issues
     ).toEqual(['request_schema_unverified'])
     expect(f.fetch).not.toHaveBeenCalled()
+  })
+
+  it('requires matching private server echoes of whole-card, zone, use, merchant and direct-date selections', async () => {
+    const f = fixture()
+    const data = payload() as { bdy: { rcntSummaryInfo: Record<string, unknown> } }
+    data.bdy.rcntSummaryInfo.zoneClsf = 'OTHER_PRIVATE_ZONE'
+    f.fetch.mockResolvedValue(Response.json(data))
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.rows).toEqual([])
+    expect(result.receipt.issues).toContain('response_scope_unverified')
+    expect(JSON.stringify(result.receipt)).not.toContain('OTHER_PRIVATE_ZONE')
+    expect(result.receipt.approvalComplete).toBe(false)
   })
 
   it('verifies server response period, rejects expanded ranges and honors abort/page limits', async () => {

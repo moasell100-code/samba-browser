@@ -21,6 +21,8 @@ const SCRIPT = String.raw`(() => {
   const clean = source => source.includes(String.fromCharCode(96)) ? '[template source omitted]' : source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60/g, (token, offset) => {
     if (token.startsWith('//') || token.startsWith('/*')) return '';
     const value = token.slice(1, -1);
+    const publicMarkupText = value.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, '').replace(/\s+/g, '');
+    if (value.includes('<') && ['원','국내','해외','승인','취소','보유카드전체'].includes(publicMarkupText)) return JSON.stringify('[markup omitted]' + publicMarkupText);
     // Static public currency/region comparisons only, never current form or account values.
     if (/^[A-Z]{1,6}$/.test(value) && (/\.(?:dmfrClsf|dmfrClsfCd|acplCrncCd|bllCrncCd)\s*={2,3}\s*$/.test(source.slice(Math.max(0, offset - 80), offset)) || /^\s*={2,3}\s*[A-Za-z_$][\w$]*\.(?:dmfrClsf|dmfrClsfCd|acplCrncCd|bllCrncCd)\b/.test(source.slice(offset + token.length, offset + token.length + 80)))) return JSON.stringify(value);
     if (literals.has(value) || /^\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do)$/.test(value) && !/\d{8,}/.test(value)) return JSON.stringify(value);
@@ -36,7 +38,7 @@ const SCRIPT = String.raw`(() => {
         const candidate = Object.getOwnPropertyDescriptor(window, m[1]);
         if (candidate && typeof candidate.value === 'function') {
           const code = Function.prototype.toString.call(candidate.value);
-          if (/vldCardList/.test(code) && code.length < 30000) targets.push(m[1]);
+          if ((/vldCardList/.test(code) || /['"]#?dmfrClsf['"]/.test(code)) && code.length < 30000) targets.push(m[1]);
         }
       }
     }

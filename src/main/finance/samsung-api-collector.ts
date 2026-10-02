@@ -96,6 +96,26 @@ function won(value: RawRow['aprAm']): number | null {
   return Number.isSafeInteger(amount) && Math.abs(amount) <= 999_999_999_999 ? amount : null
 }
 
+/** Fixed shape labels only, never a card value, suffix, length value, or card name. */
+function unavailableCardIdentityShape(raw: RawRow['itgCdnoe']): string[] {
+  if (typeof raw !== 'string') return ['card_identity_not_string']
+  const issues = [
+    raw.length === 15
+      ? 'card_number_length_15'
+      : raw.length === 16
+        ? 'card_number_length_16'
+        : raw.length === 19
+          ? 'card_number_length_19'
+          : 'card_number_length_other'
+  ]
+  if (/\d{4}$/.test(raw)) issues.push('card_tail_digits_available')
+  const officialTail = raw.slice(12, 16)
+  if (/^\d{4}$/.test(officialTail)) issues.push('card_official_tail_digits_available')
+  if (/[*Xx•]/.test(officialTail)) issues.push('card_tail_masked')
+  if (officialTail !== raw.trim().slice(12, 16)) issues.push('card_last4_shift_after_trim')
+  return issues
+}
+
 function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
   const date = isoDate(text(raw.aprDt))
   const signedAmount = won(raw.aprAm)
@@ -114,7 +134,8 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
   // This exact position is used by Samsung's public D0/D8 renderer. Do not export the full card.
   const tail = cardIdentity.slice(12, 16)
   const cardLast4 = /^\d{4}$/.test(tail) ? tail : undefined
-  if (!cardLast4) review.push('card_last4_unavailable')
+  if (!cardLast4)
+    review.push('card_last4_unavailable', ...unavailableCardIdentityShape(raw.itgCdnoe))
   const cancellation = mode === 'cancellation' || signedAmount < 0
   const canDateRaw = text(raw.canRcpdt)
   const eventDate = canDateRaw ? isoDate(canDateRaw) : null

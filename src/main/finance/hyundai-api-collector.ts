@@ -71,6 +71,7 @@ const scopeSchema = z
     directPresent: z.boolean(),
     directLabels: z.array(z.enum(['직접입력', 'unrecognized'])).max(10),
     recentPresent: z.boolean(),
+    regionFilterEmpty: z.boolean(),
     allRadioCounts: z
       .object({
         useClsf: z.number().int().min(0).max(1000),
@@ -111,6 +112,7 @@ const SCOPE_SCRIPT = `(() => {
   };
   const direct = form && form.querySelector('input[type="radio"][name="dtClsf"]#dtClsf_04');
   const recent = form && form.querySelector('input[type="radio"][name="listClsf"]#listClsf_01');
+  const regions = form ? form.querySelectorAll('input[name="dmfrClsf"]') : [];
   return {
     state: 'ready',
     formCount: Math.min(forms.length, 1000),
@@ -124,6 +126,7 @@ const SCOPE_SCRIPT = `(() => {
     directPresent: !!direct && !direct.disabled,
     directLabels: direct ? labels.filter(label => label.htmlFor === direct.id).slice(0, 10).map(label => text(label) === '직접입력' ? '직접입력' : 'unrecognized') : [],
     recentPresent: !!recent && !recent.disabled,
+    regionFilterEmpty: regions.length === 1 && regions[0].type === 'hidden' && regions[0].value === '',
     allRadioCounts: { useClsf: Math.min(radioCount('useClsf'), 1000), usplClsf: Math.min(radioCount('usplClsf'), 1000), zoneClsf: Math.min(radioCount('zoneClsf'), 1000) },
     dateFormats: { start: format('iqrySrtDt'), end: format('iqryEndDt') }
   };
@@ -339,7 +342,10 @@ export function parseHyundaiApiPage(response: unknown): HyundaiApiPage {
     if (!approved && !cancelled) review.push('approval_status_unverified')
     const currency = scalar(own(raw, 'acplCrncCd'), 10)
     const isKrw = currency === 'KRW' || currency === '410'
-    if (!isKrw) review.push('currency_unverified')
+    if (!isKrw) {
+      review.push('currency_unverified')
+      review.push(currency ? 'currency_code_unrecognized' : 'currency_code_missing')
+    }
     if (!displayMerchant) review.push('merchant_source_unverified')
     if (!combined) review.push('approval_datetime_unverified')
     const loan = ['5', '7'].includes(scalar(own(raw, 'useClsf'), 10) || '')
@@ -354,7 +360,16 @@ export function parseHyundaiApiPage(response: unknown): HyundaiApiPage {
     // Official renderer uses the final four characters of cdno, including masked formats.
     const tail = cardNumber ? /(\d{4})$/.exec(cardNumber)?.[1] : null
     if (!approvalNumber || (!cardNumber && !cardReference)) review.push('identity_unverified')
-    if (!tail) review.push('card_last4_unavailable')
+    if (!tail) {
+      review.push('card_last4_unavailable')
+      review.push(
+        !cardNumber
+          ? 'card_number_missing'
+          : /[*Xx•●]{4}$/.test(cardNumber)
+            ? 'card_last4_masked'
+            : 'card_number_format_unverified'
+      )
+    }
     const cancelledAt = dateTime(own(raw, 'cancDttm'))
     const eventDate = cancelled ? cancelledAt?.slice(0, 10) : undefined
     if (cancelled) {
@@ -570,6 +585,13 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       const summary = own(own(response, 'bdy') ?? response, 'rcntSummaryInfo')
       if (date(own(summary, 'srtDt')) !== iso || date(own(summary, 'endDt')) !== iso)
         return result(['response_range_unverified'])
+      // These exact keys are written back into the official query controls by
+      // rcntSummaryInfo(). Echo equality confirms that the server applied the
+      // separately constructed all-card/all-use/direct-period request.
+      for (const field of ['crno', 'zoneClsf', 'useClsf', 'usplClsf', 'dtClsf'] as const) {
+        if (scalar(own(summary, field), 256) !== form[field].trim())
+          return result(['response_scope_unverified'])
+      }
       for (const row of page.rows) {
         const observedDay =
           row.kind === 'cancellation'
@@ -583,8 +605,8 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
         rows.push(row)
       }
     }
-    // Daily splitting reduces the known UI limit risk. The separate domestic/foreign
-    // selector and authoritative total still need a verified renderer contract.
+    // All-card/range/usage echoes are checked above. Whether dmfrClsf separately
+    // narrows this service is not yet verified; do not claim approval completeness.
     return result(['scope_unverified', 'cancellation_query_basis_unverified'])
   } catch (error) {
     if (options.signal?.aborted) return result(['cancelled'])

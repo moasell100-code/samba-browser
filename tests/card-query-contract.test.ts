@@ -145,6 +145,18 @@ describe('fixed query contract inspection redaction', () => {
     expect((f.dom.window as unknown as Record<string, unknown>).didInitialize).toBeUndefined()
   })
 
+  it('projects only fixed public unit text from static markup without returning attributes', async () => {
+    const f = fixture(`function fnSearch() {
+      const unit = '<span class="PRIVATE_ATTRIBUTE">원</span>';
+      const customer = '<span>PRIVATE_CUSTOMER</span>';
+      return [unit, customer];
+    }`)
+    const serialized = JSON.stringify(await inspectCardQueryContract(f.tab))
+    expect(serialized).toContain('[markup omitted]원')
+    expect(serialized).not.toContain('PRIVATE_ATTRIBUTE')
+    expect(serialized).not.toContain('PRIVATE_CUSTOMER')
+  })
+
   it('does not invoke accessor properties or event handlers while inspecting', async () => {
     const f = fixture()
     const getter = vi.fn(() => {

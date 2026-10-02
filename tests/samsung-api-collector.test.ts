@@ -227,6 +227,56 @@ describe('Samsung fixed private statement API collector', () => {
     expect(result.rows[1].needsReview).toContain('card_last4_unavailable')
   })
 
+  it.each([
+    { identity: '123456789012345', flags: ['card_number_length_15', 'card_tail_digits_available'] },
+    {
+      identity: '1234-5678-9012-3456',
+      flags: ['card_number_length_19', 'card_tail_digits_available']
+    },
+    { identity: '12345678********', flags: ['card_number_length_16', 'card_tail_masked'] },
+    {
+      identity: '            1234',
+      flags: [
+        'card_number_length_16',
+        'card_tail_digits_available',
+        'card_official_tail_digits_available',
+        'card_last4_shift_after_trim'
+      ]
+    },
+    { identity: 'SYNTHETIC_OPAQUE_TOKEN', flags: ['card_number_length_other'] },
+    { identity: null, flags: ['card_identity_not_string'] }
+  ])(
+    'reports only fixed card-shape diagnostics without guessing missing suffixes (%#)',
+    async ({ identity, flags }) => {
+      const f = fixture((query) =>
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51') ? [row(1, { itgCdnoe: identity })] : []
+          )
+        )
+      )
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.rows[0].cardLast4).toBeUndefined()
+      expect(result.rows[0].needsReview).toEqual(
+        expect.arrayContaining(['card_last4_unavailable', ...flags])
+      )
+      expect(result.receipt.issues).toEqual(expect.arrayContaining(flags))
+      expect(result.receipt.approvalComplete).toBe(true)
+      if (identity) expect(JSON.stringify(result.receipt)).not.toContain(identity)
+      expect(JSON.stringify(result.receipt)).not.toContain('00000001')
+      expect(result.receipt).not.toHaveProperty('identityDiagnostics')
+    }
+  )
+
+  it('does not add shape diagnostics to normal verified suffix rows', async () => {
+    const f = fixture()
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.rows[0].cardLast4).toBe('4321')
+    expect(result.rows[0].needsReview).toEqual([])
+    expect(result.receipt.issues.filter((issue) => issue.startsWith('card_'))).toEqual([])
+  })
+
   it.each(['invalid_row', 'outside_range', 'duplicate', 'short_page'] as const)(
     'does not certify approval coverage with %s',
     async (fault) => {
