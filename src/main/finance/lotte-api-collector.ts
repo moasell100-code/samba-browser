@@ -478,10 +478,10 @@ async function requestLotteForm(
 }
 
 function payloadDate(value: string): string | null {
-  if (/^\d{8}(?:\d{6})?$/.test(value)) {
+  if (/^\d{8}(?:\d{6}(?:\d{3})?)?$/.test(value)) {
     const day = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
     return date(
-      value.length === 14
+      value.length >= 14
         ? `${day} ${value.slice(8, 10)}:${value.slice(10, 12)}:${value.slice(12, 14)}`
         : day
     )

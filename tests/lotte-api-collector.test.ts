@@ -361,6 +361,37 @@ describe('Lotte verified all-option and Param pagination collector', () => {
     expect(result.rows[0].approvalNumber).toBeUndefined()
     expect(h.fetch).toHaveBeenCalledTimes(1)
   })
+  it('matches the proven compact millisecond timestamp to displayed seconds without changing the P103 parameter', async () => {
+    const h = collectorFixture([
+      envelope(1, 1, lazyContent({ aprDtti: '20261002123456123' })),
+      detailEnvelope()
+    ])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0]).toMatchObject({
+      approvalNumber: 'SYNTH-001',
+      approvedAt: '2026-10-02T12:34:56+09:00',
+      needsReview: []
+    })
+    expect(result.receipt.approvalComplete).toBe(true)
+    expect(new URLSearchParams(h.fetch.mock.calls[1][1].body).get('aprDtti')).toBe(
+      '20261002123456123'
+    )
+  })
+  it('rejects malformed compact fractions, invalid calendar/time, and another approval date', async () => {
+    for (const [aprDtti, reason] of [
+      ['2026100212345612', 'detail_approval_date_format_unverified'],
+      ['202610021234561234', 'detail_approval_date_format_unverified'],
+      ['20260230123456123', 'detail_approval_date_format_unverified'],
+      ['20261002243456123', 'detail_approval_date_format_unverified'],
+      ['20261002126056123', 'detail_approval_date_format_unverified'],
+      ['20261001123456123', 'detail_approval_date_conflict']
+    ]) {
+      const h = collectorFixture([envelope(1, 1, lazyContent({ aprDtti }))])
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.receipt.issues).toContain(reason)
+      expect(h.fetch).toHaveBeenCalledTimes(1)
+    }
+  })
   it('keeps verified approval coverage when only another row has a noninterrupting detail failure', async () => {
     const h = collectorFixture([
       envelope(1, 1, lazyContent() + lazyContent({ aprno: 'SYNTH-002' })),
