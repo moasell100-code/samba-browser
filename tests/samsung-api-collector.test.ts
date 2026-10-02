@@ -228,7 +228,14 @@ describe('Samsung fixed private statement API collector', () => {
   })
 
   it.each([
-    { identity: '123456789012345', flags: ['card_number_length_15', 'card_tail_digits_available'] },
+    {
+      identity: '123456789012345',
+      flags: ['card_number_length_15', 'card_tail_digits_available', 'card_official_tail_3_digits']
+    },
+    {
+      identity: '************317',
+      flags: ['card_number_length_15', 'card_official_tail_3_digits', 'card_prefix_masked']
+    },
     {
       identity: '1234-5678-9012-3456',
       flags: ['card_number_length_19', 'card_tail_digits_available']
@@ -268,6 +275,22 @@ describe('Samsung fixed private statement API collector', () => {
       expect(result.receipt).not.toHaveProperty('identityDiagnostics')
     }
   )
+
+  it('does not treat a nonnumeric 15-character suffix as an official three-digit tail', async () => {
+    const f = fixture((query) =>
+      query.success(
+        response(
+          query.service,
+          query.service.endsWith('S51') ? [row(1, { itgCdnoe: '************ABC' })] : []
+        )
+      )
+    )
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.rows[0].cardLast4).toBeUndefined()
+    expect(result.rows[0].needsReview).toContain('card_last4_unavailable')
+    expect(result.receipt.issues).not.toContain('card_official_tail_3_digits')
+    expect(result.receipt.issues).not.toContain('card_prefix_masked')
+  })
 
   it('does not add shape diagnostics to normal verified suffix rows', async () => {
     const f = fixture()

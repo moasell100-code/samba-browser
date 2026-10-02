@@ -292,6 +292,40 @@ describe('Hyundai private approval response normalization', () => {
     expect(duplicate.rows[0].needsReview).toContain('card_mapping_ambiguous')
   })
 
+  it.each([
+    ['000000******123', ['card_cdno_length_15', 'card_cdno_ascii', 'card_cdno_tail_three_digits']],
+    ['000000**********', ['card_cdno_length_16', 'card_cdno_ascii', 'card_cdno_tail_masked']],
+    [
+      '0000-00**-****-*123',
+      ['card_cdno_length_19', 'card_cdno_ascii', 'card_cdno_tail_three_digits']
+    ],
+    ['000000●●●●●●●●●●', ['card_cdno_length_16', 'card_cdno_non_ascii', 'card_cdno_tail_masked']],
+    ['UNKNOWN', ['card_cdno_length_other', 'card_cdno_ascii', 'card_cdno_tail_other']]
+  ])('reports only fixed shape flags for an unavailable tail', (cdno, expected) => {
+    const result = parseHyundaiApiPage(payload([approval({ cdno })]))
+    expect(result.issues).toEqual(expect.arrayContaining(expected as string[]))
+    expect(result.issues).toContain('card_reference_option_unmatched')
+    expect(JSON.stringify(result.issues)).not.toContain(cdno as string)
+    expect(JSON.stringify(result.issues)).not.toContain('PRIVATE_CARD_REFERENCE')
+  })
+
+  it('distinguishes missing references from missing option patterns without promoting diagnostics to review reasons', () => {
+    const missing = parseHyundaiApiPage(payload([approval({ crno: '', cdno: '' })]))
+    expect(missing.issues).toEqual(
+      expect.arrayContaining(['card_reference_missing', 'card_cdno_missing'])
+    )
+    const matched = parseHyundaiApiPage(payload([approval({ avClsf: '0', cdno: '' })]), [
+      {
+        crno: 'PRIVATE_CARD_REFERENCE',
+        status: 'matched',
+        last4: '5432',
+        diagnostic: 'token_matched'
+      }
+    ])
+    expect(matched.issues).toContain('card_option_token_matched')
+    expect(matched.rows[0].needsReview).toEqual([])
+  })
+
   it('marks the observed 630-real-row limit without treating 700 unknown slots as proven approvals', () => {
     const capped = parseHyundaiApiPage(
       payload(Array.from({ length: 630 }, (_, i) => approval({ avNo: String(i) })))
@@ -304,6 +338,32 @@ describe('Hyundai private approval response normalization', () => {
 })
 
 describe('Hyundai fixed authenticated read-only request and daily collector', () => {
+  it.each([
+    ['합성 카드 [1234]', 'card_option_token_missing'],
+    ['합성 카드 0000-00**-****-****', 'card_option_token_tail_masked'],
+    ['합성 카드 0000-00**-****-*123', 'card_option_token_tail_three_digits'],
+    ['합성 카드 0000-00**-****-**12', 'card_option_token_tail_other']
+  ])(
+    'identifies a matched reference but unresolved option format with %s',
+    async (label, issue) => {
+      const f = fixture()
+      const option = f.dom.window.document.querySelectorAll('option')[1]
+      option.value = 'PRIVATE_CARD_REFERENCE'
+      option.label = label
+      f.fetch.mockResolvedValue(
+        Response.json(payload([approval({ avClsf: '0', cdno: 'UNKNOWN_NUMBER' })]))
+      )
+      const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      expect(result.receipt.issues).toEqual(
+        expect.arrayContaining(['card_reference_option_matched', issue])
+      )
+      expect(result.rows[0].needsReview).not.toContain(issue)
+      expect(JSON.stringify(result.receipt)).not.toContain(label)
+      expect(JSON.stringify(result.receipt)).not.toContain('PRIVATE_CARD_REFERENCE')
+      expect(JSON.stringify(result.receipt)).not.toContain('UNKNOWN_NUMBER')
+    }
+  )
+
   it.each([
     '(본인) 합성 카드 [0000-00**-****-5432]',
     '합성 카드 (000000*****5432)',

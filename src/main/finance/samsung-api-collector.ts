@@ -111,6 +111,10 @@ function unavailableCardIdentityShape(raw: RawRow['itgCdnoe']): string[] {
   if (/\d{4}$/.test(raw)) issues.push('card_tail_digits_available')
   const officialTail = raw.slice(12, 16)
   if (/^\d{4}$/.test(officialTail)) issues.push('card_official_tail_digits_available')
+  if (raw.length === 15 && /^\d{3}$/.test(officialTail)) {
+    issues.push('card_official_tail_3_digits')
+    if (/[*Xx•]/.test(raw.slice(0, 12))) issues.push('card_prefix_masked')
+  }
   if (/[*Xx•]/.test(officialTail)) issues.push('card_tail_masked')
   if (officialTail !== raw.trim().slice(12, 16)) issues.push('card_last4_shift_after_trim')
   return issues

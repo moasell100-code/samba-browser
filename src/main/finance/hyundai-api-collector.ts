@@ -51,6 +51,17 @@ const cardTailSchema = z
   .object({
     crno: z.string().min(1).max(256),
     status: z.enum(['matched', 'ambiguous', 'unavailable']),
+    diagnostic: z
+      .enum([
+        'token_matched',
+        'token_missing',
+        'token_ambiguous',
+        'token_tail_masked',
+        'token_tail_three_digits',
+        'token_tail_other',
+        'reference_ambiguous'
+      ])
+      .optional(),
     last4: z
       .string()
       .regex(/^\d{4}$/)
@@ -211,11 +222,15 @@ function requestPlanScript(from: string, to: string): string {
       const label = (option.label || '').replace(/\\s+/g, ' ').trim();
       const runs = Array.from(label.matchAll(/[\\d*Xx●•]+(?:[ -]+[\\d*Xx●•]+)*/g), match => match[0].replace(/[ -]/g, ''));
       const patterns = runs.filter(token => token.length === 15 || token.length === 16);
-      if (patterns.length === 1 && /\\d{4}$/.test(patterns[0])) cardTails.push({ crno: option.value, status: 'matched', last4: patterns[0].slice(-4) });
-      else cardTails.push({ crno: option.value, status: patterns.length > 1 || runs.some(token => token.length >= 30) ? 'ambiguous' : 'unavailable' });
+      if (patterns.length === 1 && /\\d{4}$/.test(patterns[0])) cardTails.push({ crno: option.value, status: 'matched', diagnostic: 'token_matched', last4: patterns[0].slice(-4) });
+      else {
+        const ambiguous = patterns.length > 1 || runs.some(token => token.length >= 30);
+        const diagnostic = ambiguous ? 'token_ambiguous' : patterns.length === 0 ? 'token_missing' : /[*Xx●•]{4}$/.test(patterns[0]) ? 'token_tail_masked' : /(?:^|[^\\d])\\d{3}$/.test(patterns[0]) ? 'token_tail_three_digits' : 'token_tail_other';
+        cardTails.push({ crno: option.value, status: ambiguous ? 'ambiguous' : 'unavailable', diagnostic });
+      }
     }
     for (const entry of cardTails) {
-      if (cardTails.filter(other => other.crno === entry.crno).length > 1) { entry.status = 'ambiguous'; delete entry.last4; }
+      if (cardTails.filter(other => other.crno === entry.crno).length > 1) { entry.status = 'ambiguous'; entry.diagnostic = 'reference_ambiguous'; delete entry.last4; }
     }
     const direct = fixedRadio('dtClsf_04', 'dtClsf', '직접입력');
     const recent = fixedRadio('listClsf_01', 'listClsf', null);
@@ -394,6 +409,55 @@ export function parseHyundaiApiPage(
     // Official renderer uses the final four characters of cdno, including masked formats.
     let tail = cardNumber ? /(\d{4})$/.exec(cardNumber)?.[1] : null
     const mapped = cardReference ? cardTails.filter((entry) => entry.crno === cardReference) : []
+    if (!tail) {
+      // Diagnostic flags describe only shapes and matching outcomes. They are
+      // receipt metadata, never row review reasons or raw option/number values.
+      issues.add(
+        !cardReference
+          ? 'card_reference_missing'
+          : mapped.length === 0
+            ? 'card_reference_option_unmatched'
+            : 'card_reference_option_matched'
+      )
+      if (cardNumber) {
+        issues.add(
+          cardNumber.length === 15
+            ? 'card_cdno_length_15'
+            : cardNumber.length === 16
+              ? 'card_cdno_length_16'
+              : cardNumber.length === 19
+                ? 'card_cdno_length_19'
+                : 'card_cdno_length_other'
+        )
+        issues.add(
+          [...cardNumber].every((character) => character.charCodeAt(0) <= 127)
+            ? 'card_cdno_ascii'
+            : 'card_cdno_non_ascii'
+        )
+        issues.add(
+          /(?:^|\D)\d{3}$/.test(cardNumber)
+            ? 'card_cdno_tail_three_digits'
+            : /[*Xx•●]{4}$/.test(cardNumber)
+              ? 'card_cdno_tail_masked'
+              : 'card_cdno_tail_other'
+        )
+      } else issues.add('card_cdno_missing')
+      if (
+        mapped.length === 1 &&
+        mapped[0].diagnostic &&
+        [
+          'token_matched',
+          'token_missing',
+          'token_ambiguous',
+          'token_tail_masked',
+          'token_tail_three_digits',
+          'token_tail_other',
+          'reference_ambiguous'
+        ].includes(mapped[0].diagnostic)
+      )
+        issues.add('card_option_' + mapped[0].diagnostic)
+      else if (mapped.length > 1) issues.add('card_option_reference_ambiguous')
+    }
     if (mapped.length > 1 || mapped[0]?.status === 'ambiguous')
       review.push('card_mapping_ambiguous')
     else if (mapped[0]?.status === 'matched') {
