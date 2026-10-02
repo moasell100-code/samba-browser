@@ -26,6 +26,7 @@ export async function startCardDiagnosticsRuntime(options: {
   vault?: VaultService
   settings?: () => Settings
   collectorTokenFile?: string
+  collectorTransport?: string
 }): Promise<() => void> {
   if (!/^[a-z0-9-]{12,64}$/.test(options.sessionName)) throw new Error('Invalid diagnostic session')
   const dir = join(options.tempDir, `jaja-card-mcp-${options.sessionName}`)
@@ -232,12 +233,19 @@ export async function startCardDiagnosticsRuntime(options: {
               ? collectLotteApi
               : null
       if (!collect) return { state: 'collector_unavailable' }
-      if (save && !options.collectorTokenFile) return { state: 'finance_not_configured' }
+      if (
+        save &&
+        options.collectorTransport !== 'server-ssh' &&
+        ((options.collectorTransport !== undefined && options.collectorTransport !== 'local') ||
+          !options.collectorTokenFile)
+      )
+        return { state: 'finance_not_configured' }
       const result = await collectRecentCard({ tab, collect, signal: controller.signal })
       assertTabContext(tab, url)
       if (!save) return { state: 'preview', receipt: result.receipt }
       const saved = await saveCardCollection(result, {
-        tokenFile: options.collectorTokenFile!,
+        tokenFile: options.collectorTokenFile,
+        transport: options.collectorTransport,
         signal: controller.signal
       })
       assertTabContext(tab, url)

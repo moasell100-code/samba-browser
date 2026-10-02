@@ -5,6 +5,8 @@ import { collectRecentCard, saveCardCollection } from '../src/main/finance/card-
 
 const files = vi.hoisted(() => ({ stat: vi.fn(), readFile: vi.fn() }))
 vi.mock('node:fs/promises', () => files)
+const ssh = vi.hoisted(() => ({ save: vi.fn() }))
+vi.mock('../src/main/finance/card-save-ssh', () => ({ saveCardCollectionOverSsh: ssh.save }))
 
 const TOKEN = 'a'.repeat(64)
 const RANGE = { from: '2026-09-29', to: '2026-10-02' }
@@ -188,8 +190,26 @@ describe('recent private card collection', () => {
       result(range, count++ === 0 ? [approved] : count === 4 ? [cancelled] : [])
     )
     const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
-    expect(output.rows).toEqual([approved, cancelled])
-    expect(output.receipt).toMatchObject({ complete: true, rowCount: 2 })
+    expect(output.rows).toEqual(
+      [approved, cancelled].map((item) => ({ ...item, needsReview: ['source_identity_conflict'] }))
+    )
+    expect(output.receipt).toMatchObject({ complete: false, approvalComplete: false, rowCount: 2 })
+    expect(output.receipt.issues).toContain('source_identity_conflict')
+  })
+
+  it('merges identical cross-day rows and unions review flags without mutating collectors', async () => {
+    const original = row()
+    let calls = 0
+    const collect = vi.fn(async (_tab: Tab, range: CardDateRange) =>
+      result(range, [{ ...original, needsReview: calls++ ? ['review_b'] : ['review_a'] }], {
+        approvalComplete: true
+      })
+    )
+    const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+    expect(output.rows).toHaveLength(1)
+    expect(output.rows[0].needsReview).toEqual(['review_a', 'review_b'])
+    expect(output.receipt).toMatchObject({ rowCount: 1, approvalComplete: true })
+    expect(original.needsReview).toEqual([])
   })
 
   it('retains earlier rows as incomplete when a later collector throws without exposing its exception', async () => {
@@ -236,6 +256,34 @@ describe('recent private card collection', () => {
 })
 
 describe('loopback-only private collection save', () => {
+  it('routes explicit SSH saves without reading local tokens or falling back to fetch', async () => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    ssh.save.mockResolvedValue(saved({ private_rows: [row()] }))
+    const output = await saveCardCollection(result(), { transport: 'server-ssh' })
+    expect(ssh.save).toHaveBeenCalledWith(expect.any(String), undefined)
+    expect(JSON.parse(ssh.save.mock.calls.at(-1)![0])).toMatchObject(result())
+    expect(files.readFile).not.toHaveBeenCalled()
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(output).not.toHaveProperty('private_rows')
+    ssh.save.mockRejectedValue(new Error('PRIVATE_REMOTE_FAILURE'))
+    await expect(
+      saveCardCollection(result(), { transport: 'server-ssh', tokenFile: 'unused' })
+    ).rejects.toThrow('Finance collector save unavailable')
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+  it.each(['disabled', 'server-ssh-typo', ''])(
+    'refuses invalid or disabled transport %s without local fallback',
+    async (transport) => {
+      const fetcher = vi.fn()
+      vi.stubGlobal('fetch', fetcher)
+      await expect(
+        saveCardCollection(result(), { transport, tokenFile: 'valid-local-file' })
+      ).rejects.toThrow('Finance collector not configured')
+      expect(files.readFile).not.toHaveBeenCalled()
+      expect(fetcher).not.toHaveBeenCalled()
+    }
+  )
   it('posts rows only to the fixed local route and returns only the validated receipt', async () => {
     const fetcher = vi
       .fn()

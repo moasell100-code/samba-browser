@@ -112,6 +112,16 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('permanent finance sync configuration', () => {
+  it('enables explicit SSH without a local token and rejects unknown destinations', async () => {
+    expect(await createCardAgentSync({ transport: 'server-ssh' })).toBeTypeOf('function')
+    expect(await createCardAgentSync({ transport: 'server-ssh-typo', tokenFile })).toBeUndefined()
+    expect(mocks.stat).not.toHaveBeenCalled()
+    expect(mocks.readFile).not.toHaveBeenCalled()
+    expect(parseSettings({ financeCollectorTransport: 'wrong' }).financeCollectorTransport).toBe(
+      'disabled'
+    )
+    expect(SYNCED_SETTING_KEYS).not.toContain('financeCollectorTransport')
+  })
   it('defaults to disabled and does not cloud-sync the local token path', () => {
     expect(parseSettings({}).financeCollectorTokenFile).toBe('')
     expect(parseSettings({ financeCollectorTokenFile: tokenFile }).financeCollectorTokenFile).toBe(
@@ -145,6 +155,7 @@ describe('deterministic current-card sync', () => {
     })
     expect(mocks.save).toHaveBeenCalledWith(privateResult, {
       tokenFile,
+      transport: undefined,
       signal: expect.any(AbortSignal)
     })
     expect(out).toEqual({

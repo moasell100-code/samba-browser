@@ -544,6 +544,7 @@ export class AgentRunner {
     const financeCaptures = new FinanceCaptureStore()
     const syncFinance = await createCardAgentSync({
       tokenFile: s.financeCollectorTokenFile,
+      transport: process.env.FINANCE_BROWSER_IMPORT_TRANSPORT ?? s.financeCollectorTransport,
       signal: abort.signal
     })
     const server = createSambaTools(

@@ -122,6 +122,43 @@ function fixture(): {
   return { tab, dom, fetch, execute, auth, setUrl: (next) => (url = next) }
 }
 
+function cappedFixture(firstCount = 350, secondCount = 350): ReturnType<typeof fixture> {
+  const f = fixture()
+  f.dom.window.document.querySelector<HTMLInputElement>('[name="dmfrClsf"]')!.value = ''
+  const select = f.dom.window.document.querySelector('select')!
+  select.options[1].value = 'PRIVATE_CARD_REFERENCE'
+  select.options[1].label = '합성 카드 (0000-00**-****-5432)'
+  const second = f.dom.window.document.createElement('option')
+  second.value = 'SECOND_PRIVATE_REFERENCE'
+  second.label = '합성 카드 (0000-00**-****-1234)'
+  select.append(second)
+  const groups: Record<string, object[]> = {
+    PRIVATE_CARD_REFERENCE: Array.from({ length: firstCount }, (_, i) =>
+      approval({ avClsf: '0', avNo: String(i) })
+    ),
+    SECOND_PRIVATE_REFERENCE: Array.from({ length: secondCount }, (_, i) =>
+      approval({
+        avClsf: '0',
+        avNo: String(i),
+        crno: 'SECOND_PRIVATE_REFERENCE',
+        cdno: '0000000000001234'
+      })
+    )
+  }
+  const all = Object.values(groups).flat()
+  f.fetch.mockImplementation(async (_url: string, init: RequestInit) => {
+    const reference = new URLSearchParams(String(init.body)).get('crno')!
+    const data = payload(
+      reference === 'ALL_PRIVATE_CARDS' ? all.slice(0, 630) : groups[reference],
+      '20261002',
+      reference === 'ALL_PRIVATE_CARDS' ? all.length : groups[reference].length
+    ) as { bdy: { rcntSummaryInfo: Record<string, unknown> } }
+    data.bdy.rcntSummaryInfo.crno = reference
+    return Response.json(data)
+  })
+  return f
+}
+
 describe('Hyundai private approval response normalization', () => {
   it('normalizes displayed won amounts without inventing approval or cancellation certainty', () => {
     const result = parseHyundaiApiPage(payload())
@@ -293,12 +330,7 @@ describe('Hyundai private approval response normalization', () => {
   })
 
   it.each([
-    ['000000******123', ['card_cdno_length_15', 'card_cdno_ascii', 'card_cdno_tail_three_digits']],
     ['000000**********', ['card_cdno_length_16', 'card_cdno_ascii', 'card_cdno_tail_masked']],
-    [
-      '0000-00**-****-*123',
-      ['card_cdno_length_19', 'card_cdno_ascii', 'card_cdno_tail_three_digits']
-    ],
     ['000000●●●●●●●●●●', ['card_cdno_length_16', 'card_cdno_non_ascii', 'card_cdno_tail_masked']],
     ['UNKNOWN', ['card_cdno_length_other', 'card_cdno_ascii', 'card_cdno_tail_other']]
   ])('reports only fixed shape flags for an unavailable tail', (cdno, expected) => {
@@ -307,6 +339,61 @@ describe('Hyundai private approval response normalization', () => {
     expect(result.issues).toContain('card_reference_option_unmatched')
     expect(JSON.stringify(result.issues)).not.toContain(cdno as string)
     expect(JSON.stringify(result.issues)).not.toContain('PRIVATE_CARD_REFERENCE')
+  })
+
+  it.each([
+    ['000000******123', '*123'],
+    ['0000-00**-****-*123', '*123'],
+    ['0000 00XX XXXX X12X', '*12*'],
+    ['0000-00●●-●●●●-●●12', '**12']
+  ])(
+    'preserves an observed partial suffix from %s without reconstructing any digit',
+    (cdno, suffix) => {
+      const result = parseHyundaiApiPage(payload([approval({ avClsf: '0', cdno })]))
+      expect(result.rows[0]).toMatchObject({ cardLast4: suffix, needsReview: [] })
+      expect(result.rows[0].cardKey).toMatch(/^[a-f0-9]{64}$/)
+      expect(result.issues).toContain('card_tail_partially_masked')
+      expect(JSON.stringify(result)).not.toContain(cdno)
+    }
+  )
+
+  it('keeps card keys stable across display-mask changes and distinct across actual card references', () => {
+    const first = parseHyundaiApiPage(
+      payload([approval({ avClsf: '0', cdno: '0000-00**-****-12**' })])
+    ).rows[0]
+    const clearer = parseHyundaiApiPage(
+      payload([approval({ avClsf: '0', cdno: '0000-00**-****-1234' })])
+    ).rows[0]
+    const other = parseHyundaiApiPage(
+      payload([approval({ avClsf: '0', crno: 'OTHER_CARD', cdno: '0000-00**-****-12**' })])
+    ).rows[0]
+    expect(first.cardKey).toBe(clearer.cardKey)
+    expect(first.cardKey).not.toBe(other.cardKey)
+    expect(first.sourceId).toBe(clearer.sourceId)
+    const withoutReference = parseHyundaiApiPage(
+      payload([approval({ avClsf: '0', crno: '', cdno: '0000-00xx-xxxx-12xx' })])
+    ).rows[0]
+    const sameNormalized = parseHyundaiApiPage(
+      payload([approval({ avClsf: '0', crno: '', cdno: '000000******12**' })])
+    ).rows[0]
+    expect(withoutReference.cardKey).toBe(sameNormalized.cardKey)
+    expect(withoutReference.cardKey).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it('does not combine partial digits from independent masks or accept malformed card strings', () => {
+    const response = payload([approval({ avClsf: '0', cdno: '0000-00**-****-12**' })])
+    const compatible = parseHyundaiApiPage(response, [
+      { crno: 'PRIVATE_CARD_REFERENCE', status: 'matched', last4: '**34' }
+    ])
+    expect(compatible.rows[0].cardLast4).toBe('12**')
+    const conflicting = parseHyundaiApiPage(response, [
+      { crno: 'PRIVATE_CARD_REFERENCE', status: 'matched', last4: '*334' }
+    ])
+    expect(conflicting.rows[0].cardLast4).toBeUndefined()
+    expect(conflicting.rows[0].needsReview).toContain('card_last4_conflict')
+    const malformed = parseHyundaiApiPage(payload([approval({ cdno: 'UNVERIFIED1234', crno: '' })]))
+    expect(malformed.rows[0].cardLast4).toBeUndefined()
+    expect(malformed.rows[0].cardKey).toBeUndefined()
   })
 
   it('distinguishes missing references from missing option patterns without promoting diagnostics to review reasons', () => {
@@ -338,11 +425,143 @@ describe('Hyundai private approval response normalization', () => {
 })
 
 describe('Hyundai fixed authenticated read-only request and daily collector', () => {
+  it('recovers a capped day only after individual card echoes, totals and original snapshot all agree', async () => {
+    const f = cappedFixture()
+    const before = f.dom.window.document.querySelector('form')!.outerHTML
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.receipt).toMatchObject({
+      pages: 3,
+      rowCount: 700,
+      approvalComplete: true,
+      complete: false
+    })
+    expect(result.receipt.issues).toContain('card_split_verified')
+    expect(result.receipt.issues).not.toContain('daily_row_limit_possible')
+    expect(result.rows.every((row) => row.needsReview.length === 0)).toBe(true)
+    expect(f.dom.window.document.querySelector('form')!.outerHTML).toBe(before)
+    expect(JSON.stringify(result.receipt)).not.toContain('SECOND_PRIVATE_REFERENCE')
+  })
+
+  it('keeps individual cards at the cap incomplete instead of inventing another page', async () => {
+    const f = cappedFixture(630, 70)
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.receipt).toMatchObject({ pages: 3, approvalComplete: false })
+    expect(result.receipt.issues).toContain('card_split_incomplete')
+    expect(result.receipt.issues).toContain('daily_row_limit_possible')
+  })
+
+  it('honors the request budget even when a split is needed', async () => {
+    const f = cappedFixture()
+    const result = await collectHyundaiApi(
+      f.tab,
+      { from: '2026-10-02', to: '2026-10-02' },
+      { maxPages: 2 }
+    )
+    expect(f.fetch).toHaveBeenCalledTimes(2)
+    expect(result.receipt.approvalComplete).toBe(false)
+    expect(result.receipt.issues).toContain('page_limit')
+  })
+
+  it.each(['missing_card', 'row_reference', 'duplicate', 'changed_snapshot'])(
+    'does not recover approval coverage when split validation finds %s',
+    async (variant) => {
+      const f = cappedFixture()
+      if (variant === 'missing_card')
+        f.dom.window.document.querySelector('select')!.lastElementChild!.remove()
+      const original = f.fetch.getMockImplementation()!
+      f.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+        const response = await original(url, init)
+        const data = await response.json()
+        const reference = new URLSearchParams(String(init.body)).get('crno')
+        if (reference === 'PRIVATE_CARD_REFERENCE') {
+          if (variant === 'row_reference')
+            data.bdy.rcntAvItm[0].avUseItm.crno = 'OTHER_PRIVATE_REFERENCE'
+          if (variant === 'duplicate') data.bdy.rcntAvItm[1] = data.bdy.rcntAvItm[0]
+          if (variant === 'changed_snapshot') data.bdy.rcntAvItm[0].avUseItm.avAmt = 9999
+        }
+        return Response.json(data)
+      })
+      const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      expect(result.receipt.approvalComplete).toBe(false)
+      expect(result.receipt.issues).toContain('card_split_incomplete')
+      expect(result.receipt.issues).not.toContain('card_split_verified')
+      if (variant === 'changed_snapshot')
+        expect(result.rows[0].needsReview).toContain('source_identity_conflict')
+    }
+  )
+
+  it('rejects a changed card-filter echo during a split before trusting any split rows', async () => {
+    const f = cappedFixture()
+    const original = f.fetch.getMockImplementation()!
+    f.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+      const response = await original(url, init)
+      const data = await response.json()
+      if (new URLSearchParams(String(init.body)).get('crno') === 'PRIVATE_CARD_REFERENCE')
+        data.bdy.rcntSummaryInfo.crno = 'ALL_PRIVATE_CARDS'
+      return Response.json(data)
+    })
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.receipt.approvalComplete).toBe(false)
+    expect(result.receipt.issues).toContain('response_scope_unverified')
+    expect(result.rows).toHaveLength(630)
+    expect(result.rows.every((row) => row.needsReview.includes('card_split_incomplete'))).toBe(true)
+  })
+
+  it('preserves validated observations in review when a later split request fails', async () => {
+    const f = cappedFixture()
+    const original = f.fetch.getMockImplementation()!
+    f.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (new URLSearchParams(String(init.body)).get('crno') === 'SECOND_PRIVATE_REFERENCE')
+        throw new Error('PRIVATE_NETWORK_ERROR')
+      return original(url, init)
+    })
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.receipt).toMatchObject({ pages: 3, rowCount: 630, approvalComplete: false })
+    expect(result.receipt.issues).toContain('hyundai_request_unavailable')
+    expect(result.rows.every((row) => row.needsReview.includes('card_split_incomplete'))).toBe(true)
+    expect(JSON.stringify(result.receipt)).not.toContain('PRIVATE_NETWORK_ERROR')
+  })
+
+  it.each([false, true])(
+    'preserves a cancellation returned by either day and handles duplicate field conflict=%s',
+    async (conflict) => {
+      const f = fixture()
+      f.dom.window.document.querySelector<HTMLInputElement>('[name="dmfrClsf"]')!.value = ''
+      f.fetch.mockImplementation(async (_url: string, init: RequestInit) => {
+        const day = new URLSearchParams(String(init.body)).get('srtDt')!
+        return Response.json(
+          payload(
+            [
+              approval({
+                avClsf: '1',
+                avDt: '20261001',
+                avDttm: '20261001121314',
+                cancDttm: '20261002141516',
+                avAmt: conflict && day === '20261002' ? 9999 : 12500
+              })
+            ],
+            day
+          )
+        )
+      })
+      const result = await collectHyundaiApi(f.tab, { from: '2026-10-01', to: '2026-10-02' })
+      expect(result.rows).toHaveLength(1)
+      expect(result.receipt.rowCount).toBe(1)
+      expect(result.receipt.issues).not.toContain('approval_outside_requested_range')
+      expect(result.rows[0].needsReview).toContain('cancellation_query_basis_unverified')
+      expect(result.rows[0].cancellationAmount).toBeNull()
+      if (conflict) {
+        expect(result.rows[0].needsReview).toContain('source_identity_conflict')
+        expect(result.receipt.approvalComplete).toBe(false)
+      } else expect(result.rows[0].needsReview).not.toContain('source_identity_conflict')
+    }
+  )
+
   it.each([
     ['합성 카드 [1234]', 'card_option_token_missing'],
     ['합성 카드 0000-00**-****-****', 'card_option_token_tail_masked'],
-    ['합성 카드 0000-00**-****-*123', 'card_option_token_tail_three_digits'],
-    ['합성 카드 0000-00**-****-**12', 'card_option_token_tail_other']
+    ['합성 카드 0000-00**-****-*123', 'card_option_token_tail_partially_masked'],
+    ['합성 카드 0000-00**-****-**12', 'card_option_token_tail_partially_masked']
   ])(
     'identifies a matched reference but unresolved option format with %s',
     async (label, issue) => {
@@ -462,7 +681,11 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
     const f = fixture()
     f.dom.window.document.querySelector<HTMLInputElement>('[name="dmfrClsf"]')!.value = ''
     f.fetch.mockResolvedValue(Response.json(payload(items, '20261002', total)))
-    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    const result = await collectHyundaiApi(
+      f.tab,
+      { from: '2026-10-02', to: '2026-10-02' },
+      { maxPages: 1 }
+    )
     expect(result.receipt.approvalComplete).toBe(false)
     expect(result.receipt.issues).toContain(issue)
   })

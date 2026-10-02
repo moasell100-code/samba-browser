@@ -140,6 +140,8 @@ export const DEFAULT_SETTINGS = {
   bridgeToken: '',
   // Local finance importer credential file. Never include this path in synced settings.
   financeCollectorTokenFile: '',
+  // Device-local destination. Invalid values disable saving, never fall back to another database.
+  financeCollectorTransport: 'local' as 'local' | 'server-ssh' | 'disabled',
   // 밖에서 도는 하네스(samba-agent)의 읽기 API 주소. 자동화 페이지의 흐름 그래프·판정 카드가 읽는다.
   // 로컬 전용이라 127.0.0.1(또는 localhost) 만 허용한다 — 이 PC 값이라 동기화하지 않는다
   harnessApiUrl: 'http://127.0.0.1:47812',
@@ -333,6 +335,10 @@ export const settingsSchema = z.object({
   bridgePort: z.number().int().min(1024).max(65535).catch(DEFAULT_SETTINGS.bridgePort),
   bridgeToken: z.string().max(128).catch(DEFAULT_SETTINGS.bridgeToken),
   financeCollectorTokenFile: z.string().max(1024).catch(DEFAULT_SETTINGS.financeCollectorTokenFile),
+  financeCollectorTransport: z
+    .enum(['local', 'server-ssh', 'disabled'])
+    .default('local')
+    .catch('disabled'),
   harnessApiUrl: z.string().max(200).catch(DEFAULT_SETTINGS.harnessApiUrl),
   agentTabCleanupMinutes: z.number().int().min(0).catch(DEFAULT_SETTINGS.agentTabCleanupMinutes),
   activeWorkspaceId: z.number().int().min(0).catch(DEFAULT_SETTINGS.activeWorkspaceId),

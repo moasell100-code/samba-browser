@@ -4,6 +4,9 @@ import type { Tab } from '../browser/tab-manager'
 import type { CardApiCollector, CardApiResult, CardDateRange } from './card-api-types'
 import { dailyCardRanges, recentCardDateRange } from './card-date-range'
 import { issuerForCardUrl } from './card-page-diagnostics'
+import { saveCardCollectionOverSsh } from './card-save-ssh'
+
+export type CardSaveOptions = { tokenFile?: string; transport?: string; signal?: AbortSignal }
 
 const saveReceipt = z.object({
   batch_id: z.union([z.number().int(), z.string().max(100)]),
@@ -65,10 +68,40 @@ export async function collectRecentCard(options: {
       break
   }
   if (!parts.length) throw new Error('Card collection unavailable')
-  const rows = parts.flatMap((part) => part.rows)
+  const rows: CardApiResult['rows'] = []
+  const identities = new Map<string, Map<string, CardApiResult['rows'][number]>>()
+  let identityConflict = false
+  for (const row of parts.flatMap((part) => part.rows)) {
+    const identity = JSON.stringify([row.issuer, row.sourceId])
+    const payload = JSON.stringify(
+      Object.fromEntries(
+        Object.entries(row)
+          .filter(([key]) => key !== 'needsReview')
+          .sort(([a], [b]) => a.localeCompare(b))
+      )
+    )
+    let versions = identities.get(identity)
+    if (!versions) identities.set(identity, (versions = new Map()))
+    const same = versions.get(payload)
+    if (same) {
+      same.needsReview = [...new Set([...same.needsReview, ...row.needsReview])]
+      continue
+    }
+    const copy = { ...row, needsReview: [...row.needsReview] }
+    if (versions.size) {
+      identityConflict = true
+      for (const version of [...versions.values(), copy])
+        version.needsReview = [...new Set([...version.needsReview, 'source_identity_conflict'])]
+    }
+    versions.set(payload, copy)
+    rows.push(copy)
+  }
   const issues = [...new Set(parts.flatMap((part) => part.receipt.issues))]
+  if (identityConflict) issues.push('source_identity_conflict')
   const complete =
-    parts.length === dailyCardRanges(range).length && parts.every((part) => part.receipt.complete)
+    !identityConflict &&
+    parts.length === dailyCardRanges(range).length &&
+    parts.every((part) => part.receipt.complete)
   if (parts.length !== dailyCardRanges(range).length) issues.push('date_range_incomplete')
   return {
     rows,
@@ -79,6 +112,7 @@ export async function collectRecentCard(options: {
       pages: parts.reduce((total, part) => total + part.receipt.pages, 0),
       complete,
       approvalComplete:
+        !identityConflict &&
         parts.length === dailyCardRanges(range).length &&
         parts.every((part) => part.receipt.approvalComplete === true),
       issues,
@@ -87,20 +121,31 @@ export async function collectRecentCard(options: {
   }
 }
 
-/** Only the local finance backend receives private rows. MCP receives this safe receipt. */
+/** Only the configured finance backend receives private rows. MCP receives this safe receipt. */
 async function saveCardCollectionInternal(
   result: CardApiResult,
-  options: {
-    tokenFile: string
-    signal?: AbortSignal
-  }
+  options: CardSaveOptions
 ): Promise<z.infer<typeof saveReceipt>> {
+  const body = JSON.stringify({ ...result, collectedAt: new Date().toISOString() })
+  if (Buffer.byteLength(body) > 8 * 1024 * 1024) throw new Error('Finance collection too large')
+  if (options.transport === 'server-ssh') {
+    const raw = await saveCardCollectionOverSsh(body, options.signal)
+    const parsed = saveReceipt.safeParse(raw)
+    if (
+      !parsed.success ||
+      parsed.data.source !== result.receipt.issuer ||
+      parsed.data.range.from !== result.receipt.range.from ||
+      parsed.data.range.to !== result.receipt.range.to
+    )
+      throw new Error('Finance collector receipt invalid')
+    return parsed.data
+  }
+  if ((options.transport !== undefined && options.transport !== 'local') || !options.tokenFile)
+    throw new Error('Finance collector not configured')
   const info = await stat(options.tokenFile)
   if (!info.isFile() || info.size > 1024) throw new Error('Finance collector not configured')
   const token = (await readFile(options.tokenFile, 'utf8')).trim()
   if (!/^[A-Za-z0-9_-]{43,128}$/.test(token)) throw new Error('Finance collector not configured')
-  const body = JSON.stringify({ ...result, collectedAt: new Date().toISOString() })
-  if (Buffer.byteLength(body) > 8 * 1024 * 1024) throw new Error('Finance collection too large')
   const response = await fetch('http://127.0.0.1:8000/api/imports/browser-card', {
     method: 'POST',
     redirect: 'error',
@@ -143,10 +188,7 @@ async function saveCardCollectionInternal(
 
 export async function saveCardCollection(
   result: CardApiResult,
-  options: {
-    tokenFile: string
-    signal?: AbortSignal
-  }
+  options: CardSaveOptions
 ): Promise<z.infer<typeof saveReceipt>> {
   try {
     return await saveCardCollectionInternal(result, options)

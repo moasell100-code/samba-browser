@@ -228,14 +228,31 @@ describe('Samsung fixed private statement API collector', () => {
   })
 
   it.each([
-    {
-      identity: '123456789012345',
-      flags: ['card_number_length_15', 'card_tail_digits_available', 'card_official_tail_3_digits']
-    },
-    {
-      identity: '************317',
-      flags: ['card_number_length_15', 'card_official_tail_3_digits', 'card_prefix_masked']
-    },
+    { identity: '123456789012345', suffix: '2345' },
+    { identity: '************317', suffix: '*317' },
+    { identity: '1234********43**', suffix: '43**' }
+  ])(
+    'preserves actual last positions and a private stable key (%#)',
+    async ({ identity, suffix }) => {
+      const f = fixture((query) =>
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51') ? [row(1, { itgCdnoe: identity })] : []
+          )
+        )
+      )
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.rows[0].cardLast4).toBe(suffix)
+      expect(result.rows[0].cardKey).toMatch(/^[a-f0-9]{64}$/)
+      expect(result.rows[0].needsReview).toEqual([])
+      expect(result.receipt.approvalComplete).toBe(true)
+      expect(JSON.stringify(result.receipt)).not.toContain(identity)
+      expect(JSON.stringify(result.receipt)).not.toContain(suffix)
+    }
+  )
+
+  it.each([
     {
       identity: '1234-5678-9012-3456',
       flags: ['card_number_length_19', 'card_tail_digits_available']

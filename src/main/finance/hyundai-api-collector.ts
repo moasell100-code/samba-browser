@@ -51,6 +51,7 @@ const cardTailSchema = z
   .object({
     crno: z.string().min(1).max(256),
     status: z.enum(['matched', 'ambiguous', 'unavailable']),
+    queryable: z.boolean().optional(),
     diagnostic: z
       .enum([
         'token_matched',
@@ -58,13 +59,15 @@ const cardTailSchema = z
         'token_ambiguous',
         'token_tail_masked',
         'token_tail_three_digits',
+        'token_tail_partially_masked',
         'token_tail_other',
         'reference_ambiguous'
       ])
       .optional(),
     last4: z
       .string()
-      .regex(/^\d{4}$/)
+      .regex(/^[\d*]{4}$/)
+      .refine((value) => /\d/.test(value))
       .optional()
   })
   .strict()
@@ -222,11 +225,12 @@ function requestPlanScript(from: string, to: string): string {
       const label = (option.label || '').replace(/\\s+/g, ' ').trim();
       const runs = Array.from(label.matchAll(/[\\d*Xx●•]+(?:[ -]+[\\d*Xx●•]+)*/g), match => match[0].replace(/[ -]/g, ''));
       const patterns = runs.filter(token => token.length === 15 || token.length === 16);
-      if (patterns.length === 1 && /\\d{4}$/.test(patterns[0])) cardTails.push({ crno: option.value, status: 'matched', diagnostic: 'token_matched', last4: patterns[0].slice(-4) });
+      if (patterns.length === 1 && /\\d/.test(patterns[0].slice(-4))) cardTails.push({ crno: option.value, status: 'matched', queryable: !option.disabled, diagnostic: /\\d{4}$/.test(patterns[0]) ? 'token_matched' : 'token_tail_partially_masked', last4: patterns[0].slice(-4).replace(/[*Xx●•]/g, '*') });
       else {
         const ambiguous = patterns.length > 1 || runs.some(token => token.length >= 30);
-        const diagnostic = ambiguous ? 'token_ambiguous' : patterns.length === 0 ? 'token_missing' : /[*Xx●•]{4}$/.test(patterns[0]) ? 'token_tail_masked' : /(?:^|[^\\d])\\d{3}$/.test(patterns[0]) ? 'token_tail_three_digits' : 'token_tail_other';
-        cardTails.push({ crno: option.value, status: ambiguous ? 'ambiguous' : 'unavailable', diagnostic });
+        const last = patterns.length === 1 ? patterns[0].slice(-4) : '';
+        const diagnostic = ambiguous ? 'token_ambiguous' : patterns.length === 0 ? 'token_missing' : /[*Xx●•]{4}$/.test(last) ? 'token_tail_masked' : /(?:^|[^\\d])\\d{3}$/.test(patterns[0]) ? 'token_tail_three_digits' : /\\d/.test(last) && /[*Xx●•]/.test(last) ? 'token_tail_partially_masked' : 'token_tail_other';
+        cardTails.push({ crno: option.value, status: ambiguous ? 'ambiguous' : 'unavailable', queryable: !option.disabled, diagnostic });
       }
     }
     for (const entry of cardTails) {
@@ -406,8 +410,25 @@ export function parseHyundaiApiPage(
     const cardNumber = scalar(own(raw, 'cdno'), 128)
     const cardReference = scalar(own(raw, 'crno'), 128)
     const cardLabel = scalar(own(raw, 'cardNm'), 200)
-    // Official renderer uses the final four characters of cdno, including masked formats.
-    let tail = cardNumber ? /(\d{4})$/.exec(cardNumber)?.[1] : null
+    // Only a complete, verified-format card token may supply the displayed suffix.
+    // Preserve every hidden position as '*'; never reconstruct missing digits.
+    const compactNumber = cardNumber?.replace(/[ -]/g, '').replace(/[*Xx•●]/g, '*')
+    const normalizedNumber =
+      compactNumber && /^[\d*]{15,16}$/.test(compactNumber) ? compactNumber : null
+    const displayedSuffix = normalizedNumber?.slice(-4)
+    let tail = displayedSuffix && /\d/.test(displayedSuffix) ? displayedSuffix : null
+    const cardKey =
+      cardReference || normalizedNumber
+        ? createHash('sha256')
+            .update(
+              JSON.stringify([
+                'hyundai_card',
+                cardReference ? 'crno' : 'cdno',
+                cardReference || normalizedNumber
+              ])
+            )
+            .digest('hex')
+        : null
     const mapped = cardReference ? cardTails.filter((entry) => entry.crno === cardReference) : []
     if (!tail) {
       // Diagnostic flags describe only shapes and matching outcomes. They are
@@ -441,6 +462,9 @@ export function parseHyundaiApiPage(
               ? 'card_cdno_tail_masked'
               : 'card_cdno_tail_other'
         )
+        const last = cardNumber.slice(-4)
+        if (/^[\d*Xx•●]{4}$/.test(last) && /\d/.test(last) && /[*Xx•●]/.test(last))
+          issues.add('card_tail_partially_masked')
       } else issues.add('card_cdno_missing')
       if (
         mapped.length === 1 &&
@@ -451,6 +475,7 @@ export function parseHyundaiApiPage(
           'token_ambiguous',
           'token_tail_masked',
           'token_tail_three_digits',
+          'token_tail_partially_masked',
           'token_tail_other',
           'reference_ambiguous'
         ].includes(mapped[0].diagnostic)
@@ -462,12 +487,20 @@ export function parseHyundaiApiPage(
       review.push('card_mapping_ambiguous')
     else if (mapped[0]?.status === 'matched') {
       const mappedTail = mapped[0].last4
-      if (!mappedTail || !/^\d{4}$/.test(mappedTail)) review.push('card_mapping_unverified')
-      else if (tail && tail !== mappedTail) {
+      if (!mappedTail || !/^[\d*]{4}$/.test(mappedTail) || !/\d/.test(mappedTail))
+        review.push('card_mapping_unverified')
+      else if (
+        tail &&
+        [...tail].some(
+          (character, index) =>
+            character !== '*' && mappedTail[index] !== '*' && character !== mappedTail[index]
+        )
+      ) {
         review.push('card_last4_conflict')
         tail = null
-      } else tail = mappedTail
+      } else if (!tail) tail = mappedTail
     }
+    if (tail?.includes('*')) issues.add('card_tail_partially_masked')
     if (!approvalNumber || (!cardNumber && !cardReference)) review.push('identity_unverified')
     if (!tail) {
       review.push('card_last4_unavailable')
@@ -506,6 +539,7 @@ export function parseHyundaiApiPage(
       ...(eventDate ? { eventDate } : {}),
       ...(approvalNumber ? { approvalNumber } : {}),
       ...(tail ? { cardLast4: tail } : {}),
+      ...(cardKey ? { cardKey } : {}),
       ...(cardLabel ? { cardLabel } : {}),
       merchant,
       amount: Math.abs(amount),
@@ -632,6 +666,44 @@ export async function requestHyundaiApiPage(
   }
 }
 
+function transactionShape(row: CardApiRow): string {
+  return JSON.stringify([
+    row.issuer,
+    row.kind,
+    row.approvedAt,
+    row.eventDate,
+    row.approvalNumber,
+    row.cardLast4,
+    row.cardKey,
+    row.cardLabel,
+    row.merchant,
+    row.amount,
+    row.currency,
+    row.status,
+    row.cancellationAmount,
+    row.netAmount
+  ])
+}
+
+function responseScopeIssue(response: unknown, form: HyundaiApiForm, iso: string): string | null {
+  const summary = own(own(response, 'bdy') ?? response, 'rcntSummaryInfo')
+  if (date(own(summary, 'srtDt')) !== iso || date(own(summary, 'endDt')) !== iso)
+    return 'response_range_unverified'
+  for (const field of ['crno', 'zoneClsf', 'useClsf', 'usplClsf', 'dtClsf'] as const) {
+    if (scalar(own(summary, field), 256) !== form[field].trim()) return 'response_scope_unverified'
+  }
+  return null
+}
+
+function pageCoverageVerified(page: HyundaiApiPage): boolean {
+  return (
+    page.rowCount !== null &&
+    page.rows.length === page.rowCount &&
+    page.reportedTotal === page.rowCount &&
+    !page.issues.includes('daily_row_limit_possible')
+  )
+}
+
 export const collectHyundaiApi: CardApiCollector = async (tab, range, options = {}) => {
   const started = Date.now()
   const rows: CardApiRow[] = []
@@ -639,6 +711,22 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
   let approvalComplete = false
   let approvalCoverageValid = true
   const issues = new Set<string>()
+  const seenRows = new Map<string, CardApiRow>()
+  const retain = (row: CardApiRow): void => {
+    const previous = seenRows.get(row.sourceId)
+    if (previous) {
+      previous.needsReview = [...new Set([...previous.needsReview, ...row.needsReview])]
+      if (transactionShape(previous) !== transactionShape(row)) {
+        if (!previous.needsReview.includes('source_identity_conflict'))
+          previous.needsReview.push('source_identity_conflict')
+        issues.add('source_identity_conflict')
+        approvalCoverageValid = false
+      }
+      return
+    }
+    seenRows.set(row.sourceId, row)
+    rows.push(row)
+  }
   const result = (more: string[] = []): CardApiResult => ({
     rows,
     receipt: {
@@ -665,7 +753,9 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
     if (options.signal?.aborted) return result(['cancelled'])
     if (wc.isDestroyed() || wc.getURL() !== url) return result(['navigation_changed'])
     if (auth.state !== 'signed_in') return result(['authentication_required'])
-    const maxPages = Math.min(4, Math.max(0, Math.floor(options.maxPages ?? 4)))
+    // At most four daily all-card requests plus ten individual-card requests
+    // per day if the observed cap requires a verified split.
+    const maxPages = Math.min(44, Math.max(0, Math.floor(options.maxPages ?? 44)))
     if (!Number.isFinite(maxPages)) return result(['invalid_page_limit'])
     for (let day = Date.parse(from); day <= Date.parse(to); day += 86_400_000) {
       if (options.signal?.aborted) return result(['cancelled'])
@@ -696,38 +786,151 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       }
       pages++
       const response = await requestHyundaiApiPage(tab, form, options.signal)
-      const page = parseHyundaiApiPage(response, cardTails.data)
-      for (const issue of page.issues) issues.add(issue)
-      if (page.rowCount === null) return result()
-      if (
-        page.rows.length !== page.rowCount ||
-        page.reportedTotal !== page.rowCount ||
-        page.issues.includes('daily_row_limit_possible')
-      )
-        approvalCoverageValid = false
-      const summary = own(own(response, 'bdy') ?? response, 'rcntSummaryInfo')
-      if (date(own(summary, 'srtDt')) !== iso || date(own(summary, 'endDt')) !== iso)
-        return result(['response_range_unverified'])
-      // These exact keys are written back into the official query controls by
-      // rcntSummaryInfo(). Echo equality confirms that the server applied the
-      // separately constructed all-card/all-use/direct-period request.
-      for (const field of ['crno', 'zoneClsf', 'useClsf', 'usplClsf', 'dtClsf'] as const) {
-        if (scalar(own(summary, field), 256) !== form[field].trim())
-          return result(['response_scope_unverified'])
+      let page = parseHyundaiApiPage(response, cardTails.data)
+      if (page.rowCount === null) return result(page.issues)
+      const scopeIssue = responseScopeIssue(response, form, iso)
+      if (scopeIssue) return result([scopeIssue])
+      let dayCoverage = pageCoverageVerified(page)
+      let dayStopIssue: string | null = null
+      const capPossible = Math.max(page.rowCount, page.reportedTotal ?? 0) >= 630
+      if (!dayCoverage && capPossible) {
+        const references = cardTails.data
+          .filter((entry) => entry.queryable === true)
+          .map((entry) => entry.crno)
+        if (
+          !references.length ||
+          references.length > 10 ||
+          new Set(references).size !== references.length ||
+          references.includes(form.crno)
+        ) {
+          issues.add('card_split_scope_unverified')
+        } else {
+          const original = page
+          const splitRows: CardApiRow[] = []
+          const splitIssues = new Set<string>()
+          let splitValid = true
+          let splitCount = 0
+          let splitPages = 0
+          for (const reference of references) {
+            if (pages >= maxPages) {
+              splitValid = false
+              splitIssues.add('page_limit')
+              break
+            }
+            const cardForm = { ...form, crno: reference }
+            pages++
+            let cardResponse: unknown
+            try {
+              cardResponse = await requestHyundaiApiPage(tab, cardForm, options.signal)
+            } catch (error) {
+              splitValid = false
+              dayStopIssue =
+                error instanceof Error && SAFE_ERRORS.has(error.message)
+                  ? error.message
+                  : 'collection_unavailable'
+              break
+            }
+            const cardScopeIssue = responseScopeIssue(cardResponse, cardForm, iso)
+            if (cardScopeIssue) {
+              splitValid = false
+              dayStopIssue = cardScopeIssue
+              break
+            }
+            const part = parseHyundaiApiPage(cardResponse, cardTails.data)
+            splitPages++
+            for (const issue of part.issues) splitIssues.add(issue)
+            if (!pageCoverageVerified(part)) splitValid = false
+            const items = own(own(cardResponse, 'bdy') ?? cardResponse, 'rcntAvItm')
+            if (
+              !Array.isArray(items) ||
+              !items.every((item) => scalar(own(own(item, 'avUseItm'), 'crno'), 128) === reference)
+            ) {
+              splitValid = false
+              splitIssues.add('card_split_row_scope_unverified')
+            }
+            splitCount += part.reportedTotal ?? 0
+            splitRows.push(...part.rows)
+          }
+          const distinct = new Map<string, CardApiRow>()
+          for (const row of splitRows) {
+            const previous = distinct.get(row.sourceId)
+            if (previous) {
+              splitValid = false
+              splitIssues.add(
+                transactionShape(previous) === transactionShape(row)
+                  ? 'card_split_duplicate_identity'
+                  : 'source_identity_conflict'
+              )
+            } else distinct.set(row.sourceId, row)
+          }
+          if (
+            splitPages !== references.length ||
+            splitCount !== original.reportedTotal ||
+            distinct.size !== splitCount
+          ) {
+            splitValid = false
+            splitIssues.add('card_split_total_mismatch')
+          }
+          // Do not merge two moving snapshots into apparently complete data.
+          if (
+            !original.rows.every((row) => {
+              const counterpart = distinct.get(row.sourceId)
+              const unchanged =
+                counterpart && transactionShape(counterpart) === transactionShape(row)
+              if (
+                counterpart &&
+                !unchanged &&
+                !row.needsReview.includes('source_identity_conflict')
+              )
+                row.needsReview.push('source_identity_conflict')
+              return unchanged
+            })
+          ) {
+            splitValid = false
+            splitIssues.add('card_split_snapshot_changed')
+          }
+          for (const issue of splitIssues) issues.add(issue)
+          if (splitValid) {
+            page = {
+              rows: splitRows,
+              issues: [...splitIssues],
+              rowCount: splitCount,
+              reportedTotal: splitCount
+            }
+            dayCoverage = true
+            issues.add('card_split_verified')
+          } else {
+            issues.add('card_split_incomplete')
+            // Keep already validated observations even when a later split fails.
+            // The entire partial set is quarantined, not silently lost or booked.
+            const partial = [...original.rows, ...splitRows]
+            for (const row of partial)
+              if (!row.needsReview.includes('card_split_incomplete'))
+                row.needsReview.push('card_split_incomplete')
+            page = { ...original, rows: partial }
+          }
+        }
       }
+      for (const issue of page.issues) issues.add(issue)
+      if (!dayCoverage) approvalCoverageValid = false
       for (const row of page.rows) {
-        const observedDay =
-          row.kind === 'cancellation'
-            ? row.eventDate || row.approvedAt.slice(0, 10)
-            : row.approvedAt.slice(0, 10)
-        if (observedDay !== iso) {
+        const approvedDay = row.approvedAt.slice(0, 10)
+        const inRequestedDay =
+          approvedDay === iso || (row.kind === 'cancellation' && row.eventDate === iso)
+        if (!inRequestedDay) {
           issues.add('approval_outside_requested_range')
           approvalCoverageValid = false
           continue
         }
+        if (
+          row.kind === 'cancellation' &&
+          !row.needsReview.includes('cancellation_query_basis_unverified')
+        )
+          row.needsReview.push('cancellation_query_basis_unverified')
         for (const issue of row.needsReview) issues.add(issue)
-        rows.push(row)
+        retain(row)
       }
+      if (dayStopIssue) return result([dayStopIssue])
     }
     // Whole-card/zone/use controls, direct date range, total and their response
     // echoes are verified. A nonempty secondary region control remains unverified.

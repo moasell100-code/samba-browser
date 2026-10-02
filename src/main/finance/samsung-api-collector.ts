@@ -137,7 +137,14 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
   if (!approvalNumber || !cardIdentity) review.push('stable_approval_identity_unavailable')
   // This exact position is used by Samsung's public D0/D8 renderer. Do not export the full card.
   const tail = cardIdentity.slice(12, 16)
-  const cardLast4 = /^\d{4}$/.test(tail) ? tail : undefined
+  // The official renderer's fixed offset leaves only three characters on a
+  // 15-position card. Preserve its actual masked fourth position, not a guess.
+  const maskedTail = /^[\d*]{15,16}$/.test(cardIdentity) ? cardIdentity.slice(-4) : ''
+  const cardLast4 = /^\d{4}$/.test(tail)
+    ? tail
+    : /^[\d*]{4}$/.test(maskedTail) && /\d/.test(maskedTail)
+      ? maskedTail
+      : undefined
   if (!cardLast4)
     review.push('card_last4_unavailable', ...unavailableCardIdentityShape(raw.itgCdnoe))
   const cancellation = mode === 'cancellation' || signedAmount < 0
@@ -176,6 +183,7 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
     approvedAt,
     ...(eventDate && cancellation ? { eventDate } : {}),
     ...(approvalNumber ? { approvalNumber } : {}),
+    ...(cardIdentity ? { cardKey: digest([ISSUER, cardIdentity]) } : {}),
     ...(cardLast4 ? { cardLast4 } : {}),
     merchant,
     amount: Math.abs(signedAmount),

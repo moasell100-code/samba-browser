@@ -14,6 +14,9 @@ export interface CardApiRow {
   approvedAt: string
   eventDate?: string
   approvalNumber?: string
+  /** Private stable issuer card reference digest; never a reconstructed card number. */
+  cardKey?: string
+  /** Actual last four positions, preserving issuer-provided '*' masking. */
   cardLast4?: string
   cardLabel?: string
   merchant: string

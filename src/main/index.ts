@@ -174,7 +174,10 @@ app
           isBusy: () => ipc.agent.isRunning(),
           vault,
           settings: () => ipc.settings.get(),
-          collectorTokenFile: process.env.FINANCE_BROWSER_IMPORT_TOKEN_FILE
+          collectorTokenFile: process.env.FINANCE_BROWSER_IMPORT_TOKEN_FILE,
+          collectorTransport:
+            process.env.FINANCE_BROWSER_IMPORT_TRANSPORT ??
+            ipc.settings.get().financeCollectorTransport
         })
         if (shuttingDown) stopCardDiagnostics()
       } catch {

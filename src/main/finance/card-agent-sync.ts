@@ -62,17 +62,26 @@ function historyIssuer(url: string): FinanceCardIssuer | null {
 /** Configure only the local agent. No credentials, token paths, or private rows enter its output. */
 export async function createCardAgentSync(options: {
   tokenFile?: string
+  transport?: string
   signal?: AbortSignal
 }): Promise<CardAgentSync | undefined> {
   const tokenFile = options.tokenFile?.trim()
-  if (!tokenFile || !isAbsolute(tokenFile)) return undefined
-  try {
-    const info = await stat(tokenFile)
-    if (!info.isFile() || info.size < 43 || info.size > 1024) return undefined
-    if (!/^[A-Za-z0-9_-]{43,128}$/.test((await readFile(tokenFile, 'utf8')).trim()))
-      return undefined
-  } catch {
+  if (
+    options.transport !== undefined &&
+    options.transport !== 'local' &&
+    options.transport !== 'server-ssh'
+  )
     return undefined
+  if (options.transport !== 'server-ssh') {
+    if (!tokenFile || !isAbsolute(tokenFile)) return undefined
+    try {
+      const info = await stat(tokenFile)
+      if (!info.isFile() || info.size < 43 || info.size > 1024) return undefined
+      if (!/^[A-Za-z0-9_-]{43,128}$/.test((await readFile(tokenFile, 'utf8')).trim()))
+        return undefined
+    } catch {
+      return undefined
+    }
   }
   return async (tab) => {
     const wc = tab.view.webContents
@@ -133,7 +142,11 @@ export async function createCardAgentSync(options: {
           result.receipt.range.to !== range.to
         )
           return { ok: false, reason: 'sync_unavailable' }
-        const saved = await saveCardCollection(result, { tokenFile, signal })
+        const saved = await saveCardCollection(result, {
+          tokenFile,
+          transport: options.transport,
+          signal
+        })
         // Explicit projection: no row data, arbitrary issue text, or server identifiers.
         return {
           ok: true,
