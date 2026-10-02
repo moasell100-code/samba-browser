@@ -207,7 +207,7 @@ describe('deterministic current-card sync', () => {
     const { tab } = tabAt(CARD_HISTORY_URLS.lotte_card)
     mocks.session.mockResolvedValue({ issuer: 'lotte_card', state: 'signed_in' })
     mocks.collect.mockResolvedValue({
-      rows: [],
+      rows: privateResult.rows,
       receipt: { ...privateResult.receipt, issuer: 'lotte_card', complete: false }
     })
     mocks.save.mockResolvedValue({
@@ -225,6 +225,22 @@ describe('deterministic current-card sync', () => {
       reviewRows: 1
     })
     expect(mocks.collect.mock.calls[0][0].collect).toBe(mocks.lotte)
+  })
+
+  it('does not save a failed empty query as a successful empty ledger', async () => {
+    mocks.collect.mockResolvedValue({
+      rows: [],
+      receipt: {
+        ...privateResult.receipt,
+        rowCount: 0,
+        complete: false,
+        approvalComplete: false,
+        issues: ['service_error']
+      }
+    })
+    const run = (await createCardAgentSync({ tokenFile }))!
+    expect(await run(tabAt().tab)).toEqual({ ok: false, reason: 'collection_incomplete' })
+    expect(mocks.save).not.toHaveBeenCalled()
   })
 
   it('uses the separate Hyundai authenticated-session gate and collector', async () => {

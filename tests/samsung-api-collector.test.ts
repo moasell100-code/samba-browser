@@ -209,6 +209,8 @@ describe('Samsung fixed private statement API collector', () => {
     const result = await collectSamsungApi(f.tab, RANGE)
     expect(result.receipt).toMatchObject({ complete: false, approvalComplete: true })
     expect(result.receipt.issues).toContain('service_error')
+    expect(result.receipt.issues).toContain('service_error_ajax_callback_error')
+    expect(result.receipt.issues).toContain('service_error_cancellation_stream')
     expect(result.rows[0].needsReview).toEqual([])
   })
 
@@ -529,8 +531,60 @@ describe('Samsung fixed private statement API collector', () => {
       }
     })
     const failed = await collectSamsungApi(f.tab, RANGE)
-    expect(failed.receipt.issues).toEqual(['service_error'])
+    expect(failed.receipt.issues).toEqual([
+      'service_error_common_response_rejected',
+      'service_error_approval_stream',
+      'service_error'
+    ])
     expect(JSON.stringify(failed)).not.toContain('PRIVATE_SERVICE_ERROR')
+  })
+
+  it.each([
+    'response_missing',
+    'common_response_rejected',
+    'ajax_callback_error',
+    'invocation_exception'
+  ] as const)(
+    'reports only the fixed service failure category %s and does not retry',
+    async (failure) => {
+      const f = fixture((query) => {
+        if (failure === 'response_missing') query.success(null)
+        else if (failure === 'common_response_rejected')
+          query.success({
+            common: { procsRsDvC: 'PRIVATE_RESULT_CODE' },
+            message: 'PRIVATE_SERVER_MESSAGE'
+          })
+        else if (failure === 'ajax_callback_error') query.error()
+        else throw new Error('PRIVATE_JAVASCRIPT_EXCEPTION')
+      })
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.receipt.issues).toEqual([
+        'service_error_' + failure,
+        'service_error_approval_stream',
+        'service_error'
+      ])
+      expect(result.rows).toEqual([])
+      expect(result.receipt.approvalComplete).toBe(false)
+      expect(f.calls).toHaveLength(1)
+      for (const secret of [
+        'PRIVATE_RESULT_CODE',
+        'PRIVATE_SERVER_MESSAGE',
+        'PRIVATE_JAVASCRIPT_EXCEPTION'
+      ])
+        expect(JSON.stringify(result)).not.toContain(secret)
+    }
+  )
+
+  it('rejects a forged service failure category without returning it', async () => {
+    const f = fixture()
+    f.execute.mockResolvedValue({
+      ok: false,
+      issue: 'service_error',
+      serviceFailure: 'PRIVATE_ARBITRARY_ERROR'
+    })
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.receipt.issues).toEqual(['invalid_response'])
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_ARBITRARY_ERROR')
   })
 
   it('rejects malformed or out-of-range approval rows and preserves duplicate uncertainty', async () => {

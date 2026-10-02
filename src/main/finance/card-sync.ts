@@ -66,6 +66,7 @@ export async function collectRecentCard(options: {
     parts.push(part)
     if (part.receipt.issues.some((issue) => /signed_out|auth|session|navigation|abort/.test(issue)))
       break
+    if (!part.receipt.approvalComplete && part.receipt.issues.includes('service_error')) break
   }
   if (!parts.length) throw new Error('Card collection unavailable')
   const rows: CardApiResult['rows'] = []

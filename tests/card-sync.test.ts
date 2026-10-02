@@ -129,6 +129,20 @@ describe('recent private card collection', () => {
     expect(output.receipt).toMatchObject({ complete: false, approvalComplete: true, rowCount: 4 })
   })
 
+  it('stops repeated daily queries after an unverified service failure', async () => {
+    const collect = vi.fn(async (_tab: Tab, range: CardDateRange) =>
+      result(range, [], {
+        complete: false,
+        approvalComplete: false,
+        issues: ['service_error']
+      })
+    )
+    const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+    expect(collect).toHaveBeenCalledTimes(1)
+    expect(output.receipt.approvalComplete).toBe(false)
+    expect(output.receipt.issues).toContain('date_range_incomplete')
+  })
+
   it.each([false, undefined])(
     'does not assume four-day approval coverage when one day is %s',
     async (proof) => {

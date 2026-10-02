@@ -2342,7 +2342,7 @@ overlays left: ${after.length}${kept}`
 
   const syncFinance = tool(
     'sync_finance_recent',
-    'Collect all available pages for today and the previous three Korean calendar days from the currently selected official card history tab, then save to the configured local finance app with duplicate and cancellation handling. Uses deterministic code, not model extraction. Login is separate: use login first when required. Returns counts only, never transaction values. An incomplete collection is review-only; do not claim a complete ledger update unless complete is true. Unavailable in read-only mode.',
+    'Collect all available pages for today and the previous three Korean calendar days from the currently selected official card history tab, then save to the configured finance app with duplicate and cancellation handling. Uses deterministic code, not model extraction. Login is separate: use login first when required. Returns counts only, never transaction values. Verified approvals may be saved while cancellations remain pending; do not claim full reconciliation unless complete is true. A collection_incomplete error is not a zero-transaction result: reopen the same official history URL once, inspect the refreshed login state, and use login only if needed before one retry. Stop after another failure and preserve all login failure protections. Unavailable in read-only mode.',
     {},
     () =>
       guard(

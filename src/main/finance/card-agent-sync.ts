@@ -45,6 +45,7 @@ export type CardAgentSyncResult =
         | 'already_running'
         | 'interrupted'
         | 'sync_unavailable'
+        | 'collection_incomplete'
     }
 
 export type CardAgentSync = (tab: Tab) => Promise<CardAgentSyncResult>
@@ -142,6 +143,8 @@ export async function createCardAgentSync(options: {
           result.receipt.range.to !== range.to
         )
           return { ok: false, reason: 'sync_unavailable' }
+        if (!result.rows.length && !result.receipt.complete && !result.receipt.approvalComplete)
+          return { ok: false, reason: 'collection_incomplete' }
         const saved = await saveCardCollection(result, {
           tokenFile,
           transport: options.transport,

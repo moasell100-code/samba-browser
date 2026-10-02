@@ -46,7 +46,15 @@ const pageSchema = z.discriminatedUnion('ok', [
         'request_timeout',
         'service_error',
         'invalid_response'
-      ])
+      ]),
+      serviceFailure: z
+        .enum([
+          'response_missing',
+          'common_response_rejected',
+          'ajax_callback_error',
+          'invocation_exception'
+        ])
+        .optional()
     })
     .strict()
 ])
@@ -210,7 +218,7 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
   })
   return `(async () => {
     const input = ${input};
-    const fail = issue => ({ ok: false, issue });
+    const fail = (issue, serviceFailure) => ({ ok: false, issue, ...(serviceFailure ? { serviceFailure } : {}) });
     const url = new URL(location.href);
     if (url.origin !== 'https://www.samsungcard.com' || url.username || url.password || url.pathname !== '${HISTORY_PATH}') return fail('not_history_page');
     if (typeof scard !== 'object' || typeof scard.ajax !== 'function' || typeof ENV !== 'object' || !ENV.CONDITION || !crypto.subtle) return fail('page_not_ready');
@@ -244,7 +252,8 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
           timeout: ${REQUEST_MS},
           success: response => {
             try {
-              if (!response || typeof response !== 'object' || (response.common && String(response.common.procsRsDvC) !== '0')) return finish(fail('service_error'));
+              if (!response || typeof response !== 'object') return finish(fail('service_error', 'response_missing'));
+              if (response.common && String(response.common.procsRsDvC) !== '0') return finish(fail('service_error', 'common_response_rejected'));
               const totalText = String(response.totDlngCt ?? '');
               if (!/^\\d+$/.test(totalText)) return finish(fail('invalid_response'));
               const total = Number(totalText);
@@ -273,9 +282,9 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
               finish({ ok: true, total, rows, cursors: next, scope });
             } catch { finish(fail('invalid_response')); }
           },
-          error: () => finish(fail('service_error'))
+          error: () => finish(fail('service_error', 'ajax_callback_error'))
         });
-      } catch { finish(fail('service_error')); }
+      } catch { finish(fail('service_error', 'invocation_exception')); }
     });
   })()`
 }
@@ -368,7 +377,17 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
         const parsed = pageSchema.safeParse(raw)
         if (!parsed.success) throw new QueryStopped('invalid_response')
         const data = parsed.data
-        if (!data.ok) throw new QueryStopped(data.issue)
+        if (!data.ok) {
+          if (data.issue === 'service_error') {
+            if (data.serviceFailure) issues.add('service_error_' + data.serviceFailure)
+            issues.add(
+              mode === 'approval'
+                ? 'service_error_approval_stream'
+                : 'service_error_cancellation_stream'
+            )
+          }
+          throw new QueryStopped(data.issue)
+        }
         if (scope && data.scope !== scope) throw new QueryStopped('card_scope_changed')
         scope = data.scope
         if (total !== undefined && total !== data.total) throw new QueryStopped('total_changed')

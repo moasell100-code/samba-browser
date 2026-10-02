@@ -243,6 +243,8 @@ export async function startCardDiagnosticsRuntime(options: {
       const result = await collectRecentCard({ tab, collect, signal: controller.signal })
       assertTabContext(tab, url)
       if (!save) return { state: 'preview', receipt: result.receipt }
+      if (!result.rows.length && !result.receipt.complete && !result.receipt.approvalComplete)
+        return { state: 'collection_incomplete', receipt: result.receipt }
       const saved = await saveCardCollection(result, {
         tokenFile: options.collectorTokenFile,
         transport: options.collectorTransport,
