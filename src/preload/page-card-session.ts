@@ -42,6 +42,10 @@ const ACTIONS = 'a,button,[role="link"],[role="button"]'
 const SAMSUNG_LOGOUT_LINK = /^(?:javascript:\s*)?scard\.gnb\.logout_popup\s*\(\s*\)\s*;?$/
 const LOTTE_LOGOUT_CALL =
   /^(?:javascript:\s*)?(?:return\s+)?fnDoLogout\s*\(\s*\)\s*;?\s*(?:return\s+false\s*;?)?$/
+// Official Lotte header links prepend this fixed analytics call. Recognize its complete
+// public syntax only; do not execute it or accept arbitrary analytics arguments/scripts.
+const LOTTE_HEADER_LOGOUT_CALL =
+  /^GA_BtnEvent\s*\(\s*(['"])HEADER\1\s*,\s*(['"])UTILTY\2\s*,\s*this\s*\)\s*;\s*fnDoLogout\s*\(\s*\)\s*;?\s*(?:return\s+false\s*;?)?$/
 
 function hasLoginForm(doc: Document, issuer: NonNullable<CardSessionSnapshot['issuer']>): boolean {
   const selectors =
@@ -75,7 +79,14 @@ export function readCardSession(doc: Document = document): CardSessionSnapshot {
       )
     }
     if (issuer === 'lotte_card') {
-      return ['href', 'onclick'].some((name) => LOTTE_LOGOUT_CALL.test(el.getAttribute(name) ?? ''))
+      return (
+        ['href', 'onclick'].some((name) =>
+          LOTTE_LOGOUT_CALL.test((el.getAttribute(name) ?? '').trim())
+        ) ||
+        (el.tagName === 'A' &&
+          el.getAttribute('href')?.trim() === '#' &&
+          LOTTE_HEADER_LOGOUT_CALL.test((el.getAttribute('onclick') ?? '').trim()))
+      )
     }
     if (el.tagName !== 'A') return false
     try {

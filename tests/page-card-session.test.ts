@@ -159,6 +159,56 @@ describe('fixed card session reader', () => {
     ).toBe('signed_in')
   })
 
+  it.each([
+    "GA_BtnEvent('HEADER','UTILTY',this); fnDoLogout(); return false;",
+    ' GA_BtnEvent( "HEADER", "UTILTY", this ); fnDoLogout( ); ',
+    "GA_BtnEvent('HEADER','UTILTY',this);fnDoLogout()"
+  ])(
+    'recognizes only the exact visible Lotte header tracking-plus-logout action: %s',
+    (onclick) => {
+      const doc = at(sites[2].url, '<a href="#">로그아웃</a>')
+      doc.querySelector('a')!.setAttribute('onclick', onclick)
+      expect(readCardSession(doc)).toEqual({ issuer: 'lotte_card', state: 'signed_in' })
+      doc.querySelector('a')!.setAttribute('hidden', '')
+      expect(readCardSession(doc).state).toBe('unknown')
+      doc.querySelector('a')!.removeAttribute('hidden')
+      doc.body.insertAdjacentHTML('beforeend', sites[2].login)
+      expect(readCardSession(doc).state).toBe('signed_out')
+    }
+  )
+
+  it.each([
+    "GA_BtnEvent('HEADER','UTILTY',this); show('fnDoLogout()');",
+    "GA_BtnEvent('HEADER','UTILTY',this); fnDoLogoutPreview();",
+    "GA_BtnEvent('HEADER','UTILTY',this); other.fnDoLogout();",
+    "GA_BtnEvent('HEADER','UTILTY',this); fnDoLogout('account');",
+    "GA_BtnEvent('HEADER','UTILTY',this); fnDoLogout(); runMore();",
+    "GA_BtnEvent('HEADER','UTILTY',getTarget()); fnDoLogout();",
+    "GA_BtnEvent('HEADER','UTILTY',this.value); fnDoLogout();",
+    "GA_BtnEvent('HEADER','UTILTY','this'); fnDoLogout();",
+    "GA_BtnEvent('HEADER','UTILTY',this, 'fnDoLogout()');",
+    "GA_BtnEvent('FOOTER','CNT',this); fnDoLogout();",
+    "GA_BtnEvent(category,'UTILTY',this); fnDoLogout();",
+    "GA_BtnEvent('HEADER','UTILTY',this); if (false) fnDoLogout();"
+  ])('rejects broader or quoted Lotte tracking wrappers: %s', (onclick) => {
+    const doc = at(sites[2].url, '<a href="#">로그아웃</a>')
+    doc.querySelector('a')!.setAttribute('onclick', onclick)
+    expect(readCardSession(doc).state).toBe('unknown')
+  })
+
+  it('restricts the tracked Lotte logout marker to the observed anchor and label', () => {
+    const action = "GA_BtnEvent('HEADER','UTILTY',this); fnDoLogout(); return false;"
+    for (const html of [
+      '<button>로그아웃</button>',
+      '<a href="/other">로그아웃</a>',
+      '<a href="#">로그인</a>'
+    ]) {
+      const doc = at(sites[2].url, html)
+      doc.body.firstElementChild!.setAttribute('onclick', action)
+      expect(readCardSession(doc).state).toBe('unknown')
+    }
+  })
+
   it('never returns input values, body text, account labels or page URLs', () => {
     const doc = at(
       `${sites[2].url}?account=private-account`,
