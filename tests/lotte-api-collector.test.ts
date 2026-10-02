@@ -409,6 +409,52 @@ function collectorFixture(responses: unknown[] = [envelope()]): {
 }
 
 describe('Lotte verified all-option and Param pagination collector', () => {
+  function cardChoice(reference: string, tail: string, idx = '0'): string {
+    return `<li><input id="useCarditem${idx}" name="useCarditem" data-idx="${idx}"><label for="useCarditem${idx}">합성카드(${tail})</label><img data-enccdno="${reference}" data-idx="${idx}"></li>`
+  }
+  it('joins the private row reference to its exact card selector and preserves the masked tail', async () => {
+    const h = collectorFixture([
+      envelope(1, 1, lazyContent().replace('합성카드(1234)', '합성카드')),
+      detailEnvelope()
+    ])
+    h.dom.window.document.body.innerHTML += cardChoice('synthetic-private-card', '123*')
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0]).toMatchObject({ cardLast4: '123*', needsReview: [] })
+    expect(result.rows[0].cardKey).toMatch(/^[a-f0-9]{64}$/)
+    expect(JSON.stringify(result.receipt)).not.toMatch(/123|synthetic|합성/)
+  })
+  it('keeps unmatched and ambiguous private card references for review', async () => {
+    for (const choices of [
+      cardChoice('different-reference', '1234'),
+      cardChoice('synthetic-private-card', '1234') +
+        cardChoice('synthetic-private-card', '5678', '1')
+    ]) {
+      const h = collectorFixture([
+        envelope(1, 1, lazyContent().replace('합성카드(1234)', '합성카드')),
+        detailEnvelope()
+      ])
+      h.dom.window.document.body.innerHTML += choices
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.rows[0].needsReview).toContain('identity_unverified')
+      expect(result.rows[0].cardLast4).toBeUndefined()
+      expect(result.rows[0].cardKey).toBeUndefined()
+    }
+  })
+  it('does not merge two private references even when the tail and approval are identical', async () => {
+    const h = collectorFixture([
+      envelope(1, 1, lazyContent() + lazyContent({ cdno: 'second-private-card' })),
+      detailEnvelope(),
+      detailEnvelope()
+    ])
+    h.dom.window.document.body.innerHTML +=
+      cardChoice('synthetic-private-card', '1234') + cardChoice('second-private-card', '1234', '1')
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows[0].cardKey).not.toBe(result.rows[1].cardKey)
+    expect(result.rows[0].sourceId).not.toBe(result.rows[1].sourceId)
+    expect(result.rows.every((row) => row.needsReview.length === 0)).toBe(true)
+    expect(result.receipt.approvalComplete).toBe(true)
+  })
   it('enriches a lazy row using its exact official P103 form and matching labelled response', async () => {
     const h = collectorFixture([envelope(1, 1, lazyContent()), detailEnvelope()])
     const before = h.dom.window.document.body.innerHTML

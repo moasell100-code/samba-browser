@@ -5,6 +5,7 @@ import type { Tab } from '../browser/tab-manager'
 import type { CardApiCollector, CardApiResult, CardApiRow } from './card-api-types'
 import { summarizeLotteHistoryContent } from './lotte-response-summary'
 import { lotteResponseShapeIssues } from './lotte-api-diagnostics'
+import { lotteMethodDiagnostics } from './lotte-method-diagnostics'
 
 const HISTORY = 'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc'
 const QUERY = 'https://www.lottecard.co.kr/app/LPMCDAA_A102.lc'
@@ -46,6 +47,7 @@ const DETAIL_FIELDS = [
   'aprRsc'
 ] as const
 type DetailFields = ReadonlyMap<string, string>
+type CardIdentity = { cardKey: string; cardLast4: string }
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 const DETAIL_LABELS = [
   '이용일시',
@@ -246,7 +248,11 @@ function detailListFields(list: HTMLElement): Map<string, string> | null {
   }
   return result
 }
-function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiRow | null {
+function rowFromHtml(
+  row: HTMLElement,
+  verifiedDetails?: DetailFields,
+  verifiedCard?: CardIdentity
+): CardApiRow | null {
   const children = elements(row)
   const heading = children.find((node) => node.tagName === 'STRONG')!
   const info = children.find((node) => node.tagName === 'DIV' && node.classList.contains('info'))!
@@ -283,6 +289,7 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
     needsReview.push(
       label >= 0 ? `detail_method_label_${label}` : 'detail_method_label_unrecognized'
     )
+    needsReview.push(...lotteMethodDiagnostics(detailMethod))
   }
   const detailDate = details?.get('이용일시') ? date(details.get('이용일시')!) : null
   const approvedAt = detailDate ?? headDate
@@ -294,7 +301,9 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
       ? approvalText
       : undefined
   const cardMatch = /\((\d{4})\)$/.exec(cardLabel)
-  const cardLast4 = cardMatch?.[1]
+  const cardLast4 = verifiedCard?.cardLast4 ?? cardMatch?.[1]
+  if (verifiedCard && cardMatch && verifiedCard.cardLast4 !== cardMatch[1])
+    needsReview.push('card_identity_conflict')
   if (!approvalNumber || !cardLast4) needsReview.push('identity_unverified')
   let status: CardApiRow['status'] = 'approved'
   if (row.classList.contains('cancel')) {
@@ -377,7 +386,7 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
   }
   const identity =
     approvalNumber && cardLast4
-      ? ['lotte_card', cardLast4, approvedAt.slice(0, 10), approvalNumber]
+      ? ['lotte_card', verifiedCard?.cardKey ?? cardLast4, approvedAt.slice(0, 10), approvalNumber]
       : ['lotte_card', 'unverified', cardLabel, approvedAt, merchant, amount]
   return {
     issuer: 'lotte_card',
@@ -387,6 +396,7 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
     ...(cancellationDate ? { eventDate: cancellationDate.slice(0, 10) } : {}),
     ...(approvalNumber ? { approvalNumber } : {}),
     ...(cardLast4 ? { cardLast4 } : {}),
+    ...(verifiedCard ? { cardKey: verifiedCard.cardKey } : {}),
     cardLabel,
     merchant,
     amount,
@@ -402,7 +412,8 @@ function rowFromHtml(row: HTMLElement, verifiedDetails?: DetailFields): CardApiR
 export function parseLotteApiResponse(
   parsed: unknown,
   detailOverrides: ReadonlyMap<number, DetailFields> = new Map(),
-  detailIssues: ReadonlyMap<number, string> = new Map()
+  detailIssues: ReadonlyMap<number, string> = new Map(),
+  cardOverrides: ReadonlyMap<number, CardIdentity> = new Map()
 ): LotteApiPage {
   const status = own(own(parsed, 'Status'), 'code')
   if (status !== 0 && status !== '0')
@@ -417,7 +428,7 @@ export function parseLotteApiResponse(
   const rows: CardApiRow[] = []
   const issues = new Set<string>()
   for (const [index, element] of elements(root).entries()) {
-    const row = rowFromHtml(element, detailOverrides.get(index))
+    const row = rowFromHtml(element, detailOverrides.get(index), cardOverrides.get(index))
     if (!row) {
       issues.add('unrecognized_rows')
       continue
@@ -663,6 +674,7 @@ async function enrichLottePage(
   tab: Tab,
   response: unknown,
   mildolYn: unknown,
+  cardIdentities: ReadonlyMap<string, CardIdentity>,
   budget: { remaining: number },
   signal?: AbortSignal
 ): Promise<{ page: LotteApiPage; diagnostics: string[]; interruption?: string }> {
@@ -672,6 +684,7 @@ async function enrichLottePage(
   const doc = parse(own(response, 'Content') as string)
   const root = doc.querySelector('#useCardList') ?? doc
   const overrides = new Map<number, DetailFields>()
+  const cardOverrides = new Map<number, CardIdentity>()
   const flags = new Map<number, string>()
   const diagnostics = new Set<string>()
   let interruption: string | undefined
@@ -714,6 +727,8 @@ async function enrichLottePage(
         continue
       }
       overrides.set(index, fields)
+      const identity = cardIdentities.get(form.encCdno)
+      if (identity) cardOverrides.set(index, identity)
     } catch (error) {
       const reason = error instanceof Error ? error.message : ''
       interruption = signal?.aborted
@@ -729,7 +744,7 @@ async function enrichLottePage(
       break
     }
   }
-  const page = parseLotteApiResponse(response, overrides, flags)
+  const page = parseLotteApiResponse(response, overrides, flags, cardOverrides)
   return {
     page,
     diagnostics: [...diagnostics],
@@ -769,7 +784,22 @@ function requestPlanScript(from: string, to: string): string {
       if (fields.length === 1 && fields[0].value.length <= 128) mildolYn = fields[0].value;
     }
     const data = { ...original, ...filters, encCdno: '', startDt: ${JSON.stringify(from.replaceAll('-', ''))}, endDt: ${JSON.stringify(to.replaceAll('-', ''))}, pageNo: '1', nextKey: '', sortDv: '0' };
-    return { ok: true, data, mildolYn, scope: JSON.stringify({original, filters, mildolYn}) };
+    const cards = [];
+    const choices = [...document.querySelectorAll('input[name="useCarditem"]')];
+    if (choices.length > 100) return { ok: false };
+    for (const input of choices) {
+      const item = input.closest('li');
+      const idx = input.getAttribute('data-idx');
+      if (!item || !idx || !/^[0-9]{1,4}$/.test(idx)) continue;
+      const images = [...item.querySelectorAll('img[data-enccdno][data-idx]')].filter(image => image.getAttribute('data-idx') === idx);
+      const labels = [...(input.labels || [])];
+      if (images.length !== 1 || labels.length !== 1 || !item.contains(labels[0])) continue;
+      const reference = images[0].getAttribute('data-enccdno');
+      const matches = [...(labels[0].textContent || '').matchAll(/\\(([\\d*]{4})\\)/g)];
+      if (!reference || reference.length > 2048 || matches.length !== 1 || !/\\d/.test(matches[0][1])) continue;
+      cards.push({reference, tail: matches[0][1]});
+    }
+    return { ok: true, data, mildolYn, cards, scope: JSON.stringify({original, filters, mildolYn, cards}) };
   })()`
 }
 
@@ -828,6 +858,32 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
     const scope = own(plan, 'scope') as string
     if (scope.length > 16000) return result(['request_schema_unverified'])
     const form = own(plan, 'data') as LotteApiForm
+    const cardIdentities = new Map<string, CardIdentity>()
+    const conflictingReferences = new Set<string>()
+    const cards = own(plan, 'cards')
+    if (Array.isArray(cards)) {
+      for (const card of cards) {
+        const reference = own(card, 'reference')
+        const tail = own(card, 'tail')
+        if (
+          typeof reference !== 'string' ||
+          !reference ||
+          reference.length > 2048 ||
+          typeof tail !== 'string' ||
+          !/^[\d*]{4}$/.test(tail) ||
+          !/\d/.test(tail)
+        )
+          continue
+        if (cardIdentities.has(reference)) conflictingReferences.add(reference)
+        cardIdentities.set(reference, {
+          cardKey: createHash('sha256')
+            .update(JSON.stringify(['lotte_card', 'cdno', reference]))
+            .digest('hex'),
+          cardLast4: tail
+        })
+      }
+      for (const reference of conflictingReferences) cardIdentities.delete(reference)
+    }
     let expectedPage = 1
     let total: number | null = null
     let valid = true
@@ -901,6 +957,7 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
         tab,
         response,
         own(plan, 'mildolYn'),
+        cardIdentities,
         detailBudget,
         options.signal
       )
