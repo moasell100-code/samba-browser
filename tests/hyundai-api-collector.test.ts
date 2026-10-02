@@ -265,17 +265,28 @@ describe('Hyundai private approval response normalization', () => {
 })
 
 describe('Hyundai fixed authenticated read-only request and daily collector', () => {
-  it.each(['전체', '전체 카드', '카드 전체', '모든 카드'])(
-    'accepts the verified all-card option label %s without exposing its value',
-    async (label) => {
-      const f = fixture()
-      f.dom.window.document.querySelector('select option')!.textContent = label
-      const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
-      expect(f.fetch).toHaveBeenCalledOnce()
-      expect(result.rows).toHaveLength(1)
-      expect(result.receipt.approvalComplete).toBe(false)
-    }
-  )
+  it.each([
+    '전체',
+    '전체 카드',
+    '카드 전체',
+    '모든 카드',
+    '전체 보기',
+    '전체 카드 보기',
+    '카드 전체 보기',
+    '전체 카드 조회',
+    '전체 조회',
+    '카드 전체 조회',
+    '보유 카드 전체',
+    '전체 카드 선택',
+    '카드 전체 선택'
+  ])('accepts the verified all-card option label %s without exposing its value', async (label) => {
+    const f = fixture()
+    f.dom.window.document.querySelector('select option')!.textContent = label
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(f.fetch).toHaveBeenCalledOnce()
+    expect(result.rows).toHaveLength(1)
+    expect(result.receipt.approvalComplete).toBe(false)
+  })
 
   it('projects only known scope labels, counts and format enums, never form values or custom card names', async () => {
     const f = fixture()
@@ -361,6 +372,24 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
     expect(result.receipt.issues).toContain('card_selector_unverified')
     expect(f.fetch).not.toHaveBeenCalled()
   })
+
+  it.each(['개인 카드 전체', '가족 카드 전체', '전체(본인)', 'PRIVATE_CARD_NAME 전체'])(
+    'does not accept the partial or custom label %s merely because it contains the whole word',
+    async (label) => {
+      const f = fixture()
+      f.dom.window.document.querySelector('option')!.textContent = label
+      const inspected = await inspectHyundaiScope(f.tab)
+      expect(inspected).toMatchObject({
+        options: [
+          { label: 'unrecognized', optionLabel: 'unrecognized', hasWholeWord: true },
+          { label: 'unrecognized', optionLabel: 'unrecognized', hasWholeWord: false }
+        ]
+      })
+      const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      expect(result.receipt.issues).toContain('card_selector_unverified')
+      expect(f.fetch).not.toHaveBeenCalled()
+    }
+  )
 
   it('uses the fixed endpoint, existing session, redirects disabled, and form-urlencoded data', async () => {
     const f = fixture()

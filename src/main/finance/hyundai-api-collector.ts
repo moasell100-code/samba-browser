@@ -8,7 +8,21 @@ const HISTORY_PATH = '/cpa/cb/CPACB0101_01.hc'
 const QUERY_PATH = '/cpa/cb/apiCPACB0101_21.hc'
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_ROWS = 1000
-const ALL_CARD_LABELS = ['전체', '전체카드', '카드전체', '모든카드'] as const
+const ALL_CARD_LABELS = [
+  '전체',
+  '전체카드',
+  '카드전체',
+  '모든카드',
+  '전체보기',
+  '전체카드보기',
+  '카드전체보기',
+  '전체카드조회',
+  '전체조회',
+  '카드전체조회',
+  '보유카드전체',
+  '전체카드선택',
+  '카드전체선택'
+] as const
 const SAFE_ERRORS = new Set([
   'hyundai_request_cancelled',
   'hyundai_request_timeout',
