@@ -15,6 +15,7 @@ import { registerJaja } from './jaja/ipc'
 import type { JajaManager } from './jaja/manager'
 import { registerValidationFixtures } from './jaja/validation-fixtures'
 import { registerValidationIpc } from './jaja/validation-ipc'
+import { startCardDiagnosticsRuntime } from './finance/card-diagnostics-runtime'
 import {
   configureValidationProfile,
   isJajaValidation,
@@ -68,6 +69,7 @@ let db: Db | undefined
 let vault: VaultService | undefined
 let sync: SyncEngineHolder | undefined
 let jaja: JajaManager | undefined
+let stopCardDiagnostics: (() => void) | undefined
 
 // 종료 순서: vault.dispose()(lock 포함, DB 조회 발생) → db.close() 순으로 해야 한다.
 // 반대로 하면(예전 버그) db.close() 뒤에 창이 닫히며 vault.dispose() → lock() →
@@ -78,6 +80,7 @@ let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
+  stopCardDiagnostics?.()
   jaja?.dispose()
   try {
     // 폴링·Realtime 구독을 먼저 끊는다 — 닫히는 DB 에 질의가 더 날아가지 않게
@@ -160,6 +163,21 @@ app
     }
     // url 을 주지 않으면 설정에서 계산된 기본 주소(새 탭 페이지/홈/빈 페이지)로 연다
     tabs.create()
+    // A developer-started, temporary read-only MCP endpoint. No persistent bridge setting changes.
+    const cardSession = app.isPackaged ? undefined : process.env.SAMBA_CARD_MCP_SESSION
+    if (cardSession) {
+      try {
+        stopCardDiagnostics = await startCardDiagnosticsRuntime({
+          tabs,
+          tempDir: app.getPath('temp'),
+          sessionName: cardSession,
+          isBusy: () => ipc.agent.isRunning()
+        })
+        if (shuttingDown) stopCardDiagnostics()
+      } catch {
+        console.error('카드 조회 전용 MCP 시작 실패')
+      }
+    }
     // macOS 의 activate 재생성은 1단계(Windows 전용) 범위 밖이라 배선하지 않는다
   })
   .catch((e: unknown) => {
