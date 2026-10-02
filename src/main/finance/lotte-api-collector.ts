@@ -38,6 +38,38 @@ const DETAIL_LABELS = [
   '취소일자'
 ] as const
 const MAX_TEXT = 2000
+const REQUEST_MS = 20_000
+const SAFE_ERRORS = new Set([
+  'lotte_request_cancelled',
+  'lotte_navigation_changed',
+  'lotte_authentication_required',
+  'lotte_request_timeout',
+  'lotte_request_invalid',
+  'lotte_history_required',
+  'lotte_response_unavailable',
+  'lotte_response_limit',
+  'lotte_request_unavailable'
+])
+
+async function bounded<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new Error('lotte_request_cancelled')
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let abort: () => void = () => {}
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        abort = () => reject(new Error('lotte_request_cancelled'))
+        timeout = setTimeout(() => reject(new Error('lotte_request_timeout')), REQUEST_MS)
+        signal?.addEventListener('abort', abort, { once: true })
+        if (signal?.aborted) abort()
+      })
+    ])
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abort)
+  }
+}
 
 export interface LotteApiPage {
   rows: CardApiRow[]
@@ -108,7 +140,7 @@ function krw(value: string | undefined): number | null {
   const normalized = value.replace(/\s+/g, '')
   if (!/^(?:₩)?[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:원)?$/.test(normalized)) return null
   const amount = Number(normalized.replace(/[₩,원]/g, ''))
-  return Number.isSafeInteger(amount) && Math.abs(amount) <= 1_000_000_000_000 ? amount : null
+  return Number.isSafeInteger(amount) && Math.abs(amount) <= 999_999_999_999 ? amount : null
 }
 function detailFields(row: HTMLElement): Map<string, string> | null {
   const boxes = elements(row).filter(
@@ -147,10 +179,23 @@ function rowFromHtml(row: HTMLElement): CardApiRow | null {
   const headDate = metadata[0] && date(metadata[0])
   const cardLabel = metadata[1]
   const headAmount = amounts[0] === null ? null : krw(amounts[0])
-  if (!merchant || !headDate || !cardLabel || headAmount === null) return null
+  if (
+    !merchant ||
+    merchant.length > 255 ||
+    !headDate ||
+    !cardLabel ||
+    cardLabel.length > 120 ||
+    headAmount === null
+  )
+    return null
   const details = detailFields(row)
   const needsReview: string[] = []
   if (!details) needsReview.push('details_unverified')
+  if (!/[₩원]/.test(amounts[0] ?? '')) needsReview.push('currency_unverified')
+  const method = metadata[2]
+  if (method !== '일시불' && method !== '할부') needsReview.push('transaction_type_unverified')
+  const detailMethod = details?.get('거래유형')
+  if (detailMethod && detailMethod !== method) needsReview.push('transaction_type_conflict')
   const detailDate = details?.get('이용일시') ? date(details.get('이용일시')!) : null
   const approvedAt = detailDate ?? headDate
   if (detailDate && detailDate.slice(0, 10) !== headDate.slice(0, 10))
@@ -182,6 +227,27 @@ function rowFromHtml(row: HTMLElement): CardApiRow | null {
   let cancellationAmount: number | null = null
   let netAmount: number | null = status === 'approved' ? amount : null
   const cancellationDate = details?.get('취소일자') ? date(details.get('취소일자')!) : null
+  const detailRefund = krw(details?.get('취소금액'))
+  const cancellationLabel = details?.get('취소여부')
+  if (
+    details &&
+    cancellationLabel !== '정상' &&
+    !['취소', '취소완료', '부분취소'].includes(cancellationLabel ?? '')
+  ) {
+    needsReview.push('status_unverified')
+  }
+  if (
+    status === 'approved' &&
+    (['취소', '취소완료', '부분취소'].includes(cancellationLabel ?? '') ||
+      (detailRefund !== null && detailRefund !== 0) ||
+      cancellationDate)
+  ) {
+    status = 'unknown'
+    netAmount = null
+    needsReview.push('cancellation_state_conflict')
+  } else if (status !== 'approved' && cancellationLabel === '정상') {
+    needsReview.push('cancellation_state_conflict')
+  }
   if (status === 'cancelled' || status === 'partially_cancelled') {
     const explicitRefund = krw(details?.get('취소금액'))
     const statusRefund = /^부분취소\(-((?:\d+|\d{1,3}(?:,\d{3})+))원\)$/.exec(metadata[3] ?? '')
@@ -300,30 +366,33 @@ export async function requestLotteApiPage(
   if (!wc || wc.isDestroyed() || !historyUrl(wc.getURL())) throw new Error('lotte_history_required')
   const initialUrl = wc.getURL()
   const assertContext = (): void => {
-    if (signal?.aborted || wc.isDestroyed() || wc.getURL() !== initialUrl)
-      throw new Error('lotte_request_cancelled')
+    if (signal?.aborted) throw new Error('lotte_request_cancelled')
+    if (wc.isDestroyed() || wc.getURL() !== initialUrl) throw new Error('lotte_navigation_changed')
   }
-  const auth = await pageBridge.cardSession(tab)
+  const auth = await bounded(pageBridge.cardSession(tab), signal)
   assertContext()
   if (auth.issuer !== 'lotte_card' || auth.state !== 'signed_in')
     throw new Error('lotte_authentication_required')
   const timeout = new AbortController()
-  const timer = setTimeout(() => timeout.abort(), 20_000)
+  const timer = setTimeout(() => timeout.abort(), REQUEST_MS)
   timer.unref?.()
   let response: Response | undefined
   try {
-    response = await wc.session.fetch(QUERY, {
-      method: 'POST',
-      credentials: 'include',
-      redirect: 'error',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest',
-        Referer: HISTORY
-      },
-      body: body.toString(),
-      signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
-    })
+    response = await bounded(
+      wc.session.fetch(QUERY, {
+        method: 'POST',
+        credentials: 'include',
+        redirect: 'error',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest',
+          Referer: HISTORY
+        },
+        body: body.toString(),
+        signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
+      }),
+      signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
+    )
     assertContext()
     if (!response.ok || (response.url && response.url !== QUERY) || !response.body)
       throw new Error('lotte_response_unavailable')
@@ -336,46 +405,101 @@ export async function requestLotteApiPage(
     try {
       while (true) {
         assertContext()
-        const chunk = await reader.read()
+        const chunk = await bounded(
+          reader.read(),
+          signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
+        )
         if (chunk.done) break
         bytes += chunk.value.byteLength
         if (bytes > MAX_RESPONSE_BYTES) throw new Error('lotte_response_limit')
         chunks.push(Buffer.from(chunk.value))
       }
     } finally {
-      await reader.cancel().catch(() => undefined)
+      void reader.cancel().catch(() => undefined)
     }
     assertContext()
-    const finalAuth = await pageBridge.cardSession(tab)
+    const finalAuth = await bounded(pageBridge.cardSession(tab), signal)
     assertContext()
     if (finalAuth.issuer !== 'lotte_card' || finalAuth.state !== 'signed_in')
       throw new Error('lotte_authentication_required')
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch {
-    throw new Error('lotte_request_unavailable')
+  } catch (error) {
+    if (timeout.signal.aborted && !signal?.aborted) throw new Error('lotte_request_timeout')
+    throw new Error(
+      error instanceof Error && SAFE_ERRORS.has(error.message)
+        ? error.message
+        : 'lotte_request_unavailable'
+    )
   } finally {
     clearTimeout(timer)
-    await response?.body?.cancel().catch(() => undefined)
+    void response?.body?.cancel().catch(() => undefined)
   }
 }
 
-// A102 page/next-key/filter semantics are intentionally not guessed. The authenticated
-// query contract will supply the fixed request plan before this can claim completeness.
+/** Official form/radio semantics only; values stay in private main-process memory. No DOM writes. */
+function requestPlanScript(from: string, to: string): string {
+  return `(() => {
+    const url = new URL(location.href);
+    if (url.origin + url.pathname !== '${HISTORY}' || url.username || url.password) return { ok: false };
+    const forms = [...document.querySelectorAll('form[name="LPMCDAAAprUseList"]')];
+    if (forms.length !== 1) return { ok: false };
+    const form = forms[0];
+    const names = ${JSON.stringify(REQUEST_FIELDS)};
+    const original = {};
+    for (const name of names) {
+      const fields = [...form.querySelectorAll('input,select')].filter(field => field.name === name);
+      if (fields.length !== 1 || typeof fields[0].value !== 'string' || fields[0].value.length > (name === 'nextKey' ? 8192 : name === 'encCdno' ? 2048 : 128)) return { ok: false };
+      original[name] = fields[0].value;
+    }
+    const all = document.querySelectorAll('input[type="checkbox"]#useCarditemAll');
+    if (all.length !== 1) return { ok: false };
+    const filters = {};
+    for (const name of ['useCdDv','uplDv','useDv','stDv']) {
+      const options = [...document.querySelectorAll('input[type="radio"]')].filter(field => field.name === name + 'Radio');
+      const matched = options.filter(field => [...(field.labels || [])].some(label => label.textContent.replace(/\\s+/g, '').trim() === '전체'));
+      if (matched.length !== 1 || !/^[a-zA-Z0-9_-]{0,16}$/.test(matched[0].value)) return { ok: false };
+      filters[name] = matched[0].value;
+    }
+    if (!/^[1-9][0-9]{0,3}$/.test(original.pageRows) || Number(original.pageRows) > 1000) return { ok: false };
+    const data = { ...original, ...filters, encCdno: '', startDt: ${JSON.stringify(from.replaceAll('-', ''))}, endDt: ${JSON.stringify(to.replaceAll('-', ''))}, pageNo: '1', nextKey: '', sortDv: '0' };
+    return { ok: true, data, scope: JSON.stringify({original, filters}) };
+  })()`
+}
+
+function integer(value: unknown, max: number): number | null {
+  if ((typeof value !== 'number' && typeof value !== 'string') || !/^\d+$/.test(String(value)))
+    return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed <= max ? parsed : null
+}
+
 export const collectLotteApi: CardApiCollector = async (tab, range, options = {}) => {
   const started = Date.now()
-  const result = (issues: string[]): CardApiResult => ({
-    rows: [],
+  const rows: CardApiRow[] = []
+  const issues = new Set<string>(['cancellation_query_basis_unverified'])
+  let pages = 0
+  let approvalComplete = false
+  const result = (more: string[] = []): CardApiResult => ({
+    rows,
     receipt: {
       issuer: 'lotte_card',
       range,
-      pages: 0,
-      rowCount: 0,
+      pages,
+      rowCount: rows.length,
       complete: false,
-      issues,
+      approvalComplete,
+      issues: [...new Set([...issues, ...more])],
       elapsedMs: Date.now() - started
     }
   })
-  if (!date(range.from) || !date(range.to) || range.from > range.to)
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(range.from) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(range.to) ||
+    !date(range.from) ||
+    !date(range.to) ||
+    range.from > range.to ||
+    Date.parse(range.to) - Date.parse(range.from) > 3 * 86400000
+  )
     return result(['invalid_range'])
   if (options.signal?.aborted) return result(['cancelled'])
   try {
@@ -383,17 +507,121 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
     if (!wc || wc.isDestroyed() || !historyUrl(wc.getURL()))
       return result(['history_page_required'])
     const initial = wc.getURL()
-    const auth = await pageBridge.cardSession(tab)
+    const auth = await bounded(pageBridge.cardSession(tab), options.signal)
     if (options.signal?.aborted) return result(['cancelled'])
     if (wc.isDestroyed() || wc.getURL() !== initial) return result(['navigation_changed'])
     if (auth.issuer !== 'lotte_card' || auth.state !== 'signed_in')
       return result(['authentication_required'])
+    const maxPages = Math.min(100, options.maxPages ?? 100)
+    if (!Number.isInteger(maxPages) || maxPages < 1) return result(['invalid_page_limit'])
+    const planScript = requestPlanScript(range.from, range.to)
+    const plan = await bounded(wc.executeJavaScript(planScript, false), options.signal)
+    if (own(plan, 'ok') !== true || typeof own(plan, 'scope') !== 'string')
+      return result(['request_schema_unverified'])
+    const scope = own(plan, 'scope') as string
+    if (scope.length > 16000) return result(['request_schema_unverified'])
+    const form = own(plan, 'data') as LotteApiForm
+    let expectedPage = 1
+    let total: number | null = null
+    let valid = true
+    const seen = new Map<string, CardApiRow>()
+    for (;;) {
+      if (options.signal?.aborted) return result(['cancelled'])
+      if (wc.isDestroyed() || wc.getURL() !== initial) return result(['navigation_changed'])
+      if (pages >= maxPages) return result(['page_limit'])
+      const current = await bounded(wc.executeJavaScript(planScript, false), options.signal)
+      if (own(current, 'ok') !== true || own(current, 'scope') !== scope)
+        return result(['query_scope_changed'])
+      const request = { ...form, pageNo: String(expectedPage), nextKey: '' }
+      pages++
+      const response = await requestLotteApiPage(tab, request, options.signal)
+      const after = await bounded(wc.executeJavaScript(planScript, false), options.signal)
+      if (own(after, 'ok') !== true || own(after, 'scope') !== scope)
+        return result(['query_scope_changed'])
+      if (wc.isDestroyed() || wc.getURL() !== initial) return result(['navigation_changed'])
+      const param = own(response, 'Param')
+      const currentPage = integer(own(param, 'pageNo'), 10000)
+      const totalPages = integer(own(param, 'totalPage'), 10000)
+      if (
+        currentPage !== expectedPage ||
+        totalPages === null ||
+        (totalPages !== 0 && currentPage > totalPages)
+      )
+        return result(['pagination_unverified'])
+      if (total !== null && total !== totalPages) return result(['pagination_changed'])
+      total = totalPages
+      for (const name of [
+        'startDt',
+        'endDt',
+        'encCdno',
+        'useDv',
+        'useCdDv',
+        'stDv',
+        'uplDv',
+        'pageRows'
+      ] as const) {
+        const echo = own(param, name)
+        if (echo !== undefined && String(echo) !== request[name])
+          return result(['response_scope_mismatch'])
+      }
+      const page = parseLotteApiResponse(response)
+      if (page.rowCount === null)
+        return result([
+          ...(totalPages === 0 ? ['empty_response_schema_unverified'] : []),
+          ...page.issues
+        ])
+      for (const issue of page.issues) issues.add(issue)
+      if (page.rowCount !== page.rows.length || page.issues.length) valid = false
+      if (
+        (totalPages === 0 && page.rowCount !== 0) ||
+        (totalPages > 0 && page.rowCount === 0) ||
+        page.rowCount > Number(request.pageRows)
+      )
+        return result(['page_count_mismatch'])
+      for (const row of page.rows) {
+        if (!(
+          (row.approvedAt.slice(0, 10) >= range.from && row.approvedAt.slice(0, 10) <= range.to) ||
+          (row.eventDate && row.eventDate >= range.from && row.eventDate <= range.to)
+        )) {
+          valid = false
+          row.needsReview.push('outside_requested_range')
+        }
+        if (row.status !== 'approved')
+          row.needsReview = [
+            ...new Set([...row.needsReview, 'cancellation_query_basis_unverified'])
+          ]
+        const previous = seen.get(row.sourceId)
+        if (previous) {
+          valid = false
+          previous.needsReview = [
+            ...new Set([...previous.needsReview, 'duplicate_source_identity'])
+          ]
+          row.needsReview = [...new Set([...row.needsReview, 'duplicate_source_identity'])]
+          issues.add('duplicate_source_identity')
+        } else seen.set(row.sourceId, row)
+        for (const issue of row.needsReview) issues.add(issue)
+        rows.push(row)
+      }
+      if (totalPages === 0 || currentPage === totalPages) {
+        approvalComplete = valid
+        return result()
+      }
+      const next = integer(own(param, 'nextPageNo'), 10000)
+      if (next !== expectedPage + 1) return result(['pagination_not_advancing'])
+      expectedPage = next
+    }
+  } catch (error) {
+    const issue = error instanceof Error ? error.message : ''
     return result([
-      'request_schema_unverified',
-      'pagination_unverified',
-      'cancellation_query_basis_unverified'
+      options.signal?.aborted
+        ? 'cancelled'
+        : issue === 'lotte_authentication_required'
+          ? 'authentication_required'
+          : issue === 'lotte_navigation_changed'
+            ? 'navigation_changed'
+            : issue === 'lotte_request_timeout'
+              ? 'request_timeout'
+              : 'collection_unavailable'
     ])
-  } catch {
-    return result(['collection_unavailable'])
   }
 }

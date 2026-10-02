@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { JSDOM } from 'jsdom'
 import type { Tab } from '../src/main/browser/tab-manager'
 const auth = vi.hoisted(() => vi.fn())
 vi.mock('../src/main/browser/page-bridge', () => ({ pageBridge: { cardSession: auth } }))
@@ -10,6 +11,14 @@ import {
 } from '../src/main/finance/lotte-api-collector'
 
 const URL = 'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc'
+const windows: JSDOM[] = []
+beforeEach(() => {
+  auth.mockReset().mockResolvedValue({ issuer: 'lotte_card', state: 'signed_in' })
+})
+afterEach(() => {
+  for (const dom of windows.splice(0)) dom.window.close()
+  vi.useRealTimers()
+})
 function content(
   options: {
     approval?: string
@@ -125,6 +134,43 @@ describe('Lotte private API normalization', () => {
     expect(row.netAmount).toBeNull()
     expect(row.needsReview).toContain('cancellation_amount_unverified')
   })
+  it.each(['1,000원', '-1,000원'])(
+    'does not approve a normal header with a nonzero detail refund (%s)',
+    (refund) => {
+      const row = parseLotteApiResponse(response(content({ refund }))).rows[0]
+      expect(row.status).toBe('unknown')
+      expect(row.netAmount).toBeNull()
+      expect(row.needsReview).toContain('cancellation_state_conflict')
+    }
+  )
+  it('does not approve contradictory detail cancellation labels or a cancellation date', () => {
+    for (const html of [
+      content().replace('<span>정상</span>', '<span>취소완료</span>'),
+      content({ cancelDate: '2026.10.03' })
+    ]) {
+      const row = parseLotteApiResponse(response(html)).rows[0]
+      expect(row.status).toBe('unknown')
+      expect(row.needsReview).toContain('cancellation_state_conflict')
+    }
+  })
+  it('retains loan, missing KRW unit, and conflicting transaction labels for review', () => {
+    const loan = parseLotteApiResponse(response(content().replaceAll('일시불', '단기카드대출')))
+      .rows[0]
+    expect(loan.needsReview).toContain('transaction_type_unverified')
+    const noUnit = parseLotteApiResponse(
+      response(content().replace('<span>10,000원</span>', '<span>10,000</span>'))
+    ).rows[0]
+    expect(noUnit.needsReview).toContain('currency_unverified')
+    const conflict = parseLotteApiResponse(
+      response(
+        content().replace(
+          '거래유형<input value="not-a-business-value"><span>일시불</span>',
+          '거래유형<input value="not-a-business-value"><span>할부</span>'
+        )
+      )
+    ).rows[0]
+    expect(conflict.needsReview).toContain('transaction_type_conflict')
+  })
   it('flags disagreement between explicit cancellation amount and exact partial-cancellation label', () => {
     const row = parseLotteApiResponse(response(content({ kind: 'partial', refund: '4,000원' })))
       .rows[0]
@@ -175,22 +221,282 @@ describe('Lotte private API normalization', () => {
   })
 })
 
-describe('Lotte API collector boundary before query-contract verification', () => {
-  it('never claims complete or sends an API request without verified paging/filter semantics', async () => {
-    auth.mockResolvedValue({ issuer: 'lotte_card', state: 'signed_in' })
-    const current = tab()
-    const result = await collectLotteApi(current, { from: '2026-09-29', to: '2026-10-02' })
-    expect(result.rows).toEqual([])
+const FORM: LotteApiForm = {
+  encCdno: 'private-selected-card',
+  endDt: '20260101',
+  inqTeDt: '0',
+  nextKey: 'private-old-cursor',
+  pageNo: '7',
+  pageRows: '20',
+  ptnBnkYn: 'N',
+  schDv: '',
+  sortDv: '7',
+  sortObj: '0',
+  stDv: 'X',
+  startDt: '20260101',
+  uplDv: 'X',
+  useCdDv: 'X',
+  useDv: 'X'
+}
+const RANGE = { from: '2026-09-29', to: '2026-10-02' }
+function envelope(
+  pageNo = 1,
+  totalPage = 1,
+  html = content(),
+  param: Record<string, unknown> = {}
+): unknown {
+  return {
+    Status: { code: 0 },
+    Content: html,
+    Param: { pageNo, totalPage, nextPageNo: pageNo + 1, ...param }
+  }
+}
+function collectorFixture(responses: unknown[] = [envelope()]): {
+  dom: JSDOM
+  current: Tab
+  fetch: ReturnType<typeof vi.fn>
+  execute: ReturnType<typeof vi.fn>
+  navigate: () => void
+} {
+  const html = `<form name="LPMCDAAAprUseList">${Object.entries(FORM)
+    .map(([name, value]) => `<input type="hidden" name="${name}" value="${value}">`)
+    .join('')}</form>
+    <input type="checkbox" id="useCarditemAll">
+    ${['useCdDv', 'uplDv', 'useDv', 'stDv'].map((name) => `<label><input type="radio" name="${name}Radio" value="A_${name}">전체</label><label><input type="radio" name="${name}Radio" value="selected" checked>다른 옵션</label>`).join('')}`
+  const dom = new JSDOM(html, { url: URL, runScripts: 'outside-only' })
+  windows.push(dom)
+  let url = URL
+  const execute = vi.fn(async (script: string, userGesture: boolean) => {
+    expect(userGesture).toBe(false)
+    return dom.window.eval(script)
+  })
+  let index = 0
+  const fetch = vi.fn(
+    async () =>
+      new Response(JSON.stringify(responses[index++]), { headers: { 'Content-Type': 'text/html' } })
+  )
+  const current = {
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        getURL: () => url,
+        executeJavaScript: execute,
+        session: { fetch }
+      }
+    }
+  } as unknown as Tab
+  return {
+    dom,
+    current,
+    fetch,
+    execute,
+    navigate: () => {
+      url = 'https://www.lottecard.co.kr/app/LPMANAA_V200.lc'
+    }
+  }
+}
+
+describe('Lotte verified all-option and Param pagination collector', () => {
+  it('collects every confirmed page with exact date/all-card/all-type filters without mutating the website', async () => {
+    const h = collectorFixture([envelope(1, 2), envelope(2, 2, content({ approval: 'SYNTH-002' }))])
+    const before = h.dom.window.document.body.innerHTML
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(2)
     expect(result.receipt).toMatchObject({
+      pages: 2,
+      rowCount: 2,
       complete: false,
-      pages: 0,
-      issues: [
-        'request_schema_unverified',
-        'pagination_unverified',
-        'cancellation_query_basis_unverified'
-      ]
+      approvalComplete: true,
+      issues: ['cancellation_query_basis_unverified']
     })
-    expect(current.view.webContents.executeJavaScript).not.toHaveBeenCalled()
+    for (const [index, call] of h.fetch.mock.calls.entries()) {
+      expect(call[0]).toBe('https://www.lottecard.co.kr/app/LPMCDAA_A102.lc')
+      const body = new URLSearchParams(call[1].body)
+      expect(Object.fromEntries(body)).toEqual({
+        ...FORM,
+        encCdno: '',
+        startDt: '20260929',
+        endDt: '20261002',
+        pageNo: String(index + 1),
+        nextKey: '',
+        sortDv: '0',
+        useCdDv: 'A_useCdDv',
+        uplDv: 'A_uplDv',
+        useDv: 'A_useDv',
+        stDv: 'A_stDv'
+      })
+    }
+    expect(h.dom.window.document.body.innerHTML).toBe(before)
+    expect(JSON.stringify(result.receipt)).not.toMatch(/private-|SYNTH|합성|1234|A_use/)
+  })
+  it('stages incomplete-detail and unsupported rows for review while proving all-page coverage separately', async () => {
+    const h = collectorFixture([
+      envelope(1, 1, content({ details: false }).replaceAll('일시불', '단기카드대출'))
+    ])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(1)
+    expect(result.receipt.approvalComplete).toBe(true)
+    expect(result.receipt.issues).toEqual(
+      expect.arrayContaining([
+        'details_unverified',
+        'identity_unverified',
+        'transaction_type_unverified'
+      ])
+    )
+    expect(result.rows[0].needsReview.length).toBeGreaterThan(0)
+  })
+  it('requires both explicit zero total pages and a recognized empty root for empty coverage', async () => {
+    const full = '<ul id="useCardList" class="useCardList type02"></ul>'
+    const confirmed = await collectLotteApi(collectorFixture([envelope(1, 0, full)]).current, RANGE)
+    expect(confirmed.receipt.approvalComplete).toBe(true)
+    for (const value of [envelope(1, 0, ''), envelope(1, 1, full), envelope(1, 0)]) {
+      const result = await collectLotteApi(collectorFixture([value]).current, RANGE)
+      expect(result.receipt.approvalComplete).toBe(false)
+      expect(result.rows).toEqual([])
+    }
+  })
+  it.each([
+    { name: 'repeated page', second: envelope(1, 2), issue: 'pagination_unverified' },
+    { name: 'changing total', second: envelope(2, 3), issue: 'pagination_changed' },
+    {
+      name: 'wrong date echo',
+      second: envelope(2, 2, content(), { startDt: '20260101' }),
+      issue: 'response_scope_mismatch'
+    },
+    {
+      name: 'wrong card echo',
+      second: envelope(2, 2, content(), { encCdno: 'private-unrelated' }),
+      issue: 'response_scope_mismatch'
+    },
+    { name: 'missing Param', second: response(), issue: 'pagination_unverified' }
+  ])('preserves verified earlier rows on $name', async ({ second, issue }) => {
+    const result = await collectLotteApi(collectorFixture([envelope(1, 2), second]).current, RANGE)
+    expect(result.rows).toHaveLength(1)
+    expect(result.receipt.approvalComplete).toBe(false)
+    expect(result.receipt.issues).toContain(issue)
+  })
+  it('stops on missing/non-advancing next page and the caller page limit', async () => {
+    for (const nextPageNo of [1, undefined]) {
+      const h = collectorFixture([envelope(1, 2, content(), { nextPageNo })])
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.rows).toHaveLength(1)
+      expect(result.receipt.issues).toContain('pagination_not_advancing')
+      expect(h.fetch).toHaveBeenCalledTimes(1)
+    }
+    const h = collectorFixture([envelope(1, 2)])
+    const result = await collectLotteApi(h.current, RANGE, { maxPages: 1 })
+    expect(result.rows).toHaveLength(1)
+    expect(result.receipt.approvalComplete).toBe(false)
+    expect(result.receipt.issues).toContain('page_limit')
+  })
+  it('retains duplicate identities for review and refuses complete approval coverage', async () => {
+    const result = await collectLotteApi(
+      collectorFixture([envelope(1, 2), envelope(2, 2)]).current,
+      RANGE
+    )
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows.every((row) => row.needsReview.includes('duplicate_source_identity'))).toBe(
+      true
+    )
+    expect(result.receipt.approvalComplete).toBe(false)
+  })
+  it('retains an outside-range row for review but accepts an in-range cancellation event', async () => {
+    const html = content().replaceAll('2026.10.02', '2026.09.28')
+    const result = await collectLotteApi(collectorFixture([envelope(1, 1, html)]).current, RANGE)
+    expect(result.rows[0].needsReview).toContain('outside_requested_range')
+    expect(result.receipt.approvalComplete).toBe(false)
+    const cancel = content({ kind: 'cancelled', cancelDate: '2026.10.02' })
+      .replaceAll('2026.10.02', '2026.09.28')
+      .replace(
+        '취소일자<input value="not-a-business-value"><span>2026.09.28</span>',
+        '취소일자<input value="not-a-business-value"><span>2026.10.02</span>'
+      )
+    const kept = await collectLotteApi(collectorFixture([envelope(1, 1, cancel)]).current, RANGE)
+    expect(kept.receipt.approvalComplete).toBe(true)
+    expect(kept.rows[0].needsReview).toContain('cancellation_query_basis_unverified')
+  })
+  it('does not send queries if the exact form or unique all-option semantics cannot be proven', async () => {
+    for (const mutate of [
+      (doc: Document): void => {
+        doc.querySelector('form')!.remove()
+      },
+      (doc: Document): void => {
+        doc.querySelector('input[name="useDvRadio"]')!.parentElement!.lastChild!.textContent =
+          '일시불'
+      },
+      (doc: Document): void => {
+        doc.body.append(
+          doc.querySelector('input[name="useDvRadio"]')!.parentElement!.cloneNode(true)
+        )
+      },
+      (doc: Document): void => {
+        ;(doc.querySelector('input[name="pageRows"]') as HTMLInputElement).value = '1001'
+      }
+    ]) {
+      const h = collectorFixture()
+      mutate(h.dom.window.document)
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.receipt.issues).toContain('request_schema_unverified')
+      expect(h.fetch).not.toHaveBeenCalled()
+    }
+  })
+  it('rejects a changed private scope even on the final page', async () => {
+    const h = collectorFixture()
+    h.fetch.mockImplementationOnce(async () => {
+      ;(h.dom.window.document.querySelector('input[name="encCdno"]') as HTMLInputElement).value =
+        'private-changed'
+      return new Response(JSON.stringify(envelope()))
+    })
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows).toEqual([])
+    expect(result.receipt.issues).toContain('query_scope_changed')
+  })
+  it('preserves earlier rows and sanitizes a later fetch failure', async () => {
+    const h = collectorFixture([envelope(1, 2)])
+    h.fetch
+      .mockImplementationOnce(async () => new Response(JSON.stringify(envelope(1, 2))))
+      .mockRejectedValueOnce(new Error('private server details'))
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(1)
+    expect(result.receipt.approvalComplete).toBe(false)
+    expect(result.receipt.issues).toContain('collection_unavailable')
+    expect(JSON.stringify(result.receipt)).not.toContain('private')
+  })
+  it('stops before posting when authentication expires or navigation changes during planning', async () => {
+    const h = collectorFixture()
+    auth
+      .mockResolvedValueOnce({ issuer: 'lotte_card', state: 'signed_in' })
+      .mockResolvedValue({ issuer: 'lotte_card', state: 'signed_out' })
+    const expired = await collectLotteApi(h.current, RANGE)
+    expect(expired.receipt.issues).toContain('authentication_required')
+    expect(h.fetch).not.toHaveBeenCalled()
+    auth.mockResolvedValue({ issuer: 'lotte_card', state: 'signed_in' })
+    const second = collectorFixture()
+    second.execute.mockImplementationOnce(async (script) => {
+      second.navigate()
+      return second.dom.window.eval(script)
+    })
+    const moved = await collectLotteApi(second.current, RANGE)
+    expect(moved.receipt.issues).toContain('navigation_changed')
+    expect(second.fetch).not.toHaveBeenCalled()
+  })
+  it('bounds a hanging private form read and respects cancellation without requesting the server', async () => {
+    vi.useFakeTimers()
+    const h = collectorFixture()
+    h.execute.mockImplementationOnce(() => new Promise(() => {}))
+    const pending = collectLotteApi(h.current, RANGE)
+    await vi.advanceTimersByTimeAsync(20001)
+    const result = await pending
+    expect(result.receipt.issues).toContain('request_timeout')
+    expect(h.fetch).not.toHaveBeenCalled()
+    const second = collectorFixture()
+    second.execute.mockImplementationOnce(() => new Promise(() => {}))
+    const controller = new AbortController()
+    const cancelled = collectLotteApi(second.current, RANGE, { signal: controller.signal })
+    await vi.advanceTimersByTimeAsync(1)
+    controller.abort()
+    expect((await cancelled).receipt.issues).toContain('cancelled')
+    expect(second.fetch).not.toHaveBeenCalled()
   })
   it('refuses a different origin/path, unauthenticated session, invalid range, or prior cancellation', async () => {
     const range = { from: '2026-09-29', to: '2026-10-02' }
@@ -198,20 +504,23 @@ describe('Lotte API collector boundary before query-contract verification', () =
       'https://www.lottecard.co.kr.evil.test/app/LPMCDAA_V100.lc',
       'https://www.lottecard.co.kr/app/LPMANAA_V200.lc'
     ]) {
-      expect((await collectLotteApi(tab(url), range)).receipt.issues).toEqual([
+      expect((await collectLotteApi(tab(url), range)).receipt.issues).toContain(
         'history_page_required'
-      ])
+      )
     }
     auth.mockResolvedValue({ issuer: 'lotte_card', state: 'signed_out' })
-    expect((await collectLotteApi(tab(), range)).receipt.issues).toEqual([
+    expect((await collectLotteApi(tab(), range)).receipt.issues).toContain(
       'authentication_required'
-    ])
+    )
     expect(
       (await collectLotteApi(tab(), { from: '2026-02-30', to: range.to })).receipt.issues
-    ).toEqual(['invalid_range'])
+    ).toContain('invalid_range')
+    expect(
+      (await collectLotteApi(tab(), { from: '2026-09-28', to: range.to })).receipt.issues
+    ).toContain('invalid_range')
     expect(
       (await collectLotteApi(tab(), range, { signal: AbortSignal.abort() })).receipt.issues
-    ).toEqual(['cancelled'])
+    ).toContain('cancelled')
   })
 })
 
@@ -298,23 +607,24 @@ describe('fixed private Lotte API transport', () => {
       h.change()
       return new Response('private response')
     })
-    await expect(requestLotteApiPage(h.current, form)).rejects.toThrow('lotte_request_unavailable')
+    await expect(requestLotteApiPage(h.current, form)).rejects.toThrow('lotte_navigation_changed')
     const second = transportFixture()
     auth
       .mockResolvedValueOnce({ issuer: 'lotte_card', state: 'signed_in' })
       .mockResolvedValueOnce({ issuer: 'lotte_card', state: 'signed_out' })
     await expect(requestLotteApiPage(second.current, form)).rejects.toThrow(
-      'lotte_request_unavailable'
+      'lotte_authentication_required'
     )
   })
   it('bounds response bytes and keeps malformed body errors fixed', async () => {
     auth.mockResolvedValue({ issuer: 'lotte_card', state: 'signed_in' })
-    for (const body of ['x'.repeat(2 * 1024 * 1024 + 1), 'private malformed response']) {
+    for (const [body, expected] of [
+      ['x'.repeat(2 * 1024 * 1024 + 1), 'lotte_response_limit'],
+      ['private malformed response', 'lotte_request_unavailable']
+    ]) {
       const h = transportFixture()
       h.fetch.mockResolvedValueOnce(new Response(body))
-      await expect(requestLotteApiPage(h.current, form)).rejects.toThrow(
-        /^lotte_request_unavailable$/
-      )
+      await expect(requestLotteApiPage(h.current, form)).rejects.toThrow(expected)
     }
   })
 })
