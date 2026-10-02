@@ -801,9 +801,9 @@ function requestPlanScript(from: string, to: string): string {
       const labels = [...(input.labels || [])];
       if (images.length !== 1 || labels.length !== 1 || !item.contains(labels[0])) continue;
       const reference = images[0].getAttribute('data-enccdno');
-      const matches = [...(labels[0].textContent || '').matchAll(/\\(([\\d*]{4})\\)/g)];
-      if (!reference || reference.length > 2048 || matches.length !== 1 || !/\\d/.test(matches[0][1])) continue;
-      cards.push({reference, tail: matches[0][1]});
+      const matches = [...(labels[0].textContent || '').matchAll(/\\(([\\d*]{4,5})\\)/g)];
+      if (!reference || reference.length > 2048 || matches.length !== 1 || !/\\d/.test(matches[0][1].slice(-4))) continue;
+      cards.push({reference, tail: matches[0][1].slice(-4)});
     }
     return { ok: true, data, mildolYn, cards, scope: JSON.stringify({original, filters, mildolYn, cards}) };
   })()`
@@ -935,10 +935,7 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
           return result(['response_scope_mismatch'])
       }
       let page = parseLotteApiResponse(response)
-      if (
-        page.rowCount === null ||
-        page.rows.some((row) => row.needsReview.includes('details_unverified'))
-      ) {
+      if (page.rowCount === null) {
         for (const issue of lotteResponseShapeIssues(response)) issues.add(issue)
       }
       if (page.rowCount === null)
@@ -968,6 +965,8 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
         options.signal
       )
       page = enriched.page
+      if (page.rows.some((row) => row.needsReview.length))
+        for (const issue of lotteResponseShapeIssues(response)) issues.add(issue)
       if (page.rows.some((row) => row.needsReview.includes('identity_unverified'))) {
         issues.add(`card_selector_known_${cardIdentities.size}`)
         issues.add(

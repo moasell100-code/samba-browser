@@ -447,6 +447,16 @@ describe('Lotte verified all-option and Param pagination collector', () => {
       expect(result.rows[0].cardKey).toBeUndefined()
     }
   })
+  it('retains the actual final four positions when a card selector displays five trailing positions', async () => {
+    const h = collectorFixture([
+      envelope(1, 1, lazyContent().replace('합성카드(1234)', '합성카드')),
+      detailEnvelope()
+    ])
+    h.dom.window.document.body.innerHTML += cardChoice('synthetic-private-card', '9*234')
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0]).toMatchObject({ cardLast4: '*234', needsReview: [] })
+    expect(result.rows[0].cardKey).toMatch(/^[a-f0-9]{64}$/)
+  })
   it('does not merge two private references even when the tail and approval are identical', async () => {
     const h = collectorFixture([
       envelope(1, 1, lazyContent() + lazyContent({ cdno: 'second-private-card' })),
