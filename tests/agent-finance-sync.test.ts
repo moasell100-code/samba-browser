@@ -106,6 +106,7 @@ describe('sync_finance_recent agent tool', () => {
     s.sync.mockRejectedValueOnce(new Error('PRIVATE token account merchant'))
     expect(await s.call()).toBe('error: finance sync unavailable')
     expect(s.onStep).toHaveBeenCalledWith(expect.any(String), false)
+    expect(s.dialog).toHaveBeenCalledOnce()
   })
 
   it('keeps deterministic failures visible to the model and progress UI', async () => {

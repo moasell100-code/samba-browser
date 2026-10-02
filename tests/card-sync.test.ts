@@ -115,6 +115,45 @@ describe('recent private card collection', () => {
     )
   })
 
+  it('keeps approval coverage separate from unresolved cancellations across all four days', async () => {
+    const collect = vi.fn(async (_tab: Tab, range: CardDateRange) =>
+      result(range, [row(range.from)], {
+        complete: false,
+        approvalComplete: true,
+        issues: ['cancellation_query_basis_unverified']
+      })
+    )
+    const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+    expect(output.receipt).toMatchObject({ complete: false, approvalComplete: true, rowCount: 4 })
+  })
+
+  it.each([false, undefined])(
+    'does not assume four-day approval coverage when one day is %s',
+    async (proof) => {
+      const collect = vi.fn(async (_tab: Tab, range: CardDateRange) =>
+        result(range, [], {
+          complete: false,
+          approvalComplete: range.from === RANGE.from ? proof : true
+        })
+      )
+      const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+      expect(output.receipt.approvalComplete).toBe(false)
+    }
+  )
+
+  it('requires all four dates even if the rows collected before an interruption have approval proof', async () => {
+    const collect = vi.fn(async (_tab: Tab, range: CardDateRange) =>
+      result(range, [], {
+        complete: false,
+        approvalComplete: true,
+        issues: ['signed_out']
+      })
+    )
+    const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+    expect(collect).toHaveBeenCalledTimes(1)
+    expect(output.receipt.approvalComplete).toBe(false)
+  })
+
   it('retains verified daily rows when another daily page is incomplete', async () => {
     const collect = vi.fn(async (_tab: Tab, range: CardDateRange) =>
       result(

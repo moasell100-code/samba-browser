@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
   find: vi.fn(),
   fill: vi.fn(),
   hint: vi.fn(),
-  snapshot: vi.fn()
+  snapshot: vi.fn(),
+  hyundaiAuth: vi.fn(),
+  lotteAuth: vi.fn()
 }))
 vi.mock('../src/main/finance/samsung-login-preparation', () => ({
   prepareSamsungIdLogin: mocks.prepare
@@ -24,6 +26,8 @@ vi.mock('../src/main/browser/page-bridge', () => ({
     fillValue: mocks.fill,
     signedInHint: mocks.hint,
     snapshot: mocks.snapshot,
+    hyundaiAuth: mocks.hyundaiAuth,
+    lotteAuth: mocks.lotteAuth,
     waitForLoad: vi.fn(async () => {})
   }
 }))
@@ -35,7 +39,15 @@ const fields = { stage: 'password', username: 2, password: 3, submit: 4 }
 
 // Preserve inferred mock signatures in the synthetic credential fixture.
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-function fixture(options: { url?: string; mode?: ToolContext['mode']; locked?: boolean } = {}) {
+function fixture(
+  options: {
+    url?: string
+    mode?: ToolContext['mode']
+    locked?: boolean
+    dialog?: string
+    limit?: boolean
+  } = {}
+) {
   let url = options.url ?? LOGIN
   const account = {
     id: 1,
@@ -60,21 +72,31 @@ function fixture(options: { url?: string; mode?: ToolContext['mode']; locked?: b
   const navigate = vi.fn(async (_id: string, next: string) => {
     url = next
   })
+  let queuedDialog = options.dialog
+  const takeDialog = vi.fn(() => {
+    const message = queuedDialog
+    queuedDialog = undefined
+    return message
+  })
+  const tick = vi.fn(() => (options.limit ? 'limit reached' : null))
   const context = {
-    tabs: { active: () => tab, list: () => [], navigate },
+    tabs: { active: () => tab, list: () => [], navigate, takeDialogMessage: takeDialog },
     vault,
     mode: options.mode ?? 'full',
     dangerWords: [],
     finalConfirm: false,
     confirm: vi.fn(async () => true),
-    tick: () => null,
+    tick,
     onStep: vi.fn(),
-    vaultAutoSubmit: false
+    vaultAutoSubmit: false,
+    hyundaiAttempts: { clearSignedInProfile: vi.fn() },
+    lotteAttempts: { clearSignedInProfile: vi.fn() },
+    lotteKeypadAttempts: { clearSignedInProfile: vi.fn() }
   } as unknown as ToolContext
   const login = createSambaTools(context).tools.find((tool) => tool.name === 'login')!
   const call = async (): Promise<string | undefined> =>
     (await login.handler({}, {})).content[0].text
-  return { call, vault, tab, navigate }
+  return { call, vault, tab, navigate, takeDialog, tick }
 }
 
 beforeEach(() => {
@@ -84,6 +106,8 @@ beforeEach(() => {
   mocks.fill.mockResolvedValue('ok')
   mocks.hint.mockResolvedValue({ signedIn: false })
   mocks.snapshot.mockResolvedValue({ elements: [] })
+  mocks.hyundaiAuth.mockResolvedValue({ state: 'signed_in' })
+  mocks.lotteAuth.mockResolvedValue({ state: 'signed_in' })
 })
 
 describe('Samsung login ID-tab preparation integration', () => {
@@ -131,5 +155,41 @@ describe('Samsung login ID-tab preparation integration', () => {
     expect(await f.call()).toMatch(/^filled:/)
     expect(f.navigate).toHaveBeenCalledWith('card', LOGIN)
     expect(mocks.prepare).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    LOGIN,
+    'https://www.hyundaicard.com/cpa/cb/CPACB0101_01.hc',
+    'https://www.lottecard.co.kr/app/LPMCDAA_V100.lc'
+  ])('does not attach or retain native login dialogs for %s', async (url) => {
+    const f = fixture({ url, dialog: 'PRIVATE ACCOUNT LOGIN ALERT' })
+    expect(await f.call()).not.toContain('PRIVATE ACCOUNT')
+    expect(f.takeDialog).toHaveBeenCalledOnce()
+    expect(f.takeDialog()).toBeUndefined()
+  })
+
+  it('clears card dialogs on exceptions and returns a fixed error only', async () => {
+    mocks.find.mockRejectedValueOnce(new Error('PRIVATE PASSWORD ERROR'))
+    const f = fixture({ dialog: 'PRIVATE ACCOUNT LOGIN ALERT' })
+    expect(await f.call()).toBe('error: card login unavailable')
+    expect(f.takeDialog).toHaveBeenCalledOnce()
+    expect(f.takeDialog()).toBeUndefined()
+  })
+
+  it('clears card dialogs even when the tool-call limit rejects the login', async () => {
+    const f = fixture({ limit: true, dialog: 'PRIVATE ACCOUNT LOGIN ALERT' })
+    expect(await f.call()).toBe('limit reached')
+    expect(mocks.find).not.toHaveBeenCalled()
+    expect(f.takeDialog).toHaveBeenCalledOnce()
+    expect(f.takeDialog()).toBeUndefined()
+  })
+
+  it('preserves ordinary site dialog notices', async () => {
+    const f = fixture({
+      url: 'https://example.test/login',
+      mode: 'read_only',
+      dialog: 'Ordinary notice'
+    })
+    expect(await f.call()).toBe('page dialog: "Ordinary notice"\nrefused: read-only mode')
   })
 })

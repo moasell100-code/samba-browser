@@ -32,6 +32,8 @@ export interface CardApiReceipt {
   pages: number
   rowCount: number
   complete: boolean
+  /** Verified approval coverage only; cancellation reconciliation may still be incomplete. */
+  approvalComplete?: boolean
   issues: string[]
   elapsedMs: number
 }

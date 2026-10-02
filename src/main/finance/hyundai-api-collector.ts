@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { z } from 'zod'
 import type { Tab } from '../browser/tab-manager'
 import { pageBridge } from '../browser/page-bridge'
 import type { CardApiCollector, CardApiResult, CardApiRow } from './card-api-types'
@@ -7,6 +8,7 @@ const HISTORY_PATH = '/cpa/cb/CPACB0101_01.hc'
 const QUERY_PATH = '/cpa/cb/apiCPACB0101_21.hc'
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_ROWS = 1000
+const ALL_CARD_LABELS = ['전체', '전체카드', '카드전체', '모든카드'] as const
 const SAFE_ERRORS = new Set([
   'hyundai_request_cancelled',
   'hyundai_request_timeout',
@@ -31,6 +33,100 @@ const REQUEST_FIELDS = [
   'zoneClsf'
 ] as const
 export type HyundaiApiForm = Readonly<Record<(typeof REQUEST_FIELDS)[number], string>>
+
+const scopeSchema = z
+  .object({
+    state: z.literal('ready'),
+    formCount: z.number().int().min(0).max(1000),
+    cardSelectCount: z.number().int().min(0).max(1000),
+    cardDisabled: z.boolean().nullable(),
+    optionCount: z.number().int().min(0).max(1000),
+    options: z
+      .array(
+        z
+          .object({ label: z.enum([...ALL_CARD_LABELS, 'unrecognized']), disabled: z.boolean() })
+          .strict()
+      )
+      .max(20),
+    directPresent: z.boolean(),
+    directLabels: z.array(z.enum(['직접입력', 'unrecognized'])).max(10),
+    recentPresent: z.boolean(),
+    allRadioCounts: z
+      .object({
+        useClsf: z.number().int().min(0).max(1000),
+        usplClsf: z.number().int().min(0).max(1000),
+        zoneClsf: z.number().int().min(0).max(1000)
+      })
+      .strict(),
+    dateFormats: z
+      .object({
+        start: z.enum(['compact', 'iso', 'other', 'missing']),
+        end: z.enum(['compact', 'iso', 'other', 'missing'])
+      })
+      .strict()
+  })
+  .strict()
+
+export type HyundaiScopeInspection =
+  | z.infer<typeof scopeSchema>
+  | {
+      state: 'unsupported' | 'authentication_required' | 'navigation_changed' | 'unavailable'
+    }
+
+const SCOPE_SCRIPT = `(() => {
+  const url = new URL(location.href);
+  if (url.username || url.password || !['https://www.hyundaicard.com','https://hyundaicard.com'].includes(url.origin) || url.pathname !== '${HISTORY_PATH}') return { state: 'unsupported' };
+  const forms = document.querySelectorAll('form#form1');
+  const form = forms.length === 1 ? forms[0] : null;
+  const cards = form ? form.querySelectorAll('select[name="crno"]') : [];
+  const labels = Array.from(document.querySelectorAll('label'));
+  const text = element => (element && element.textContent || '').replace(/\\s+/g, '');
+  const optionList = cards.length === 1 ? Array.from(cards[0].options) : [];
+  const allLabels = ${JSON.stringify(ALL_CARD_LABELS)};
+  const radioCount = name => form ? Array.from(form.querySelectorAll('input[type="radio"][name="' + name + '"]')).filter(input => !input.disabled && input.id && labels.some(label => label.htmlFor === input.id && text(label) === '전체')).length : 0;
+  const format = id => {
+    const input = form && form.querySelector('#' + id);
+    if (!input || input.tagName !== 'INPUT' || ['password','file'].includes(input.type)) return 'missing';
+    return /^\\d{8}$/.test(input.value) ? 'compact' : /^\\d{4}-\\d{2}-\\d{2}$/.test(input.value) ? 'iso' : 'other';
+  };
+  const direct = form && form.querySelector('input[type="radio"][name="dtClsf"]#dtClsf_04');
+  const recent = form && form.querySelector('input[type="radio"][name="listClsf"]#listClsf_01');
+  return {
+    state: 'ready',
+    formCount: Math.min(forms.length, 1000),
+    cardSelectCount: Math.min(cards.length, 1000),
+    cardDisabled: cards.length === 1 ? cards[0].disabled : null,
+    optionCount: Math.min(optionList.length, 1000),
+    options: optionList.slice(0, 20).map(option => ({ label: allLabels.includes(text(option)) ? text(option) : 'unrecognized', disabled: option.disabled })),
+    directPresent: !!direct && !direct.disabled,
+    directLabels: direct ? labels.filter(label => label.htmlFor === direct.id).slice(0, 10).map(label => text(label) === '직접입력' ? '직접입력' : 'unrecognized') : [],
+    recentPresent: !!recent && !recent.disabled,
+    allRadioCounts: { useClsf: Math.min(radioCount('useClsf'), 1000), usplClsf: Math.min(radioCount('usplClsf'), 1000), zoneClsf: Math.min(radioCount('zoneClsf'), 1000) },
+    dateFormats: { start: format('iqrySrtDt'), end: format('iqryEndDt') }
+  };
+})()`
+
+/** Narrow diagnostic: public fixed label enums/counts only, never card names or form values. */
+export async function inspectHyundaiScope(tab: Tab): Promise<HyundaiScopeInspection> {
+  try {
+    const wc = tab.view.webContents
+    if (wc.isDestroyed() || !historyOrigin(wc.getURL())) return { state: 'unsupported' }
+    const initialUrl = wc.getURL()
+    const auth = await bounded(pageBridge.hyundaiAuth(tab))
+    if (wc.isDestroyed() || wc.getURL() !== initialUrl) return { state: 'navigation_changed' }
+    if (auth.state !== 'signed_in') return { state: 'authentication_required' }
+    const raw: unknown = await bounded(wc.executeJavaScript(SCOPE_SCRIPT, false))
+    if (wc.isDestroyed() || wc.getURL() !== initialUrl) return { state: 'navigation_changed' }
+    const result = scopeSchema.safeParse(raw)
+    if (!result.success) return { state: 'unavailable' }
+    const after = await bounded(pageBridge.hyundaiAuth(tab))
+    if (wc.isDestroyed() || wc.getURL() !== initialUrl) return { state: 'navigation_changed' }
+    if (after.state !== 'signed_in') return { state: 'authentication_required' }
+    return result.data
+  } catch {
+    return { state: 'unavailable' }
+  }
+}
 
 function requestPlanScript(from: string, to: string): string {
   return `(() => {
@@ -63,7 +159,8 @@ function requestPlanScript(from: string, to: string): string {
     };
     const cards = form.querySelectorAll('select[name="crno"]');
     if (cards.length !== 1 || cards[0].disabled) return fail('card_selector_unverified');
-    const allCards = Array.from(cards[0].options).filter(option => !option.disabled && text(option) === '전체');
+    const allCardLabels = ${JSON.stringify(ALL_CARD_LABELS)};
+    const allCards = Array.from(cards[0].options).filter(option => !option.disabled && allCardLabels.includes(text(option)));
     if (allCards.length !== 1) return fail('card_selector_unverified');
     const direct = fixedRadio('dtClsf_04', 'dtClsf', '직접입력');
     const recent = fixedRadio('listClsf_01', 'listClsf', null);
@@ -211,36 +308,53 @@ export function parseHyundaiApiPage(response: unknown): HyundaiApiPage {
       issues.add('invalid_transaction_row')
       continue
     }
-    const review = [
-      'approval_status_unverified',
-      'currency_unverified',
-      'merchant_source_unverified'
-    ]
-    if (['5', '7'].includes(scalar(own(raw, 'useClsf'), 10) || '')) review.push('loan_not_expense')
+    const review: string[] = []
+    const approvalClass = scalar(own(raw, 'avClsf'), 10)
+    const cancelled = approvalClass === '1' || approvalClass === '3'
+    const approved = approvalClass === '0' || approvalClass === '2'
+    const status: CardApiRow['status'] = cancelled ? 'cancelled' : approved ? 'approved' : 'unknown'
+    if (!approved && !cancelled) review.push('approval_status_unverified')
+    const currency = scalar(own(raw, 'acplCrncCd'), 10)
+    const isKrw = currency === 'KRW' || currency === '410'
+    if (!isKrw) review.push('currency_unverified')
+    if (!displayMerchant) review.push('merchant_source_unverified')
+    if (!combined) review.push('approval_datetime_unverified')
+    const loan = ['5', '7'].includes(scalar(own(raw, 'useClsf'), 10) || '')
+    if (loan) review.push('loan_not_expense')
+    if (amount < 0) review.push('amount_basis_unverified')
     if (day && approvedAt.slice(0, 10) !== day) review.push('approval_date_conflict')
     if (approvedAt.length === 10) review.push('approval_time_unavailable')
     const approvalNumber = scalar(own(raw, 'avNo'), 80)
     const cardNumber = scalar(own(raw, 'cdno'), 128)
     const cardReference = scalar(own(raw, 'crno'), 128)
     const cardLabel = scalar(own(raw, 'cardNm'), 200)
-    const tail =
-      cardNumber && /^[\d*Xx -]{12,24}$/.test(cardNumber) ? /(\d{4})$/.exec(cardNumber)?.[1] : null
+    // Official renderer uses the final four characters of cdno, including masked formats.
+    const tail = cardNumber ? /(\d{4})$/.exec(cardNumber)?.[1] : null
     if (!approvalNumber || (!cardNumber && !cardReference)) review.push('identity_unverified')
     if (!tail) review.push('card_last4_unavailable')
-    const eventDate = dateTime(own(raw, 'cancDttm'))?.slice(0, 10)
-    if (eventDate)
-      review.push('cancellation_amount_unverified', 'cancellation_query_basis_unverified')
+    const cancelledAt = dateTime(own(raw, 'cancDttm'))
+    const eventDate = cancelled ? cancelledAt?.slice(0, 10) : undefined
+    if (cancelled) {
+      review.push(
+        'cancellation_amount_unverified',
+        'cancellation_query_basis_unverified',
+        'cross_source_cancellation_match_required'
+      )
+      if (!eventDate) review.push('cancellation_event_date_unavailable')
+    } else if (cancelledAt) review.push('cancellation_state_conflict')
     const identity = [
       'hyundai_card',
+      cancelled ? 'cancellation' : 'approval',
       cardReference || cardNumber || '',
       approvedAt,
-      approvalNumber || ''
+      approvalNumber || '',
+      cancelled ? cancelledAt || '' : ''
     ]
     if (!approvalNumber || (!cardNumber && !cardReference)) identity.push(merchant, String(amount))
     const row: CardApiRow = {
       issuer: 'hyundai_card',
       sourceId: `hyundai_card:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
-      kind: 'status',
+      kind: cancelled ? 'cancellation' : approved ? 'approval' : 'status',
       approvedAt,
       ...(eventDate ? { eventDate } : {}),
       ...(approvalNumber ? { approvalNumber } : {}),
@@ -249,9 +363,9 @@ export function parseHyundaiApiPage(response: unknown): HyundaiApiPage {
       merchant,
       amount: Math.abs(amount),
       currency: 'KRW',
-      status: 'unknown',
+      status,
       cancellationAmount: null,
-      netAmount: null,
+      netAmount: approved && isKrw && !loan && amount >= 0 ? amount : null,
       needsReview: review
     }
     const previous = seen.get(row.sourceId)
@@ -384,6 +498,7 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       pages,
       rowCount: rows.length,
       complete: issues.size === 0 && more.length === 0,
+      approvalComplete: false,
       issues: [...new Set([...issues, ...more])],
       elapsedMs: Date.now() - started
     }
@@ -433,7 +548,11 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       if (date(own(summary, 'srtDt')) !== iso || date(own(summary, 'endDt')) !== iso)
         return result(['response_range_unverified'])
       for (const row of page.rows) {
-        if (row.approvedAt.slice(0, 10) !== iso) {
+        const observedDay =
+          row.kind === 'cancellation'
+            ? row.eventDate || row.approvedAt.slice(0, 10)
+            : row.approvedAt.slice(0, 10)
+        if (observedDay !== iso) {
           issues.add('approval_outside_requested_range')
           continue
         }

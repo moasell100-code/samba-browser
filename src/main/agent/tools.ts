@@ -594,8 +594,17 @@ export function createSambaTools(
       if (!action || !ctx.onCall) return
       ctx.onCall({ tool: action, label: resolveLabel(), ok, result, url: currentUrl() })
     }
+    const clearPrivateDialog = (): void => {
+      if (options.includeDialog !== false) return
+      try {
+        ctx.tabs.takeDialogMessage?.()
+      } catch {
+        // Never replace a private tool result with a raw dialog/storage exception.
+      }
+    }
     const over = ctx.tick()
     if (over) {
+      clearPrivateDialog()
       if (!limitNotified) {
         limitNotified = true
         ctx.onStep('도구 호출 상한 도달', false)
@@ -615,7 +624,7 @@ export function createSambaTools(
       ctx.onStep(resolveLabel(), ok)
       note(ok, raw)
       // 실행 중 자동으로 닫은 페이지 대화상자가 있으면 그 문구를 결과 앞에 알려 준다
-      const dialog = ctx.tabs.takeDialogMessage?.()
+      const dialog = options.includeDialog === false ? undefined : ctx.tabs.takeDialogMessage?.()
       return text(
         dialog && options.includeDialog !== false
           ? `${formatDialogNote(dialog)}
@@ -627,6 +636,8 @@ ${raw}`
       ctx.onStep(resolveLabel(), false)
       note(false, message)
       return text(message)
+    } finally {
+      clearPrivateDialog()
     }
   }
 
@@ -1786,6 +1797,7 @@ overlays left: ${after.length}${kept}`
     { accountLabel: z.string().optional() },
     ({ accountLabel }) => {
       let label = '로그인'
+      const financialCard = financeCardIssuer(currentUrl()) !== null
       return guard(
         () => label,
         async () => {
@@ -1999,7 +2011,10 @@ overlays left: ${after.length}${kept}`
           const handed = await captchaHandoff(tab)
           if (handed) return handed
           return 'submitted: check the page for success or captcha/2FA'
-        }
+        },
+        undefined,
+        false,
+        financialCard ? { includeDialog: false, safeError: 'card login unavailable' } : {}
       )
     }
   )

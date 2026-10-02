@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Tab } from '../src/main/browser/tab-manager'
 import {
   inspectSamsungIdLogin,
+  inspectSamsungLoginOutcome,
   prepareSamsungIdLogin
 } from '../src/main/finance/samsung-login-preparation'
 
@@ -68,6 +69,51 @@ afterEach(() => {
   for (const dom of windows.splice(0)) dom.window.close()
   vi.useRealTimers()
   vi.restoreAllMocks()
+})
+
+describe('Samsung visible alert outcome only', () => {
+  it('ignores routine body instructions and hidden errors without reading input values', async () => {
+    const f = fixture(
+      HTML +
+        '<p>보안프로그램 설치가 필요합니다. 추가 인증이 필요합니다.</p><div role="alert" hidden>아이디 또는 비밀번호를 잘못 입력하였습니다.</div>'
+    )
+    expect(await inspectSamsungLoginOutcome(f.tab)).toBe('unknown')
+    expect(f.clicks).not.toHaveBeenCalled()
+    expect(f.submit).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['아이디 또는 비밀번호를 잘못 입력하였습니다.', 'wrong_credentials'],
+    ['비밀번호를 정확하게 입력해 주시기 바랍니다.', 'input_required'],
+    ['보안프로그램 설치가 필요합니다.', 'security_program_required'],
+    ['추가 인증이 필요합니다.', 'additional_auth'],
+    ['보안문자를 입력해 주세요.', 'captcha']
+  ])('returns fixed outcome only from a visible alert (%s)', async (message, outcome) => {
+    const f = fixture(HTML + `<div role="alert">${message}<input value="PRIVATE_VALUE"></div>`)
+    expect(await inspectSamsungLoginOutcome(f.tab)).toBe(outcome)
+    expect(f.clicks).not.toHaveBeenCalled()
+    expect(f.submit).not.toHaveBeenCalled()
+  })
+
+  it('does not classify hidden descendants or conflicting alert categories', async () => {
+    const f = fixture(
+      HTML +
+        '<div role="alert">일시적 안내<span hidden>아이디 또는 비밀번호를 잘못 입력하였습니다.</span></div>'
+    )
+    expect(await inspectSamsungLoginOutcome(f.tab)).toBe('unknown')
+    f.dom.window.document.querySelector('[role="alert"]')!.textContent =
+      '아이디 또는 비밀번호를 잘못 입력하였습니다. 보안문자를 입력해 주세요.'
+    expect(await inspectSamsungLoginOutcome(f.tab)).toBe('unknown')
+  })
+
+  it('guards the exact page and returns no arbitrary renderer errors or text', async () => {
+    const f = fixture(HTML, 'https://other.test/')
+    expect(await inspectSamsungLoginOutcome(f.tab)).toBe('unsupported')
+    expect(f.execute).not.toHaveBeenCalled()
+    f.changeUrl(LOGIN)
+    f.execute.mockRejectedValueOnce(new Error('PRIVATE_PAGE_ERROR'))
+    expect(await inspectSamsungLoginOutcome(f.tab)).toBe('unavailable')
+  })
 })
 
 describe('Samsung public ID login tab preparation', () => {

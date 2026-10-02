@@ -17,10 +17,12 @@ const SCRIPT = String.raw`(() => {
   const controls = location.hostname.includes('lottecard')
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
   const fields = ['form1','LPMCDAAAprUseList','pageNo','pageRows','nextKey','schDv','stDv','useDv','useCdDv','uplDv','ptnBnkYn','sortDv','sortObj','listClsf','dtClsf','zoneClsf','useClsf','usplClsf','sortType','dmfrClsf','srtDt','startDt','endDt','inqTeDt','iqrySrtDt','iqryEndDt','startDtShow','endDtShow','crno','encCdno','Content','Status','code','message'];
-  const literals = new Set([...fields, ...fields.map(f => '#' + f), '', '0','1','2','3','4','5','6','7','8','9','00','01','02','03','04','05','06','07','08','09','10','20','30','Y','N','KRW','POST','GET','승인','취소','정상','승인취소','취소완료','부분취소','전체','일시불']);
-  const clean = source => source.includes(String.fromCharCode(96)) ? '[template source omitted]' : source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60/g, token => {
+  const literals = new Set([...fields, ...fields.map(f => '#' + f), '', '0','1','2','3','4','5','6','7','8','9','00','01','02','03','04','05','06','07','08','09','10','20','30','Y','N','KRW','POST','GET','승인','취소','정상','승인취소','취소완료','부분취소','전체','일시불','YYYYMMDD','YYYYMMDDHHmmss','YYYY-MM-DD']);
+  const clean = source => source.includes(String.fromCharCode(96)) ? '[template source omitted]' : source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60/g, (token, offset) => {
     if (token.startsWith('//') || token.startsWith('/*')) return '';
     const value = token.slice(1, -1);
+    // Static public currency/region comparisons only, never current form or account values.
+    if (/^[A-Z]{1,6}$/.test(value) && (/\.(?:dmfrClsf|dmfrClsfCd|acplCrncCd|bllCrncCd)\s*={2,3}\s*$/.test(source.slice(Math.max(0, offset - 80), offset)) || /^\s*={2,3}\s*[A-Za-z_$][\w$]*\.(?:dmfrClsf|dmfrClsfCd|acplCrncCd|bllCrncCd)\b/.test(source.slice(offset + token.length, offset + token.length + 80)))) return JSON.stringify(value);
     if (literals.has(value) || /^\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do)$/.test(value) && !/\d{8,}/.test(value)) return JSON.stringify(value);
     return '"[literal omitted]"';
   }).replace(/\b\d{4,}\b/g, '[number omitted]');

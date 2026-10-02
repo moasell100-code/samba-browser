@@ -277,6 +277,7 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
   const rows: CardApiRow[] = []
   const issues = new Set<string>()
   let pages = 0
+  let approvalComplete = false
   const range = validRange(suppliedRange)
   const result = (): CardApiResult => ({
     rows,
@@ -286,6 +287,7 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
       pages,
       rowCount: rows.length,
       complete: issues.size === 0,
+      approvalComplete,
       issues: [...issues],
       elapsedMs: Date.now() - started
     }
@@ -315,6 +317,7 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
     initialUrl = wc.getURL()
     let scope: string | undefined
     for (const mode of ['approval', 'cancellation'] as const) {
+      let streamVerified = true
       let total: number | undefined
       let observed = 0
       let cursors: string[] = []
@@ -342,17 +345,20 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
           const row = normalize(item, mode)
           if (!row) {
             issues.add('invalid_transaction_row')
+            streamVerified = false
             continue
           }
           const day = row.approvedAt.slice(0, 10)
           if (mode === 'approval' && (day < range.from || day > range.to)) {
             issues.add('approval_outside_requested_range')
+            streamVerified = false
             continue
           }
           const prior = sourceIds.get(row.sourceId)
           if (prior) {
             // Do not silently deduplicate potentially distinct partial cancellation events.
             issues.add('duplicate_source_identity')
+            streamVerified = false
             if (!prior.needsReview.includes('duplicate_source_identity'))
               prior.needsReview.push('duplicate_source_identity')
             row.needsReview.push('duplicate_source_identity')
@@ -363,7 +369,10 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
         }
         observed += data.rows.length
         if (observed > total) throw new QueryStopped('total_count_mismatch')
-        if (observed === total) break
+        if (observed === total) {
+          if (mode === 'approval') approvalComplete = streamVerified
+          break
+        }
         if (data.rows.length !== PAGE_SIZE) throw new QueryStopped('total_count_mismatch')
         if (rows.length >= MAX_ROWS) throw new QueryStopped('row_limit')
         if (data.cursors.length !== (mode === 'approval' ? 9 : 7) || !data.cursors.some(Boolean))
@@ -375,7 +384,10 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
       }
     }
   } catch (error) {
-    issues.add(error instanceof QueryStopped ? error.issue : 'collector_error')
+    const issue = error instanceof QueryStopped ? error.issue : 'collector_error'
+    issues.add(issue)
+    if (/signed_out|auth|session|navigation|abort|card_scope_changed/.test(issue))
+      approvalComplete = false
   }
   return result()
 }

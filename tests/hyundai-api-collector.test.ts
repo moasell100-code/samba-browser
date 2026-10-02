@@ -4,6 +4,7 @@ import type { Tab } from '../src/main/browser/tab-manager'
 import { pageBridge } from '../src/main/browser/page-bridge'
 import {
   collectHyundaiApi,
+  inspectHyundaiScope,
   parseHyundaiApiPage,
   requestHyundaiApiPage,
   type HyundaiApiForm
@@ -139,7 +140,7 @@ describe('Hyundai private approval response normalization', () => {
 
   it('flags loans and cancellation observations while leaving actual refund/net amounts unset', () => {
     const result = parseHyundaiApiPage(
-      payload([approval({ useClsf: '5', cancDttm: '20261002141516', avAmt: -12500 })])
+      payload([approval({ useClsf: '5', avClsf: '1', cancDttm: '20261002141516', avAmt: -12500 })])
     )
     expect(result.rows[0].needsReview).toEqual(
       expect.arrayContaining(['loan_not_expense', 'cancellation_amount_unverified'])
@@ -148,6 +149,55 @@ describe('Hyundai private approval response normalization', () => {
     expect(result.rows[0].cancellationAmount).toBeNull()
     expect(result.rows[0].netAmount).toBeNull()
   })
+
+  it.each(['0', '2'])(
+    'recognizes only verified non-cancellation code %s with explicit KRW currency',
+    (code) => {
+      const result = parseHyundaiApiPage(payload([approval({ avClsf: code, acplCrncCd: '410' })]))
+      expect(result.rows[0]).toMatchObject({
+        kind: 'approval',
+        status: 'approved',
+        amount: 12500,
+        netAmount: 12500,
+        needsReview: []
+      })
+      const noCurrency = parseHyundaiApiPage(payload([approval({ avClsf: code })]))
+      expect(noCurrency.rows[0].netAmount).toBeNull()
+      expect(noCurrency.rows[0].needsReview).toContain('currency_unverified')
+    }
+  )
+
+  it('does not use foreign, loan, negative or unknown-status amounts as verified expenses', () => {
+    const variants = [
+      { avClsf: '0', acplCrncCd: '840' },
+      { avClsf: '0', acplCrncCd: 'KRW', useClsf: '7' },
+      { avClsf: '2', acplCrncCd: 'KRW', avAmt: -500 },
+      { avClsf: 'UNRECOGNIZED', acplCrncCd: 'KRW' }
+    ]
+    for (const variant of variants) {
+      const result = parseHyundaiApiPage(payload([approval(variant)]))
+      expect(result.rows[0].netAmount).toBeNull()
+      expect(result.rows[0].needsReview.length).toBeGreaterThan(0)
+    }
+  })
+
+  it.each(['1', '3'])(
+    'keeps cancellation code %s distinct from its original approval without inventing a refund',
+    (code) => {
+      const original = approval({ avClsf: '0', acplCrncCd: 'KRW' })
+      const cancellation = approval({ avClsf: code, acplCrncCd: 'KRW', cancDttm: '20261002141516' })
+      const result = parseHyundaiApiPage(payload([original, cancellation]))
+      expect(result.rows[1]).toMatchObject({
+        kind: 'cancellation',
+        status: 'cancelled',
+        eventDate: '2026-10-02',
+        netAmount: null,
+        cancellationAmount: null
+      })
+      expect(result.rows[1].sourceId).not.toBe(result.rows[0].sourceId)
+      expect(result.rows[1].needsReview).toContain('cancellation_amount_unverified')
+    }
+  )
 
   it('does not drop unknown transportation rows or truncated results silently', () => {
     const result = parseHyundaiApiPage(
@@ -215,6 +265,72 @@ describe('Hyundai private approval response normalization', () => {
 })
 
 describe('Hyundai fixed authenticated read-only request and daily collector', () => {
+  it.each(['전체', '전체 카드', '카드 전체', '모든 카드'])(
+    'accepts the verified all-card option label %s without exposing its value',
+    async (label) => {
+      const f = fixture()
+      f.dom.window.document.querySelector('select option')!.textContent = label
+      const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      expect(f.fetch).toHaveBeenCalledOnce()
+      expect(result.rows).toHaveLength(1)
+      expect(result.receipt.approvalComplete).toBe(false)
+    }
+  )
+
+  it('projects only known scope labels, counts and format enums, never form values or custom card names', async () => {
+    const f = fixture()
+    f.dom.window.document.querySelector('select option')!.textContent = '전체 카드'
+    f.dom.window.document.querySelector('select option:nth-child(2)')!.textContent =
+      'PRIVATE_CARD_NAME'
+    const inspected = await inspectHyundaiScope(f.tab)
+    expect(inspected).toMatchObject({
+      state: 'ready',
+      formCount: 1,
+      cardSelectCount: 1,
+      cardDisabled: false,
+      optionCount: 2,
+      options: [
+        { label: '전체카드', disabled: false },
+        { label: 'unrecognized', disabled: false }
+      ],
+      directPresent: true,
+      directLabels: ['직접입력'],
+      recentPresent: true,
+      allRadioCounts: { useClsf: 1, usplClsf: 1, zoneClsf: 1 },
+      dateFormats: { start: 'compact', end: 'compact' }
+    })
+    for (const secret of [
+      'PRIVATE_CARD_NAME',
+      'ALL_PRIVATE_CARDS',
+      'PASSWORD_PRIVATE_VALUE',
+      '20260101'
+    ])
+      expect(JSON.stringify(inspected)).not.toContain(secret)
+    expect(f.fetch).not.toHaveBeenCalled()
+  })
+
+  it('retains a recent cancellation of an older approval using the renderer cancellation date', async () => {
+    const f = fixture()
+    f.fetch.mockResolvedValue(
+      Response.json(
+        payload([
+          approval({
+            avClsf: '1',
+            avDt: '20260904',
+            avDttm: '20260904121314',
+            cancDttm: '20261002091011',
+            acplCrncCd: 'KRW'
+          })
+        ])
+      )
+    )
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0].approvedAt).toBe('2026-09-04T12:13:14+09:00')
+    expect(result.rows[0].eventDate).toBe('2026-10-02')
+    expect(result.receipt.issues).not.toContain('approval_outside_requested_range')
+  })
+
   it('uses the fixed endpoint, existing session, redirects disabled, and form-urlencoded data', async () => {
     const f = fixture()
     await requestHyundaiApiPage(f.tab, form())

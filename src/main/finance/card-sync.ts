@@ -23,6 +23,7 @@ const saveReceipt = z.object({
     'review_required'
   ]),
   complete: z.boolean(),
+  approval_complete: z.boolean().optional(),
   range: z.object({ from: z.string(), to: z.string() }),
   pages: z.number().int()
 })
@@ -77,6 +78,9 @@ export async function collectRecentCard(options: {
       rowCount: rows.length,
       pages: parts.reduce((total, part) => total + part.receipt.pages, 0),
       complete,
+      approvalComplete:
+        parts.length === dailyCardRanges(range).length &&
+        parts.every((part) => part.receipt.approvalComplete === true),
       issues,
       elapsedMs: Date.now() - started
     }

@@ -5,6 +5,7 @@ import type { LotteKeypadReason, LotteKeypadSnapshot } from '../../shared/lotte-
 import { createSambaTools } from '../agent/tools'
 import { pageBridge } from '../browser/page-bridge'
 import { issuerForCardUrl, inspectCardPage } from './card-page-diagnostics'
+import { observeSamsungLoginAlerts } from './samsung-login-outcome'
 
 const KEYPAD_STATES: readonly LotteKeypadSnapshot['state'][] = [
   'open',
@@ -115,7 +116,7 @@ function classifyLoginResult(raw: string): Omit<CardSessionRestoreResult, 'auth'
   )
     return { state: 'input_not_accepted', stage: 'password_input' }
   if (/locked/i.test(raw)) return { state: 'vault_locked' }
-  if (/needs_user|captcha|2fa/i.test(raw)) return { state: 'user_verification_required' }
+  if (/^needs_user:/i.test(raw)) return { state: 'user_verification_required' }
   if (/fields not found/i.test(raw)) return { state: 'login_fields_unavailable' }
   if (/not found/i.test(raw)) return { state: 'saved_account_unavailable' }
   if (/refused|denied|disabled/i.test(raw)) return { state: 'policy_blocked' }
@@ -163,11 +164,30 @@ export async function restoreCardSession(options: {
     vaultKeepSignedIn: settings.vaultKeepSignedIn
   })
   // This adapter exposes ONLY login; no generic agent tool or model execution.
-  const result = await tools.tools.find((entry) => entry.name === 'login')!.handler({}, {})
-  const after = await inspectCardPage(tab)
-  if (!valid() || after.state === 'navigation_changed' || after.issuer !== issuer)
-    return { state: 'navigation_changed', auth: 'unknown' }
-  if (after.auth === 'signed_in') return { state: 'signed_in', auth: 'signed_in' }
-  const raw = result.content.map((entry) => entry.text ?? '').join('\n')
-  return { ...classifyLoginResult(raw), auth: after.auth }
+  const alerts =
+    issuer === 'samsung_card' ? await observeSamsungLoginAlerts(tab, { signal }) : undefined
+  try {
+    if (!valid()) return { state: 'navigation_changed', auth: 'unknown' }
+    const result = await tools.tools.find((entry) => entry.name === 'login')!.handler({}, {})
+    const after = await inspectCardPage(tab)
+    if (!valid() || after.state === 'navigation_changed' || after.issuer !== issuer)
+      return { state: 'navigation_changed', auth: 'unknown' }
+    if (after.auth === 'signed_in') return { state: 'signed_in', auth: 'signed_in' }
+    const outcome = alerts?.getOutcome()
+    if (
+      outcome &&
+      [
+        'wrong_credentials',
+        'input_required',
+        'security_program_required',
+        'additional_auth',
+        'captcha'
+      ].includes(outcome)
+    )
+      return { state: outcome, auth: after.auth }
+    const raw = result.content.map((entry) => entry.text ?? '').join('\n')
+    return { ...classifyLoginResult(raw), auth: after.auth }
+  } finally {
+    alerts?.dispose()
+  }
 }

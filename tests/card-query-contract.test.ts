@@ -113,6 +113,19 @@ describe('fixed query contract inspection redaction', () => {
       expect(serialized).not.toContain(secret)
   })
 
+  it('retains public region/currency comparisons while redacting unrelated short string data', async () => {
+    const f = fixture(`function fnSearch(li) {
+      const currency = li.acplCrncCd === 'KRW';
+      const region = 'F' === li.dmfrClsf;
+      const customer = 'PRIVATE';
+      return [currency, region, customer];
+    }`)
+    const serialized = JSON.stringify(await inspectCardQueryContract(f.tab))
+    expect(serialized).toContain('KRW')
+    expect(serialized).toContain('F')
+    expect(serialized).not.toContain('PRIVATE')
+  })
+
   it('does not invoke accessor properties or event handlers while inspecting', async () => {
     const f = fixture()
     const getter = vi.fn(() => {

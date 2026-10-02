@@ -5,12 +5,14 @@ import { DEFAULT_SETTINGS, type Settings } from '../src/shared/settings'
 import { createSambaTools } from '../src/main/agent/tools'
 import { pageBridge } from '../src/main/browser/page-bridge'
 import { inspectCardPage } from '../src/main/finance/card-page-diagnostics'
+import { observeSamsungLoginAlerts } from '../src/main/finance/samsung-login-outcome'
 import {
   inspectLotteKeypadStatus,
   restoreCardSession
 } from '../src/main/finance/card-login-session'
 
 vi.mock('../src/main/agent/tools', () => ({ createSambaTools: vi.fn() }))
+vi.mock('../src/main/finance/samsung-login-outcome', () => ({ observeSamsungLoginAlerts: vi.fn() }))
 vi.mock('../src/main/finance/card-page-diagnostics', async (load) => {
   const actual = await load<typeof import('../src/main/finance/card-page-diagnostics')>()
   return { ...actual, inspectCardPage: vi.fn() }
@@ -54,6 +56,10 @@ function fixture(overrides: Partial<Settings> = {}): {
     ]
   } as unknown as ReturnType<typeof createSambaTools>)
   vi.mocked(inspectCardPage).mockResolvedValue(SIGNED_OUT)
+  vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({
+    getOutcome: () => 'unknown',
+    dispose: vi.fn()
+  })
   return {
     options: {
       tabs,
@@ -130,7 +136,8 @@ describe('card session restoration through existing KeyMaster login gates', () =
     ['needs_user: captcha SYNTHETIC_PRIVATE_SECRET', 'user_verification_required'],
     ['not found: SYNTHETIC_PRIVATE_SECRET', 'saved_account_unavailable'],
     ['refused: KeyMaster access policy is Never SYNTHETIC_PRIVATE_SECRET', 'policy_blocked'],
-    ['error: SYNTHETIC_PRIVATE_SECRET', 'login_unconfirmed']
+    ['error: SYNTHETIC_PRIVATE_SECRET', 'login_unconfirmed'],
+    ['submitted: check the page for success or captcha/2FA', 'login_unconfirmed']
   ])('maps login output to fixed status without exposing details: %s', async (raw, state) => {
     const f = fixture()
     f.login.mockResolvedValue({ content: [{ type: 'text', text: raw }] })
@@ -201,6 +208,30 @@ describe('card session restoration through existing KeyMaster login gates', () =
       state: 'user_verification_required',
       auth: 'signed_out'
     })
+  })
+
+  it('reports a scoped Samsung failure and disposes the observer without exposing dialog text', async () => {
+    const f = fixture()
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({
+      getOutcome: () => 'wrong_credentials',
+      dispose
+    })
+    expect(await restoreCardSession(f.options)).toEqual({
+      state: 'wrong_credentials',
+      auth: 'signed_out'
+    })
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(f.login).toHaveBeenCalledOnce()
+  })
+
+  it('disposes the scoped observer when the underlying login throws', async () => {
+    const f = fixture()
+    const dispose = vi.fn()
+    vi.mocked(observeSamsungLoginAlerts).mockResolvedValue({ getOutcome: () => 'unknown', dispose })
+    f.login.mockRejectedValue(new Error('synthetic failure'))
+    await expect(restoreCardSession(f.options)).rejects.toThrow('synthetic failure')
+    expect(dispose).toHaveBeenCalledOnce()
   })
 
   it('does not log in another saved site after navigation during the initial inspection', async () => {

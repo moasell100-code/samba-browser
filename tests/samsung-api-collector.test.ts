@@ -164,6 +164,7 @@ describe('Samsung fixed private statement API collector', () => {
       pages: 2,
       rowCount: 1,
       complete: false,
+      approvalComplete: true,
       issues: ['cancellation_query_basis_unverified']
     })
     for (const secret of ['0000000000004321', 'PRIVATE_ENVELOPE', 'UNREQUESTED_FIELD']) {
@@ -197,6 +198,67 @@ describe('Samsung fixed private statement API collector', () => {
     expect(f.condition).not.toHaveProperty('pgeNo')
     expect(new Set(result.rows.map((item) => item.sourceId)).size).toBe(32)
     expect(result.receipt.issues).not.toContain('total_count_mismatch')
+    expect(result.receipt.approvalComplete).toBe(true)
+  })
+
+  it('retains verified approval coverage when the separate cancellation service fails', async () => {
+    const f = fixture((query) => {
+      if (query.service.endsWith('S12')) query.error()
+      else query.success(response(query.service, [row()]))
+    })
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.receipt).toMatchObject({ complete: false, approvalComplete: true })
+    expect(result.receipt.issues).toContain('service_error')
+    expect(result.rows[0].needsReview).toEqual([])
+  })
+
+  it('retains row-level review without claiming those rows are safe to post', async () => {
+    const f = fixture((query) =>
+      query.success(
+        response(
+          query.service,
+          query.service.endsWith('S51') ? [row(1), row(2, { itgCdnoe: '' })] : []
+        )
+      )
+    )
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.receipt).toMatchObject({ complete: false, approvalComplete: true })
+    expect(result.rows[0].needsReview).toEqual([])
+    expect(result.rows[1].needsReview).toContain('card_last4_unavailable')
+  })
+
+  it.each(['invalid_row', 'outside_range', 'duplicate', 'short_page'] as const)(
+    'does not certify approval coverage with %s',
+    async (fault) => {
+      const f = fixture((query) => {
+        let rows = [row()]
+        if (fault === 'invalid_row') rows = [row(1, { aprDt: 'bad-date' })]
+        if (fault === 'outside_range') rows = [row(1, { aprDt: '20260901' })]
+        if (fault === 'duplicate') rows = [row(), row()]
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51') ? rows : [],
+            query.service.endsWith('S51') ? (fault === 'short_page' ? 11 : rows.length) : 0
+          )
+        )
+      })
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.receipt.approvalComplete).toBe(false)
+      expect(result.receipt.complete).toBe(false)
+    }
+  )
+
+  it('revokes approval proof if the account session changes before completion', async () => {
+    const f = fixture()
+    f.auth
+      .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'signed_in' })
+      .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'signed_in' })
+      .mockResolvedValueOnce({ issuer: 'samsung_card', state: 'signed_out' })
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.rows).toHaveLength(1)
+    expect(result.receipt).toMatchObject({ complete: false, approvalComplete: false })
+    expect(result.receipt.issues).toContain('signed_out')
   })
 
   it('never treats partial or pending cancellation original amounts as actual refunds', async () => {

@@ -21,6 +21,20 @@ const snapshot = z
   .strict()
 export type SamsungLoginPreparation = z.infer<typeof snapshot>
 
+const outcomeSchema = z.enum([
+  'wrong_credentials',
+  'input_required',
+  'security_program_required',
+  'additional_auth',
+  'captcha',
+  'unknown',
+  'unsupported',
+  'navigation_changed',
+  'cancelled',
+  'unavailable'
+])
+export type SamsungLoginOutcome = z.infer<typeof outcomeSchema>
+
 function loginUrl(value: string): boolean {
   try {
     const url = new URL(value)
@@ -121,4 +135,61 @@ export async function prepareSamsungIdLogin(
     await new Promise<void>((resolve) => setTimeout(resolve, 100))
   }
   return { state: 'tab_not_ready', tab: selected.tab }
+}
+
+// Samsung's public showMessage currently calls native alert(). This DOM reader cannot
+// recover a dismissed native alert and must never infer an error from routine body text.
+const OUTCOME_SCRIPT = String.raw`(() => {
+  const url = new URL(location.href);
+  if (self !== top || url.username || url.password || url.origin + url.pathname !== '${LOGIN}') return 'unsupported';
+  const visible = element => {
+    for (let node = element; node; node = node.parentElement) {
+      if (node.hidden || node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true' || (node.tagName === 'INPUT' && node.getAttribute('type') === 'hidden')) return false;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || ['hidden','collapse'].includes(style.visibility) || (style.opacity !== '' && Number(style.opacity) === 0) || style.clip === 'rect(0px, 0px, 0px, 0px)') return false;
+      if (style.position === 'absolute' && (parseFloat(style.left) <= -9999 || parseFloat(style.top) <= -9999)) return false;
+    }
+    return true;
+  };
+  const alerts = Array.from(document.querySelectorAll('[role="alert"],[role="alertdialog"],dialog[open]')).filter(visible);
+  if (alerts.length > 10) return 'unknown';
+  const outcomes = new Set();
+  for (const alert of alerts) {
+    let text = '', visited = 0, limited = false;
+    const read = node => {
+      if (++visited > 500 || text.length > 4000) { limited = true; return; }
+      if (node.nodeType === 3) { text += node.textContent || ''; return; }
+      if (node.nodeType !== 1 || !visible(node) || ['INPUT','TEXTAREA','SELECT','SCRIPT','STYLE','TEMPLATE','NOSCRIPT'].includes(node.tagName) || node.hasAttribute('contenteditable')) return;
+      for (const child of node.childNodes) read(child);
+    };
+    read(alert);
+    if (limited || text.length > 4000) return 'unknown';
+    const message = text.replace(/\s+/g, '');
+    if (/(?:아이디|비밀번호|ID).{0,60}(?:일치하지|잘못입력|틀렸|틀린|실패횟수|오류횟수)/i.test(message)) outcomes.add('wrong_credentials');
+    if (/(?:아이디|비밀번호|ID)(?:를|을)?(?:입력해주세요|입력해주시|입력하여|정확하게입력|정확히입력)/i.test(message)) outcomes.add('input_required');
+    if (/(?:보안프로그램|키보드보안|nProtect|TouchEn|NOS)/i.test(message) && /(?:설치|실행|업데이트)(?:가|를|이)?(?:필요|필수|되지않|되어있지않|되지않았|해주세요|해주시|하여주시|해야|하세요)|미설치/.test(message)) outcomes.add('security_program_required');
+    if (/(?:추가인증|추가본인확인|본인인증|휴대폰인증|OTP)/i.test(message) && /필요|진행해|완료해|입력해|요청|해주시|해야/.test(message)) outcomes.add('additional_auth');
+    if (/(?:보안문자|자동입력방지|자동등록방지|captcha)/i.test(message) && /입력|확인|인증|필요/.test(message)) outcomes.add('captcha');
+  }
+  return outcomes.size === 1 ? [...outcomes][0] : 'unknown';
+})()`
+
+/** Classify only a currently visible alert; no credentials, raw messages, or page data escape. */
+export async function inspectSamsungLoginOutcome(
+  tab: Tab,
+  options: { signal?: AbortSignal } = {}
+): Promise<SamsungLoginOutcome> {
+  if (options.signal?.aborted) return 'cancelled'
+  try {
+    const wc = tab.view.webContents
+    if (!wc || wc.isDestroyed() || !loginUrl(wc.getURL())) return 'unsupported'
+    const initial = wc.getURL()
+    const value: unknown = await wc.executeJavaScript(OUTCOME_SCRIPT, false)
+    if (options.signal?.aborted) return 'cancelled'
+    if (wc.isDestroyed() || wc.getURL() !== initial) return 'navigation_changed'
+    const parsed = outcomeSchema.safeParse(value)
+    return parsed.success ? parsed.data : 'unavailable'
+  } catch {
+    return 'unavailable'
+  }
 }

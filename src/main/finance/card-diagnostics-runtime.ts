@@ -12,7 +12,7 @@ import type { Settings } from '../../shared/settings'
 import { collectRecentCard, saveCardCollection } from './card-sync'
 import { collectSamsungApi } from './samsung-api-collector'
 import { collectLotteApi } from './lotte-api-collector'
-import { collectHyundaiApi } from './hyundai-api-collector'
+import { collectHyundaiApi, inspectHyundaiScope } from './hyundai-api-collector'
 import { inspectSamsungIdLogin } from './samsung-login-preparation'
 
 const TTL_MS = 30 * 60 * 1000
@@ -137,7 +137,7 @@ export async function startCardDiagnosticsRuntime(options: {
             entry?.issuer === issuer && entry?.observer.snapshot().state === 'watching'
           const pathname = new URL(tab.url).pathname
           const staticPath =
-            /^[\/A-Za-z_-]+\/[A-Z]{4,8}\d{4}[A-Z0-9]{2,3}\.jsp$/.test(pathname) ||
+            /^[/A-Za-z_-]+\/[A-Z]{4,8}\d{4}[A-Z0-9]{2,3}\.jsp$/.test(pathname) ||
             /^\/(?:app\/[A-Z]{5,8}_[A-Z]\d{3}\.lc|cpa\/cb\/CPACB0101_01\.hc)$/.test(pathname)
           return issuer
             ? [
@@ -199,12 +199,14 @@ export async function startCardDiagnosticsRuntime(options: {
       assertTabContext(tab, initialUrl)
       const keypad = issuer === 'lotte_card' ? await inspectLotteKeypadStatus(tab) : undefined
       const loginForm = issuer === 'samsung_card' ? await inspectSamsungIdLogin(tab) : undefined
+      const scope = issuer === 'hyundai_card' ? await inspectHyundaiScope(tab) : undefined
       assertTabContext(tab, initialUrl)
       return {
         tabId: id,
         ...result,
         ...(keypad ? { keypad } : {}),
-        ...(loginForm ? { loginForm } : {})
+        ...(loginForm ? { loginForm } : {}),
+        ...(scope ? { scope } : {})
       }
     },
     requests(id: string) {
