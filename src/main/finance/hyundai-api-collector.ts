@@ -47,6 +47,21 @@ const REQUEST_FIELDS = [
   'zoneClsf'
 ] as const
 export type HyundaiApiForm = Readonly<Record<(typeof REQUEST_FIELDS)[number], string>>
+const cardTailSchema = z
+  .object({
+    crno: z.string().min(1).max(256),
+    status: z.enum(['matched', 'ambiguous', 'unavailable']),
+    last4: z
+      .string()
+      .regex(/^\d{4}$/)
+      .optional()
+  })
+  .strict()
+  .refine((value) =>
+    value.status === 'matched' ? value.last4 !== undefined : value.last4 === undefined
+  )
+export type HyundaiCardTail = z.infer<typeof cardTailSchema>
+const cardTailsSchema = z.array(cardTailSchema).max(100)
 
 const scopeSchema = z
   .object({
@@ -188,6 +203,20 @@ function requestPlanScript(from: string, to: string): string {
     const allCardLabels = ${JSON.stringify(ALL_CARD_LABELS)};
     const allCards = Array.from(cards[0].options).filter(option => !option.disabled && allCardLabels.includes((option.label || '').replace(/\\s+/g, '')));
     if (allCards.length !== 1) return fail('card_selector_unverified');
+    if (cards[0].options.length > 100) return fail('card_selector_unverified');
+    const cardTails = [];
+    for (const option of Array.from(cards[0].options)) {
+      if (option === allCards[0] || !option.value) continue;
+      if (option.value.length > 256) return fail('card_selector_unverified');
+      const label = (option.label || '').replace(/\\s+/g, ' ').trim();
+      const runs = Array.from(label.matchAll(/[\\d*Xx●•]+(?:[ -]+[\\d*Xx●•]+)*/g), match => match[0].replace(/[ -]/g, ''));
+      const patterns = runs.filter(token => token.length === 15 || token.length === 16);
+      if (patterns.length === 1 && /\\d{4}$/.test(patterns[0])) cardTails.push({ crno: option.value, status: 'matched', last4: patterns[0].slice(-4) });
+      else cardTails.push({ crno: option.value, status: patterns.length > 1 || runs.some(token => token.length >= 30) ? 'ambiguous' : 'unavailable' });
+    }
+    for (const entry of cardTails) {
+      if (cardTails.filter(other => other.crno === entry.crno).length > 1) { entry.status = 'ambiguous'; delete entry.last4; }
+    }
     const direct = fixedRadio('dtClsf_04', 'dtClsf', '직접입력');
     const recent = fixedRadio('listClsf_01', 'listClsf', null);
     if (direct === null || recent === null) return fail('request_schema_unverified');
@@ -211,7 +240,7 @@ function requestPlanScript(from: string, to: string): string {
       zoneClsf: allRadio('zoneClsf')
     };
     for (const value of Object.values(data)) if (typeof value !== 'string' || value.length > 256 || /[\\u0000-\\u001f\\u007f]/.test(value)) return fail('request_schema_unverified');
-    return { ok: true, data };
+    return { ok: true, data, cardTails };
   })()`
 }
 
@@ -299,7 +328,10 @@ function historyOrigin(value: string): string | null {
 }
 
 /** Parse only the observed rcntAvItm/avUseItm response, never hidden HTML or arbitrary nested objects. */
-export function parseHyundaiApiPage(response: unknown): HyundaiApiPage {
+export function parseHyundaiApiPage(
+  response: unknown,
+  cardTails: readonly HyundaiCardTail[] = []
+): HyundaiApiPage {
   const body = own(response, 'bdy') ?? response
   const items = own(body, 'rcntAvItm')
   if (!Array.isArray(items) || items.length > MAX_ROWS)
@@ -341,7 +373,9 @@ export function parseHyundaiApiPage(response: unknown): HyundaiApiPage {
     const status: CardApiRow['status'] = cancelled ? 'cancelled' : approved ? 'approved' : 'unknown'
     if (!approved && !cancelled) review.push('approval_status_unverified')
     const currency = scalar(own(raw, 'acplCrncCd'), 10)
-    const isKrw = currency === 'KRW' || currency === '410'
+    // The official recentList renderer labels avAmt in 원. acplCrncCd can be
+    // blank for that displayed KRW amount; retain review for an explicit other code.
+    const isKrw = !currency || currency === 'KRW' || currency === '410'
     if (!isKrw) {
       review.push('currency_unverified')
       review.push(currency ? 'currency_code_unrecognized' : 'currency_code_missing')
@@ -358,7 +392,18 @@ export function parseHyundaiApiPage(response: unknown): HyundaiApiPage {
     const cardReference = scalar(own(raw, 'crno'), 128)
     const cardLabel = scalar(own(raw, 'cardNm'), 200)
     // Official renderer uses the final four characters of cdno, including masked formats.
-    const tail = cardNumber ? /(\d{4})$/.exec(cardNumber)?.[1] : null
+    let tail = cardNumber ? /(\d{4})$/.exec(cardNumber)?.[1] : null
+    const mapped = cardReference ? cardTails.filter((entry) => entry.crno === cardReference) : []
+    if (mapped.length > 1 || mapped[0]?.status === 'ambiguous')
+      review.push('card_mapping_ambiguous')
+    else if (mapped[0]?.status === 'matched') {
+      const mappedTail = mapped[0].last4
+      if (!mappedTail || !/^\d{4}$/.test(mappedTail)) review.push('card_mapping_unverified')
+      else if (tail && tail !== mappedTail) {
+        review.push('card_last4_conflict')
+        tail = null
+      } else tail = mappedTail
+    }
     if (!approvalNumber || (!cardNumber && !cardReference)) review.push('identity_unverified')
     if (!tail) {
       review.push('card_last4_unavailable')
@@ -527,6 +572,8 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
   const started = Date.now()
   const rows: CardApiRow[] = []
   let pages = 0
+  let approvalComplete = false
+  let approvalCoverageValid = true
   const issues = new Set<string>()
   const result = (more: string[] = []): CardApiResult => ({
     rows,
@@ -536,7 +583,7 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       pages,
       rowCount: rows.length,
       complete: issues.size === 0 && more.length === 0,
-      approvalComplete: false,
+      approvalComplete,
       issues: [...new Set([...issues, ...more])],
       elapsedMs: Date.now() - started
     }
@@ -577,11 +624,23 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       }
       const form = own(plan, 'data') as HyundaiApiForm
       if (!form || typeof form !== 'object') return result(['request_schema_unverified'])
+      const cardTails = cardTailsSchema.safeParse(own(plan, 'cardTails'))
+      if (!cardTails.success) return result(['card_mapping_unverified'])
+      if (form.dmfrClsf !== '') {
+        approvalCoverageValid = false
+        issues.add('scope_unverified')
+      }
       pages++
       const response = await requestHyundaiApiPage(tab, form, options.signal)
-      const page = parseHyundaiApiPage(response)
+      const page = parseHyundaiApiPage(response, cardTails.data)
       for (const issue of page.issues) issues.add(issue)
       if (page.rowCount === null) return result()
+      if (
+        page.rows.length !== page.rowCount ||
+        page.reportedTotal !== page.rowCount ||
+        page.issues.includes('daily_row_limit_possible')
+      )
+        approvalCoverageValid = false
       const summary = own(own(response, 'bdy') ?? response, 'rcntSummaryInfo')
       if (date(own(summary, 'srtDt')) !== iso || date(own(summary, 'endDt')) !== iso)
         return result(['response_range_unverified'])
@@ -599,15 +658,17 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
             : row.approvedAt.slice(0, 10)
         if (observedDay !== iso) {
           issues.add('approval_outside_requested_range')
+          approvalCoverageValid = false
           continue
         }
         for (const issue of row.needsReview) issues.add(issue)
         rows.push(row)
       }
     }
-    // All-card/range/usage echoes are checked above. Whether dmfrClsf separately
-    // narrows this service is not yet verified; do not claim approval completeness.
-    return result(['scope_unverified', 'cancellation_query_basis_unverified'])
+    // Whole-card/zone/use controls, direct date range, total and their response
+    // echoes are verified. A nonempty secondary region control remains unverified.
+    approvalComplete = approvalCoverageValid
+    return result(['cancellation_query_basis_unverified'])
   } catch (error) {
     if (options.signal?.aborted) return result(['cancelled'])
     return result([

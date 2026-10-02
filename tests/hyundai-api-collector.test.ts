@@ -123,7 +123,7 @@ function fixture(): {
 }
 
 describe('Hyundai private approval response normalization', () => {
-  it('normalizes observed fields without inventing approval, currency, or cancellation certainty', () => {
+  it('normalizes displayed won amounts without inventing approval or cancellation certainty', () => {
     const result = parseHyundaiApiPage(payload())
     expect(result.rowCount).toBe(1)
     expect(result.reportedTotal).toBe(1)
@@ -142,7 +142,7 @@ describe('Hyundai private approval response normalization', () => {
     })
     expect(result.rows[0].sourceId).toMatch(/^hyundai_card:[a-f0-9]{64}$/)
     expect(result.rows[0].needsReview).toContain('approval_status_unverified')
-    expect(result.rows[0].needsReview).toContain('currency_unverified')
+    expect(result.rows[0].needsReview).not.toContain('currency_unverified')
     for (const value of ['PRIVATE_CARD_REFERENCE', '0000000000005432', 'PRIVATE_UNRELATED_FIELD'])
       expect(JSON.stringify(result)).not.toContain(value)
   })
@@ -160,7 +160,7 @@ describe('Hyundai private approval response normalization', () => {
   })
 
   it.each(['0', '2'])(
-    'recognizes only verified non-cancellation code %s with explicit KRW currency',
+    'recognizes verified non-cancellation code %s and the renderer displayed won amount',
     (code) => {
       const result = parseHyundaiApiPage(payload([approval({ avClsf: code, acplCrncCd: '410' })]))
       expect(result.rows[0]).toMatchObject({
@@ -171,8 +171,8 @@ describe('Hyundai private approval response normalization', () => {
         needsReview: []
       })
       const noCurrency = parseHyundaiApiPage(payload([approval({ avClsf: code })]))
-      expect(noCurrency.rows[0].netAmount).toBeNull()
-      expect(noCurrency.rows[0].needsReview).toContain('currency_unverified')
+      expect(noCurrency.rows[0].netAmount).toBe(12500)
+      expect(noCurrency.rows[0].needsReview).toEqual([])
     }
   )
 
@@ -262,6 +262,36 @@ describe('Hyundai private approval response normalization', () => {
     ).toBe(true)
   })
 
+  it('matches a private card reference without changing identity or leaking the reference', () => {
+    const response = payload([approval({ avClsf: '0', cdno: 'UNAVAILABLE_FORMAT' })])
+    const before = parseHyundaiApiPage(response)
+    const after = parseHyundaiApiPage(response, [
+      { crno: 'PRIVATE_CARD_REFERENCE', status: 'matched', last4: '5432' }
+    ])
+    expect(after.rows[0].sourceId).toBe(before.rows[0].sourceId)
+    expect(after.rows[0]).toMatchObject({ cardLast4: '5432', needsReview: [] })
+    expect(JSON.stringify(after)).not.toContain('PRIVATE_CARD_REFERENCE')
+    const unrelated = parseHyundaiApiPage(response, [
+      { crno: 'OTHER_PRIVATE_REFERENCE', status: 'matched', last4: '5432' }
+    ])
+    expect(unrelated.rows[0].cardLast4).toBeUndefined()
+    expect(unrelated.rows[0].needsReview).toContain('card_last4_unavailable')
+  })
+
+  it('keeps duplicate mappings and conflicting card tails in review', () => {
+    const response = payload([approval({ avClsf: '0' })])
+    const conflict = parseHyundaiApiPage(response, [
+      { crno: 'PRIVATE_CARD_REFERENCE', status: 'matched', last4: '1234' }
+    ])
+    expect(conflict.rows[0].cardLast4).toBeUndefined()
+    expect(conflict.rows[0].needsReview).toContain('card_last4_conflict')
+    const duplicate = parseHyundaiApiPage(response, [
+      { crno: 'PRIVATE_CARD_REFERENCE', status: 'matched', last4: '5432' },
+      { crno: 'PRIVATE_CARD_REFERENCE', status: 'matched', last4: '5432' }
+    ])
+    expect(duplicate.rows[0].needsReview).toContain('card_mapping_ambiguous')
+  })
+
   it('marks the observed 630-real-row limit without treating 700 unknown slots as proven approvals', () => {
     const capped = parseHyundaiApiPage(
       payload(Array.from({ length: 630 }, (_, i) => approval({ avNo: String(i) })))
@@ -274,6 +304,109 @@ describe('Hyundai private approval response normalization', () => {
 })
 
 describe('Hyundai fixed authenticated read-only request and daily collector', () => {
+  it.each([
+    '(본인) 합성 카드 [0000-00**-****-5432]',
+    '합성 카드 (000000*****5432)',
+    '합성 카드 (0000 00XX XXXX 5432)',
+    '합성 카드 (0000-00●●-●●●●-5432)',
+    '합성 카드 (0000-00••-••••-5432)'
+  ])('privately maps the single masked card token in %s to its exact reference', async (label) => {
+    const f = fixture()
+    const option = f.dom.window.document.querySelectorAll('option')[1]
+    option.value = 'PRIVATE_CARD_REFERENCE'
+    option.label = label
+    f.fetch.mockResolvedValue(
+      Response.json(payload([approval({ avClsf: '0', cdno: 'UNAVAILABLE_FORMAT' })]))
+    )
+    const before = f.dom.window.document.querySelector('form')!.outerHTML
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.rows[0]).toMatchObject({ cardLast4: '5432', needsReview: [] })
+    expect(f.dom.window.document.querySelector('form')!.outerHTML).toBe(before)
+    expect(JSON.stringify(result.receipt)).not.toContain(label)
+    expect(JSON.stringify(result.receipt)).not.toContain('PRIVATE_CARD_REFERENCE')
+    expect(JSON.stringify(result.receipt)).not.toContain('5432')
+  })
+
+  it.each([
+    '카드 (0000-00**-****-5432) (0000-00**-****-5432)',
+    '카드 0000-00**-****-5432 0000-00**-****-1234'
+  ])('does not choose one of multiple card tokens in %s', async (label) => {
+    const f = fixture()
+    const option = f.dom.window.document.querySelectorAll('option')[1]
+    option.value = 'PRIVATE_CARD_REFERENCE'
+    option.label = label
+    f.fetch.mockResolvedValue(Response.json(payload([approval({ avClsf: '0', cdno: '' })])))
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.rows[0].cardLast4).toBeUndefined()
+    expect(result.rows[0].needsReview).toContain('card_mapping_ambiguous')
+  })
+
+  it('does not resolve a duplicate option reference, masked tail, or malformed card token', async () => {
+    const f = fixture()
+    const option = f.dom.window.document.querySelectorAll('option')[1]
+    option.value = 'PRIVATE_CARD_REFERENCE'
+    option.label = '합성 카드 0000-00**-****-5432'
+    const duplicate = option.cloneNode(true) as HTMLOptionElement
+    option.parentElement!.appendChild(duplicate)
+    f.fetch.mockImplementation(async () =>
+      Response.json(payload([approval({ avClsf: '0', cdno: '' })]))
+    )
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.rows[0].needsReview).toContain('card_mapping_ambiguous')
+    expect(result.rows[0].cardLast4).toBeUndefined()
+    duplicate.remove()
+    for (const label of [
+      '합성 카드 0000-00**-****-****',
+      '합성 카드 [1234]',
+      '합성 카드 0000-00**-****-54321'
+    ]) {
+      option.label = label
+      const malformed = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      expect(malformed.rows[0].cardLast4).toBeUndefined()
+      expect(malformed.rows[0].needsReview).toContain('card_last4_unavailable')
+    }
+  })
+
+  it('proves approval coverage when whole scope and empty region agree with response dates and counts', async () => {
+    const f = fixture()
+    f.dom.window.document.querySelector<HTMLInputElement>('[name="dmfrClsf"]')!.value = ''
+    const result = await collectHyundaiApi(f.tab, { from: '2026-09-29', to: '2026-10-02' })
+    expect(result.receipt).toMatchObject({
+      pages: 4,
+      rowCount: 4,
+      complete: false,
+      approvalComplete: true
+    })
+    expect(result.receipt.issues).not.toContain('scope_unverified')
+    expect(result.receipt.issues).toContain('cancellation_query_basis_unverified')
+    // Unknown per-row status is quarantined separately from verified query coverage.
+    expect(result.rows.every((row) => row.needsReview.includes('approval_status_unverified'))).toBe(
+      true
+    )
+  })
+
+  it.each([
+    { items: [approval()], total: 2, issue: 'total_count_mismatch' },
+    { items: [approval(), { trfcUseItm: {} }], total: 2, issue: 'unrecognized_rows' },
+    {
+      items: [approval({ avDt: '20261001', avDttm: '20261001121314' })],
+      total: 1,
+      issue: 'approval_outside_requested_range'
+    },
+    {
+      items: Array.from({ length: 630 }, (_, i) => approval({ avNo: String(i) })),
+      total: 630,
+      issue: 'daily_row_limit_possible'
+    }
+  ])('does not claim complete approval coverage when $issue', async ({ items, total, issue }) => {
+    const f = fixture()
+    f.dom.window.document.querySelector<HTMLInputElement>('[name="dmfrClsf"]')!.value = ''
+    f.fetch.mockResolvedValue(Response.json(payload(items, '20261002', total)))
+    const result = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.receipt.approvalComplete).toBe(false)
+    expect(result.receipt.issues).toContain(issue)
+  })
+
   it.each([
     '전체',
     '전체 카드',
