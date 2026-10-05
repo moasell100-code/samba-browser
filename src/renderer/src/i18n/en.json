@@ -857,7 +857,8 @@
       "automation": "Automation",
       "keymaster": "Key Master",
       "notify": "Notifications",
-      "phones": "Phones"
+      "phones": "Phones",
+      "cardDaily": "Daily card collection"
     },
     "general": {
       "searchTitle": "Search",
@@ -1372,6 +1373,63 @@
       "daily": "Daily {{time}} · {{label}}",
       "weekly": "Weekly {{weekday}} {{time}} · {{label}}",
       "frequent": "Frequent · {{label}}"
+    }
+  },
+  "cardDaily": {
+    "title": "Daily card collection",
+    "description": "Collect the most recent four days, including today, from Hyundai, Samsung and Lotte Card and save them to the finance app.",
+    "enable": "Collect every day",
+    "deviceOnly": "Runs on this PC only.",
+    "hour": "Run time (Korea Standard Time)",
+    "requirements": "Keep this PC and JAJA Browser running. If a card requires additional verification, only that card stops for your attention. Enabling after today’s scheduled time may start collection immediately.",
+    "statusTitle": "Latest collection status",
+    "unavailable": "Could not load collection status. Reopen settings to check again.",
+    "loading": "Checking collection status…",
+    "nextRun": "Next run: {{time}} (KST)",
+    "finished": "Last finished: {{time}} (KST)",
+    "gap": "{{count}} earlier day(s) are outside the four-day collection window. Check the missing period separately.",
+    "counts": "{{total}} collected · {{inserted}} added · {{updated}} updated · {{review}} need review",
+    "partial": "Cancellation history needs review: some coverage remains unverified.",
+    "phases": {
+      "idle": "Scheduled",
+      "running": "Collecting",
+      "completed": "Collection run finished",
+      "needs_attention": "Needs attention",
+      "paused": "Automatic collection off"
+    },
+    "states": {
+      "saved": "Saved",
+      "needs_login": "Check login",
+      "failed": "Needs attention",
+      "pending": "Pending",
+      "running": "Collecting"
+    },
+    "reasons": {
+      "agent_busy": "Waiting for another task to finish.",
+      "vault_locked": "Unlock Keymaster.",
+      "policy_blocked": "Check card login access in Keymaster.",
+      "not_configured": "Check card credentials or the finance app connection.",
+      "attempt_protected": "Login failure protection is active. Verify your login at the card website.",
+      "login_required": "Card login is required.",
+      "user_verification_required": "Complete additional verification on the card website.",
+      "login_unconfirmed": "Could not confirm login completion.",
+      "collection_incomplete": "Could not verify collection of every page.",
+      "sync_unavailable": "Check the finance app save connection.",
+      "interrupted": "Collection was interrupted or the app closed.",
+      "navigation_changed": "The card tab moved or closed during collection.",
+      "timeout": "The card website took too long to respond.",
+      "storage_unavailable": "Cannot save collection records on this PC.",
+      "coverage_gap": "An earlier period has not been collected.",
+      "review_required": "Some entries need classification or review in the finance app."
+    },
+    "approvalsSaved": "Approvals collected",
+    "partialSaved": "Partially saved",
+    "approvalsIncomplete": "Complete approval history could not be verified.",
+    "reconciliation": {
+      "no_work": "No older approvals to recheck",
+      "checked": "Rechecked {{count}} day(s) of existing approvals",
+      "needs_review": "Existing approval cancellations need review",
+      "failed": "Existing approval recheck failed; the recent approval save result is shown above."
     }
   }
 }

@@ -169,7 +169,8 @@ describe('deterministic current-card sync', () => {
       skippedRows: 0,
       reviewRows: 0,
       duplicateBatch: false,
-      complete: true
+      complete: true,
+      approvalComplete: false
     })
     const raw = JSON.stringify(out)
     for (const value of ['PRIVATE', '999999', secret, tokenFile, 'rows', 'issues'])

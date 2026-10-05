@@ -155,6 +155,7 @@ export class AgentRunner {
   private releaseVaultHold: (() => void) | null = null
   // 밖의 하네스가 쥔 도구 세션. 있는 동안은 채팅 실행(run)을 받지 않는다(한 손발이라 동시에 못 돈다)
   private session: ToolSession | null = null
+  private cardAutomationLease: symbol | null = null
 
   constructor(
     private tabs: TabManager,
@@ -290,6 +291,20 @@ export class AgentRunner {
     return this.abort !== null || this.session !== null
   }
 
+  /** Includes deterministic card work, without enabling the agent's general dialog policy. */
+  isBusy(): boolean {
+    return this.isRunning() || this.cardAutomationLease !== null
+  }
+
+  tryAcquireCardAutomation(): (() => void) | null {
+    if (this.isBusy()) return null
+    const lease = Symbol('card automation')
+    this.cardAutomationLease = lease
+    return () => {
+      if (this.cardAutomationLease === lease) this.cardAutomationLease = null
+    }
+  }
+
   /**
    * 사용자 확인 카드를 띄우고 응답을 기다린다(AI 도구·페이지 대화상자 공용).
    * 응답이 없으면 상한 시간 뒤 거부로 처리한다
@@ -423,6 +438,8 @@ export class AgentRunner {
     // AI 창에 붙여 넣은 이미지. 모델에만 실어 주고 대화 기록에는 남기지 않는다
     images?: AgentImage[]
   ): Promise<void> {
+    if (this.cardAutomationLease)
+      throw new Error('카드 자동 수집 중입니다. 완료 후 다시 실행해 주세요.')
     if (this.session) throw new Error('브릿지 세션 사용 중')
     // 이미 실행 중이면 세대 가드 없이 status 를 emit 하면 진행 중인 실행의 UI 를 덮어쓸 수 있다.
     // 핸들러가 throw 를 { ok: false, error } 로 ack 하므로 에러만 던진다.
@@ -882,6 +899,8 @@ export class AgentRunner {
    * 채팅 실행이 도는 동안은 만들 수 없고, 세션이 있는 동안 채팅 실행은 거부된다
    */
   createToolSession(opts: { onStep?: (label: string, ok: boolean) => void }): ToolSession {
+    if (this.cardAutomationLease)
+      throw new Error('카드 자동 수집 중입니다. 완료 후 다시 실행해 주세요.')
     if (this.abort) throw new Error('이미 실행 중')
     if (this.session) throw new Error('브릿지 세션 사용 중')
     if (this.settings.get().permissionMode === 'read_only') {

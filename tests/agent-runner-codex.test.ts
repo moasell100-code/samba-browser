@@ -67,6 +67,23 @@ beforeEach(() => {
 })
 
 describe('Codex browser runner', () => {
+  it('excludes deterministic card work from chat and bridge execution without enabling agent dialogs', async () => {
+    const { runner } = setup()
+    const release = runner.tryAcquireCardAutomation()
+    expect(release).toBeTypeOf('function')
+    expect(runner.isBusy()).toBe(true)
+    expect(runner.isRunning()).toBe(false)
+    expect(runner.tryAcquireCardAutomation()).toBeNull()
+    await expect(runner.run('synthetic')).rejects.toThrow('카드 자동 수집')
+    expect(() => runner.createToolSession({})).toThrow('카드 자동 수집')
+    expect(startCodexMcp).not.toHaveBeenCalled()
+    release!()
+    const second = runner.tryAcquireCardAutomation()
+    release!()
+    expect(runner.isBusy()).toBe(true)
+    second!()
+    expect(runner.isBusy()).toBe(false)
+  })
   it('passes the guarded tools and reports their actual call count', async () => {
     state.run = async function* () {
       expect(state.context?.tick()).toBeNull()

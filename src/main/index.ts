@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, crashReporter } from 'electron'
+import { app, BrowserWindow, crashReporter, powerMonitor } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { createMainWindow } from './window'
 import { TabManager } from './browser/tab-manager'
@@ -70,6 +70,7 @@ let vault: VaultService | undefined
 let sync: SyncEngineHolder | undefined
 let jaja: JajaManager | undefined
 let stopCardDiagnostics: (() => void) | undefined
+let stopCardDaily: (() => void) | undefined
 
 // 종료 순서: vault.dispose()(lock 포함, DB 조회 발생) → db.close() 순으로 해야 한다.
 // 반대로 하면(예전 버그) db.close() 뒤에 창이 닫히며 vault.dispose() → lock() →
@@ -80,6 +81,7 @@ let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
+  stopCardDaily?.()
   stopCardDiagnostics?.()
   jaja?.dispose()
   try {
@@ -126,6 +128,13 @@ app
     }
     db = await openDatabase(join(app.getPath('userData'), 'data.db'))
     const ipc = registerIpc(win, tabs, db)
+    const resumeCards = (): void => {
+      void ipc.cardDaily.tick()
+    }
+    stopCardDaily = () => {
+      powerMonitor.removeListener('resume', resumeCards)
+      ipc.cardDaily.dispose()
+    }
     vault = ipc.vault
     sync = ipc.sync
     jaja = registerJaja(win, tabs)
@@ -163,6 +172,8 @@ app
     }
     // url 을 주지 않으면 설정에서 계산된 기본 주소(새 탭 페이지/홈/빈 페이지)로 연다
     tabs.create()
+    powerMonitor.on('resume', resumeCards)
+    ipc.cardDaily.start()
     // A developer-started, temporary read-only MCP endpoint. No persistent bridge setting changes.
     const cardSession = app.isPackaged ? undefined : process.env.SAMBA_CARD_MCP_SESSION
     if (cardSession) {
@@ -171,7 +182,7 @@ app
           tabs,
           tempDir: app.getPath('temp'),
           sessionName: cardSession,
-          isBusy: () => ipc.agent.isRunning(),
+          isBusy: () => ipc.agent.isBusy(),
           vault,
           settings: () => ipc.settings.get(),
           collectorTokenFile: process.env.FINANCE_BROWSER_IMPORT_TOKEN_FILE,

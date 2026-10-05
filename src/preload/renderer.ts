@@ -67,6 +67,7 @@ import {
 } from '../shared/ipc'
 import type { AgentImage } from '../shared/agent-image'
 import type { JajaStatus } from '../shared/jaja'
+import type { CardDailyStatus } from '../shared/card-daily'
 import type { AiUsage } from '../shared/ai'
 import type { AuthState, WorkspaceDto } from '../shared/sync'
 import type { ExportRequest, ExportResult } from '../shared/vault'
@@ -266,6 +267,14 @@ const api = {
   settings: {
     get: (): Promise<IpcResult<Settings>> => invoke(IPC.settingsGet),
     set: (patch: Partial<Settings>): Promise<IpcResult<Settings>> => invoke(IPC.settingsSet, patch)
+  },
+  cardDaily: {
+    status: (): Promise<IpcResult<CardDailyStatus>> => invoke(IPC.cardDailyStatus),
+    onChanged: (cb: (status: CardDailyStatus) => void): (() => void) => {
+      const h = (_: unknown, status: CardDailyStatus): void => cb(status)
+      ipcRenderer.on(IPC.cardDailyChanged, h)
+      return () => ipcRenderer.off(IPC.cardDailyChanged, h)
+    }
   },
   bridge: {
     regenerateToken: (): Promise<IpcResult<{ token: string }>> => invoke(IPC.bridgeRegenerateToken)

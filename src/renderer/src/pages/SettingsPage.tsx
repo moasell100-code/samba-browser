@@ -9,6 +9,7 @@ import { SecuritySection } from '@renderer/components/settings/SecuritySection'
 import { AgentSection } from '@renderer/components/settings/AgentSection'
 import { AiSection } from '@renderer/components/settings/AiSection'
 import { NotifySection } from '@renderer/components/settings/NotifySection'
+import { CardDailySection } from '@renderer/components/settings/CardDailySection'
 import { PlaceholderSection } from '@renderer/components/settings/PlaceholderSection'
 import { PhonesPage } from '@renderer/pages/PhonesPage'
 import { PersonalInfoPage } from '@renderer/pages/PersonalInfoPage'
@@ -140,6 +141,8 @@ function SectionBody({
       return <PersonalInfoPage />
     case 'automation':
       return <AutomationPage />
+    case 'card-daily':
+      return <CardDailySection settings={settings} update={update} />
     case 'phones':
       return <PhonesPage />
     case 'notify':

@@ -9,8 +9,11 @@ export const CARD_SSH_SAVE_TIMEOUT_MS = 45000
 /** One fixed deployment destination and command; private JSON travels only over stdin. */
 export async function saveCardCollectionOverSsh(
   body: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  command: 'save' | 'schedule-report' | 'reconcile-lease' | 'reconcile-complete' = 'save'
 ): Promise<unknown> {
+  if (!['save', 'schedule-report', 'reconcile-lease', 'reconcile-complete'].includes(command))
+    throw new Error('Finance collector command invalid')
   if (Buffer.byteLength(body) > MAX_BODY) throw new Error('Finance collection too large')
   if (signal?.aborted) throw new Error('Finance collector save unavailable')
   return await new Promise((resolve, reject) => {
@@ -48,7 +51,7 @@ export async function saveCardCollectionOverSsh(
         '/app/.venv/bin/python',
         '-m',
         'app.browser_collector_cli',
-        'save'
+        command
       ],
       { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }
     )

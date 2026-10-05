@@ -39,6 +39,8 @@ export const IPC = {
   chatDelete: 'chat:delete',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  cardDailyStatus: 'cardDaily:status',
+  cardDailyChanged: 'cardDaily:changed', // main → renderer, 상태·개수만 전송
   bridgeRegenerateToken: 'bridge:regenerateToken', // 하네스 브릿지 토큰 새로 만들기(설정에 저장)
   // 하네스 읽기 API — 자동화 페이지의 흐름 그래프·판정 카드가 읽는다(127.0.0.1 만)
   harnessGraph: 'harness:graph',

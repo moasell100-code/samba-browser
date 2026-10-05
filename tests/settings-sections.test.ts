@@ -28,6 +28,7 @@ describe('설정 섹션 상수', () => {
       'behavior',
       'ai',
       'automation',
+      'card-daily',
       'phones',
       'notify'
     ])

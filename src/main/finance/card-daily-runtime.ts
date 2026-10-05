@@ -1,0 +1,385 @@
+import type { AgentRunner } from '../agent/runner'
+import type { Tab, TabManager } from '../browser/tab-manager'
+import type { VaultService } from '../vault/service'
+import type { Settings } from '../../shared/settings'
+import type {
+  CardDailyIssuer,
+  CardDailyReason,
+  CardDailyResult,
+  CardDailyStatus
+} from '../../shared/card-daily'
+import { CARD_DAILY_ISSUERS } from '../../shared/card-daily'
+import { createCardAgentSync } from './card-agent-sync'
+import { CARD_HISTORY_URLS, inspectCardPage, issuerForCardUrl } from './card-page-diagnostics'
+import { restoreCardSession } from './card-login-session'
+import { CardDailyScheduler } from './card-daily-scheduler'
+import { FileCardDailyStore } from './card-daily-store'
+import { reportCardSchedule } from './card-schedule-report'
+import { reconcileKnownCards } from './card-reconciliation-sync'
+
+const ISSUER_TIMEOUT_MS = 10 * 60_000
+
+function interrupted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const stop = (): void => {
+      signal.removeEventListener('abort', stop)
+      reject(new Error('Card schedule interrupted'))
+    }
+    if (signal.aborted) {
+      stop()
+      return
+    }
+    signal.addEventListener('abort', stop, { once: true })
+    void work.then(
+      (value) => {
+        signal.removeEventListener('abort', stop)
+        resolve(value)
+      },
+      () => {
+        stop()
+      }
+    )
+  })
+}
+function loginReason(state: string): CardDailyReason {
+  if (state === 'attempt_protected') return 'attempt_protected'
+  if (state === 'vault_locked') return 'vault_locked'
+  if (['policy_blocked', 'read_only'].includes(state)) return 'policy_blocked'
+  if (state === 'navigation_changed') return 'navigation_changed'
+  if (
+    [
+      'user_verification_required',
+      'wrong_credentials',
+      'input_required',
+      'security_program_required',
+      'additional_auth',
+      'captcha'
+    ].includes(state)
+  )
+    return 'user_verification_required'
+  return 'login_unconfirmed'
+}
+
+async function settledAuth(
+  tab: Tab,
+  signal: AbortSignal
+): Promise<Awaited<ReturnType<typeof inspectCardPage>>> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10_000)
+  const waiting = AbortSignal.any([signal, controller.signal])
+  try {
+    for (;;) {
+      const state = await interrupted(inspectCardPage(tab), waiting)
+      if (state.auth !== 'unknown') return state
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          clearTimeout(timer)
+          waiting.removeEventListener('abort', done)
+          resolve()
+        }
+        const timer = setTimeout(done, 250)
+        if (waiting.aborted) done()
+        else waiting.addEventListener('abort', done, { once: true })
+      })
+      if (waiting.aborted) return state
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export function createCardDailyRuntime(options: {
+  tabs: TabManager
+  agent: Pick<AgentRunner, 'tryAcquireCardAutomation' | 'isRunning'>
+  vault: VaultService
+  settings(): Settings
+  stateFile: string
+  onChanged?(status: CardDailyStatus): void
+  report?(status: CardDailyStatus): Promise<unknown>
+}): CardDailyScheduler {
+  // Own only tabs created here. Never navigate or close a user-owned card tab.
+  const dedicated = new Map<CardDailyIssuer, string>()
+  const lifetime = new AbortController()
+  const report =
+    options.report ??
+    ((status: CardDailyStatus): Promise<boolean> =>
+      reportCardSchedule(
+        {
+          enabled: status.enabled,
+          hourKst: status.hourKst,
+          phase: status.phase,
+          runDate: status.runDate,
+          startedAt: status.startedAt,
+          finishedAt: status.finishedAt,
+          gapDays: status.gapDays,
+          results: (status.results.length
+            ? status.results
+            : CARD_DAILY_ISSUERS.map((issuer): CardDailyResult => ({
+                issuer,
+                state: 'pending',
+                reason: status.reason
+              }))
+          ).map((row) => ({
+            issuer: row.issuer,
+            state: row.state === 'running' ? 'pending' : row.state,
+            reason: row.reason ?? status.reason,
+            approvalComplete: row.approvalComplete,
+            complete: row.complete,
+            insertedRows: row.insertedRows,
+            updatedRows: row.updatedRows
+          }))
+        },
+        {
+          tokenFile: options.settings().financeCollectorTokenFile,
+          transport: options.settings().financeCollectorTransport,
+          signal: lifetime.signal
+        }
+      ))
+  let lastReport = 0
+  let lastReportShape = ''
+  let reporting = false
+  let pendingReport: CardDailyStatus | undefined
+  const sendReport = (status: CardDailyStatus): void => {
+    if (lifetime.signal.aborted) return
+    if (reporting) {
+      pendingReport = status
+      return
+    }
+    reporting = true
+    lastReportShape = JSON.stringify(status)
+    lastReport = Date.now()
+    void Promise.resolve()
+      .then(() => report(status))
+      .catch(() => undefined)
+      .finally(() => {
+        reporting = false
+        const pending = pendingReport
+        pendingReport = undefined
+        if (pending && JSON.stringify(pending) !== lastReportShape) sendReport(pending)
+      })
+  }
+  const publish = (status: CardDailyStatus): void => {
+    options.onChanged?.(status)
+    const shape = JSON.stringify(status)
+    if (lifetime.signal.aborted || (shape === lastReportShape && Date.now() - lastReport < 300_000))
+      return
+    sendReport(status)
+  }
+  const policyReason = (): CardDailyReason | null => {
+    const settings = options.settings()
+    if (settings.permissionMode === 'read_only' || settings.vaultAccessPolicy === 'never')
+      return 'policy_blocked'
+    if (
+      settings.financeCollectorTransport === 'disabled' ||
+      (settings.financeCollectorTransport !== 'server-ssh' && !settings.financeCollectorTokenFile)
+    )
+      return 'not_configured'
+    return null
+  }
+  const ready = async (signal: AbortSignal): Promise<CardDailyReason | null> => {
+    const policy = policyReason()
+    if (policy) return policy
+    const configured = await createCardAgentSync({
+      tokenFile: options.settings().financeCollectorTokenFile,
+      transport: options.settings().financeCollectorTransport,
+      signal
+    })
+    if (!configured) return 'not_configured'
+    if (signal.aborted || !options.settings().financeDailyEnabled) return 'interrupted'
+    if (policyReason()) return policyReason()
+    if (options.vault.state() !== 'unlocked' && options.settings().vaultAccessPolicy === 'always')
+      await options.vault.ensureUnlockedByDevice()
+    return options.vault.state() === 'unlocked' ? null : 'vault_locked'
+  }
+  const run = async (
+    issuer: CardDailyIssuer,
+    parentSignal: AbortSignal,
+    allowLogin: boolean
+  ): Promise<CardDailyResult & { verifiedSignedIn?: boolean }> => {
+    const controller = new AbortController()
+    const signal = AbortSignal.any([controller.signal, parentSignal])
+    let timeout = false
+    const timer = setTimeout(() => {
+      timeout = true
+      controller.abort()
+    }, ISSUER_TIMEOUT_MS)
+    let tab: Tab | undefined
+    let wc: Tab['view']['webContents'] | undefined
+    let profile: string | undefined
+    let opening = true
+    let enteringCredentials = false
+    let verifiedSignedIn = false
+    const previousActive = options.tabs.active()?.id
+    const guard = setInterval(() => {
+      try {
+        if (
+          !options.settings().financeDailyEnabled ||
+          options.agent.isRunning() ||
+          policyReason() ||
+          options.vault.state() !== 'unlocked' ||
+          (tab &&
+            (options.tabs.get(tab.id) !== tab ||
+              tab.view.webContents !== wc ||
+              tab.profile !== profile ||
+              wc!.isDestroyed() ||
+              (enteringCredentials && options.tabs.agentTarget()?.id !== tab.id) ||
+              (!opening && issuerForCardUrl(wc!.getURL()) !== issuer)))
+        )
+          controller.abort()
+      } catch {
+        controller.abort()
+      }
+    }, 250)
+    const releaseHold = options.vault.holdAutoLock('daily card collection')
+    const stop = (): void => {
+      try {
+        if (wc && !wc.isDestroyed()) wc.stop()
+      } catch {
+        /* destroyed */
+      }
+    }
+    signal.addEventListener('abort', stop, { once: true })
+    try {
+      if (signal.aborted) throw new Error()
+      let existing = dedicated.get(issuer)
+      if (existing) {
+        const candidate = options.tabs.get(existing)
+        if (
+          !candidate ||
+          candidate.view.webContents.isDestroyed() ||
+          issuerForCardUrl(candidate.view.webContents.getURL()) !== issuer
+        )
+          existing = undefined
+      }
+      if (!existing) {
+        existing = options.tabs.create({ url: 'about:blank', profile: 'default' }).id
+        dedicated.set(issuer, existing)
+      }
+      tab = options.tabs.get(existing) ?? undefined
+      if (!tab) throw new Error()
+      wc = tab.view.webContents
+      profile = tab.profile
+      await interrupted(wc.loadURL(CARD_HISTORY_URLS[issuer]), signal)
+      opening = false
+      if (issuerForCardUrl(wc.getURL()) !== issuer) throw new Error()
+      const before = await interrupted(settledAuth(tab, signal), signal)
+      if (before.issuer !== issuer) throw new Error()
+      if (before.auth === 'unknown')
+        return { issuer, state: 'needs_login', reason: 'login_unconfirmed' }
+      if (before.auth !== 'signed_in') {
+        if (!allowLogin) return { issuer, state: 'needs_login', reason: 'attempt_protected' }
+        // Exactly one existing login-tool invocation. Its failed-attempt stores are never reset.
+        options.tabs.focusTarget(tab.id)
+        enteringCredentials = true
+        const login = await interrupted(
+          restoreCardSession({
+            tabs: options.tabs,
+            tabId: tab.id,
+            vault: options.vault,
+            settings: options.settings(),
+            signal
+          }),
+          signal
+        )
+        enteringCredentials = false
+        if (login.auth !== 'signed_in')
+          return { issuer, state: 'needs_login', reason: loginReason(login.state) }
+        await interrupted(wc.loadURL(CARD_HISTORY_URLS[issuer]), signal)
+        const confirmed = await interrupted(settledAuth(tab, signal), signal)
+        if (confirmed.issuer !== issuer || confirmed.auth !== 'signed_in')
+          return { issuer, state: 'needs_login', reason: 'login_unconfirmed' }
+      }
+      if (
+        signal.aborted ||
+        options.tabs.get(tab.id) !== tab ||
+        tab.view.webContents !== wc ||
+        tab.profile !== profile ||
+        wc.isDestroyed() ||
+        issuerForCardUrl(wc.getURL()) !== issuer
+      )
+        throw new Error()
+      verifiedSignedIn = true
+      const sync = await createCardAgentSync({
+        tokenFile: options.settings().financeCollectorTokenFile,
+        transport: options.settings().financeCollectorTransport,
+        signal
+      })
+      if (!sync) return { issuer, state: 'failed', reason: 'not_configured', verifiedSignedIn }
+      const result = await interrupted(sync(tab), signal)
+      if (!result.ok)
+        return {
+          issuer,
+          verifiedSignedIn,
+          state: result.reason === 'login_required' ? 'needs_login' : 'failed',
+          reason:
+            result.reason === 'login_required'
+              ? 'login_required'
+              : result.reason === 'collection_incomplete'
+                ? 'collection_incomplete'
+                : result.reason === 'interrupted'
+                  ? 'interrupted'
+                  : 'sync_unavailable'
+        }
+      const saved: CardDailyResult = {
+        issuer,
+        state: 'saved',
+        approvalComplete: result.approvalComplete,
+        complete: result.complete,
+        totalRows: result.totalRows,
+        insertedRows: result.insertedRows,
+        updatedRows: result.updatedRows,
+        reviewRows: result.reviewRows,
+        ...(!result.approvalComplete
+          ? { reason: 'collection_incomplete' as const }
+          : result.reviewRows
+            ? { reason: 'review_required' as const }
+            : {})
+      }
+      if (result.approvalComplete) {
+        try {
+          saved.reconciliation = await interrupted(
+            reconcileKnownCards(tab, {
+              tokenFile: options.settings().financeCollectorTokenFile,
+              transport: options.settings().financeCollectorTransport,
+              signal
+            }),
+            signal
+          )
+        } catch {
+          // A later check must never erase the receipt of an already saved current-period batch.
+          saved.reconciliation = { state: 'failed', checkedDays: 0, reviewRows: 0, updatedRows: 0 }
+        }
+      }
+      return { ...saved, verifiedSignedIn }
+    } catch {
+      return {
+        issuer,
+        verifiedSignedIn,
+        state: 'failed',
+        reason: timeout ? 'timeout' : signal.aborted ? 'interrupted' : 'sync_unavailable'
+      }
+    } finally {
+      clearTimeout(timer)
+      clearInterval(guard)
+      signal.removeEventListener('abort', stop)
+      controller.abort()
+      releaseHold()
+      if (
+        previousActive &&
+        tab &&
+        options.tabs.active()?.id === tab.id &&
+        options.tabs.get(previousActive)
+      )
+        options.tabs.focusTarget(previousActive)
+    }
+  }
+  return new CardDailyScheduler({
+    store: new FileCardDailyStore(options.stateFile),
+    settings: options.settings,
+    acquire: () => options.agent.tryAcquireCardAutomation(),
+    ready,
+    run,
+    onChanged: publish,
+    onDispose: () => lifetime.abort()
+  })
+}

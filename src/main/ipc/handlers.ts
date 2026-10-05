@@ -38,6 +38,7 @@ import { fetchCodexUsage } from '../ai/usage-codex'
 import type { PlaybookInput } from '../../shared/playbook'
 import { ScheduleRunStore } from '../schedule/runs'
 import { PlaybookScheduler } from '../schedule/scheduler'
+import { createCardDailyRuntime } from '../finance/card-daily-runtime'
 import { ActivityStore } from '../activity/store'
 import { SiteMemoryStore } from '../agent/site-memory-store'
 import { SiteScriptStore } from '../agent/site-scripts-store'
@@ -169,6 +170,7 @@ export function registerIpc(
   vault: VaultService
   auth: AuthService
   sync: SyncEngineHolder
+  cardDaily: ReturnType<typeof createCardDailyRuntime>
 } {
   const settings = new SettingsStore()
   // 동기화 엔진이 붙을 자리. 로그인 전에도 IPC 가 상태를 답할 수 있게 한다
@@ -279,13 +281,21 @@ export function registerIpc(
   const scheduler = new PlaybookScheduler({
     playbooks,
     runs: scheduleRuns,
-    isRunning: () => agent.isRunning(),
+    isRunning: () => agent.isBusy(),
     aiConnected: () => agentBackend() !== 'none',
     // 렌더러가 이 문구를 평소 채팅과 똑같이 보낸다 — 진행 상황이 AI 패널에 그대로 보인다
     dispatch: (req) => send(IPC.scheduleDispatch, req),
     onChanged: () => send(IPC.scheduleChanged, null)
   })
   scheduler.start()
+  const cardDaily = createCardDailyRuntime({
+    tabs,
+    agent,
+    vault,
+    settings: () => settings.get(),
+    stateFile: join(app.getPath('userData'), 'card-daily-runs.json'),
+    onChanged: (status) => send(IPC.cardDailyChanged, status)
+  })
   // 추천 — 기록 파일 + 숨김 설정 + 플레이북 목록을 잇기만 한다(판정은 순수 함수)
   const recommend = new RecommendService({
     runs: activityStore,
@@ -358,6 +368,7 @@ export function registerIpc(
     ipcMain.removeAllListeners(IPC.pageGesture)
     ipcMain.removeAllListeners(IPC.pageWebstoreInstall)
     scheduler.stop()
+    cardDaily.dispose()
     // 열려 있던 방문 한 건을 마무리해 머문 시간이 통째로 사라지지 않게 한다
     activity.flush()
     sync.current()?.stop()
@@ -421,6 +432,7 @@ export function registerIpc(
 
   // --- 예약 실행 — 상태 조회·지금 실행·일시정지/재개 ------------------------
   handleFromRenderer(IPC.scheduleStatus, () => scheduler.statusList())
+  handleFromRenderer(IPC.cardDailyStatus, () => cardDaily.status())
   handleFromRenderer(IPC.scheduleRunNow, (playbookId: string) => scheduler.runNow(playbookId))
   handleFromRenderer(IPC.scheduleSetPaused, (playbookId: string, paused: boolean) =>
     scheduler.setPaused(playbookId, paused)
@@ -463,6 +475,12 @@ export function registerIpc(
     // 홈 주소·새 탭 주소·검색엔진이 바뀌면 tab-manager 도 즉시 반영한다
     applyBrowserDefaults(s)
     setOcrEnabled(s.ocrEnabled)
+    if ('financeDailyEnabled' in patch || 'financeDailyHourKst' in patch) {
+      send(IPC.cardDailyChanged, cardDaily.status())
+      void cardDaily.tick().catch(() => {
+        send(IPC.cardDailyChanged, cardDaily.status())
+      })
+    }
     return settings.get()
   })
 
@@ -1414,5 +1432,5 @@ export function registerIpc(
   win.once('closed', () => capture.dispose())
   // === 캡처 끝 =========================================================================
 
-  return { settings, agent, db, vault, auth, sync }
+  return { settings, agent, db, vault, auth, sync, cardDaily }
 }

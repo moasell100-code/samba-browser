@@ -33,6 +33,7 @@ export const SECTIONS: readonly SettingsSectionDef[] = [
   { group: 'agent', key: 'behavior', labelKey: 'settingsPage.sections.behavior' },
   { group: 'agent', key: 'ai', labelKey: 'settingsPage.sections.ai' },
   { group: 'agent', key: 'automation', labelKey: 'settingsPage.sections.automation' },
+  { group: 'agent', key: 'card-daily', labelKey: 'settingsPage.sections.cardDaily' },
   { group: 'agent', key: 'phones', labelKey: 'settingsPage.sections.phones' },
   { group: 'agent', key: 'notify', labelKey: 'settingsPage.sections.notify' }
 ]

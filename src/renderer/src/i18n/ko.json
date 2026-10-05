@@ -857,7 +857,8 @@
       "automation": "자동화",
       "keymaster": "키마스터",
       "notify": "알림 연동",
-      "phones": "폰 연동"
+      "phones": "폰 연동",
+      "cardDaily": "카드 자동 수집"
     },
     "general": {
       "searchTitle": "검색",
@@ -1372,6 +1373,63 @@
       "daily": "매일 {{time}} · {{label}}",
       "weekly": "매주 {{weekday}}요일 {{time}} · {{label}}",
       "frequent": "자주 하는 일 · {{label}}"
+    }
+  },
+  "cardDaily": {
+    "title": "카드 자동 수집",
+    "description": "현대·삼성·롯데카드의 오늘 포함 최근 4일 이용내역을 매일 확인하고 재무앱에 저장합니다.",
+    "enable": "매일 자동 수집",
+    "deviceOnly": "이 PC에서만 실행됩니다.",
+    "hour": "실행 시각 (한국시간)",
+    "requirements": "PC와 자자 브라우저가 켜져 있어야 합니다. 로그인에 추가 인증이 필요하면 해당 카드만 멈추고 확인을 요청합니다. 켜는 시각이 오늘의 예약 시각 이후라면 바로 시작할 수 있습니다.",
+    "statusTitle": "최근 수집 상태",
+    "unavailable": "수집 상태를 불러오지 못했습니다. 설정을 다시 열어 확인해 주세요.",
+    "loading": "수집 상태 확인 중…",
+    "nextRun": "다음 실행: {{time}} (한국시간)",
+    "finished": "최근 종료: {{time}} (한국시간)",
+    "gap": "최근 4일 조회로 포함되지 않는 이전 기간 {{count}}일이 있습니다. 누락 기간은 별도로 확인해야 합니다.",
+    "counts": "조회 {{total}}건 · 새로 저장 {{inserted}}건 · 변경 {{updated}}건 · 확인 필요 {{review}}건",
+    "partial": "취소 내역 확인 필요: 취소 내역 등 일부 조회 범위는 확인되지 않았습니다.",
+    "phases": {
+      "idle": "예약 대기",
+      "running": "수집 중",
+      "completed": "수집 실행 종료",
+      "needs_attention": "확인 필요",
+      "paused": "자동 수집 꺼짐"
+    },
+    "states": {
+      "saved": "저장 완료",
+      "needs_login": "로그인 확인 필요",
+      "failed": "확인 필요",
+      "pending": "대기",
+      "running": "수집 중"
+    },
+    "reasons": {
+      "agent_busy": "다른 작업이 끝나기를 기다리고 있습니다.",
+      "vault_locked": "키마스터 잠금을 해제해 주세요.",
+      "policy_blocked": "키마스터의 카드 로그인 접근 설정을 확인해 주세요.",
+      "not_configured": "카드 로그인 정보 또는 재무앱 저장 연결을 확인해 주세요.",
+      "attempt_protected": "로그인 실패 보호가 적용되어 있습니다. 카드사에서 로그인 정보를 확인해 주세요.",
+      "login_required": "카드사 로그인이 필요합니다.",
+      "user_verification_required": "카드사 화면에서 추가 인증을 완료해 주세요.",
+      "login_unconfirmed": "로그인 완료를 확인하지 못했습니다.",
+      "collection_incomplete": "모든 페이지의 조회를 확인하지 못했습니다.",
+      "sync_unavailable": "재무앱 저장 연결을 확인해 주세요.",
+      "interrupted": "수집 도중 앱이 종료되거나 작업이 중단됐습니다.",
+      "navigation_changed": "수집 중 카드사 탭이 이동하거나 닫혔습니다.",
+      "timeout": "카드사 응답을 기다리는 시간이 초과됐습니다.",
+      "storage_unavailable": "이 PC의 수집 기록을 저장할 수 없습니다.",
+      "coverage_gap": "이전 기간에 수집하지 못한 내역이 있습니다.",
+      "review_required": "재무앱에서 분류하거나 확인할 내역이 있습니다."
+    },
+    "approvalsSaved": "승인 수집 완료",
+    "partialSaved": "일부 저장",
+    "approvalsIncomplete": "승인 내역의 전체 조회를 확인하지 못했습니다.",
+    "reconciliation": {
+      "no_work": "기존 거래 재확인 대상 없음",
+      "checked": "기존 거래 {{count}}일 재확인",
+      "needs_review": "기존 거래 취소 재확인 필요",
+      "failed": "기존 거래 취소 재확인 필요 · 최근 승인 저장 결과는 위에 표시됩니다."
     }
   }
 }

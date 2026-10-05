@@ -142,6 +142,9 @@ export const DEFAULT_SETTINGS = {
   financeCollectorTokenFile: '',
   // Device-local destination. Invalid values disable saving, never fall back to another database.
   financeCollectorTransport: 'local' as 'local' | 'server-ssh' | 'disabled',
+  // 카드 수집 일정은 이 PC 전용이다. 다른 기기로 동기화해 중복 실행하지 않는다.
+  financeDailyEnabled: false,
+  financeDailyHourKst: 9,
   // 밖에서 도는 하네스(samba-agent)의 읽기 API 주소. 자동화 페이지의 흐름 그래프·판정 카드가 읽는다.
   // 로컬 전용이라 127.0.0.1(또는 localhost) 만 허용한다 — 이 PC 값이라 동기화하지 않는다
   harnessApiUrl: 'http://127.0.0.1:47812',
@@ -339,6 +342,8 @@ export const settingsSchema = z.object({
     .enum(['local', 'server-ssh', 'disabled'])
     .default('local')
     .catch('disabled'),
+  financeDailyEnabled: z.boolean().catch(DEFAULT_SETTINGS.financeDailyEnabled),
+  financeDailyHourKst: z.number().int().min(0).max(23).catch(DEFAULT_SETTINGS.financeDailyHourKst),
   harnessApiUrl: z.string().max(200).catch(DEFAULT_SETTINGS.harnessApiUrl),
   agentTabCleanupMinutes: z.number().int().min(0).catch(DEFAULT_SETTINGS.agentTabCleanupMinutes),
   activeWorkspaceId: z.number().int().min(0).catch(DEFAULT_SETTINGS.activeWorkspaceId),
