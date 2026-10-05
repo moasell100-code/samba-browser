@@ -182,6 +182,52 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('deterministic daily card runtime', () => {
+  it('distinguishes a resolved navigation that still reports the blank document', async () => {
+    const f = setup()
+    const create = f.tabs.create.getMockImplementation()!
+    f.tabs.create.mockImplementation((options: { url: string }) => {
+      const tab = create(options) as Tab
+      const load = vi.mocked(tab.view.webContents.loadURL).getMockImplementation()!
+      vi.mocked(tab.view.webContents.loadURL).mockImplementation(async (url, options) => {
+        if (url === 'about:blank') return load(url, options)
+      })
+      return tab
+    })
+    await f.runtime.tick()
+    expect(mocks.restore).not.toHaveBeenCalled()
+    expect(f.runtime.status().results[0]).toMatchObject({
+      stage: 'verify_history_navigation',
+      loginAttempted: false,
+      navigationTrace: {
+        loadResult: 'resolved',
+        observedOrigin: 'about_blank',
+        errorName: 'Error',
+        errorHint: 'unknown'
+      }
+    })
+    f.runtime.dispose()
+  })
+  it('records a non-thenable loadURL result without starting login or leaking the page', async () => {
+    const f = setup()
+    const create = f.tabs.create.getMockImplementation()!
+    f.tabs.create.mockImplementation((options: { url: string }) => {
+      const tab = create(options) as Tab
+      const load = vi.mocked(tab.view.webContents.loadURL).getMockImplementation()!
+      vi.mocked(tab.view.webContents.loadURL).mockImplementation((url, options) => {
+        if (url === 'about:blank') return load(url, options)
+        return undefined as unknown as Promise<void>
+      })
+      return tab
+    })
+    await f.runtime.tick()
+    expect(mocks.restore).not.toHaveBeenCalled()
+    expect(f.runtime.status().results[0]).toMatchObject({
+      stage: 'open_history',
+      loginAttempted: false,
+      navigationTrace: { loadResult: 'non_thenable', observedOrigin: 'about_blank' }
+    })
+    f.runtime.dispose()
+  })
   it('records allowlisted navigation errors at open_history with zero login attempts', async () => {
     const f = setup()
     const create = f.tabs.create.getMockImplementation()!
@@ -344,20 +390,65 @@ describe('deterministic daily card runtime', () => {
     expect(mocks.sync).toHaveBeenCalledTimes(3)
     f.runtime.dispose()
   })
-  it('requires user attention after ten seconds of unknown auth instead of blind login', async () => {
+  it('restores unknown auth only at an exact official entry and verifies sign-in before collection', async () => {
     const f = setup()
+    const restored = new Set<string>()
     mocks.inspect.mockImplementation(async (tab: Tab) => ({
       issuer: issuerForCardUrl(tab.view.webContents.getURL()),
-      auth: 'unknown'
+      auth: restored.has(tab.id) ? 'signed_in' : 'unknown',
+      state: restored.has(tab.id) ? 'ready' : 'unknown'
     }))
+    mocks.restore.mockImplementation(async ({ tabId }: { tabId: string }) => {
+      restored.add(tabId)
+      return { state: 'signed_in', auth: 'signed_in' }
+    })
     const done = f.runtime.tick()
     await vi.advanceTimersByTimeAsync(30_000)
     await done
-    expect(mocks.restore).not.toHaveBeenCalled()
-    expect(mocks.sync).not.toHaveBeenCalled()
-    expect(f.runtime.status().results.every((row) => row.reason === 'login_unconfirmed')).toBe(true)
+    expect(mocks.restore).toHaveBeenCalledTimes(3)
+    expect(mocks.sync).toHaveBeenCalledTimes(3)
+    expect(f.runtime.status().results.every((row) => row.state === 'saved')).toBe(true)
     f.runtime.dispose()
   })
+  it.each(['unknown_path', 'inspection_error', 'prior_block'])(
+    'does not restore unknown auth for %s',
+    async (scenario) => {
+      if (scenario === 'prior_block')
+        mocks.record = {
+          version: 1,
+          gapDays: 0,
+          lastCovered: {},
+          loginBlocked: { hyundai_card: true, samsung_card: true, lotte_card: true }
+        }
+      const f = setup()
+      mocks.inspect.mockImplementation(async (tab: Tab) => {
+        if (scenario === 'unknown_path') {
+          const url = new URL(tab.view.webContents.getURL())
+          await tab.view.webContents.loadURL(`${url.origin}/unverified-page`)
+        }
+        return {
+          issuer: issuerForCardUrl(tab.view.webContents.getURL()),
+          auth: 'unknown',
+          state: scenario === 'inspection_error' ? 'error' : 'unknown'
+        }
+      })
+      const done = f.runtime.tick()
+      await vi.advanceTimersByTimeAsync(30_000)
+      await done
+      expect(mocks.restore).not.toHaveBeenCalled()
+      expect(mocks.sync).not.toHaveBeenCalled()
+      expect(
+        f.runtime
+          .status()
+          .results.every(
+            (row) =>
+              row.reason ===
+              (scenario === 'prior_block' ? 'attempt_protected' : 'login_unconfirmed')
+          )
+      ).toBe(true)
+      f.runtime.dispose()
+    }
+  )
   it('obeys while-unlocked policy; device unlock is attempted only for existing always policy', async () => {
     const f = setup()
     f.vault.state.mockReturnValue('locked')

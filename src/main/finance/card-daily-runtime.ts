@@ -17,9 +17,30 @@ import { CardDailyScheduler } from './card-daily-scheduler'
 import { FileCardDailyStore } from './card-daily-store'
 import { reportCardSchedule } from './card-schedule-report'
 import { reconcileKnownCards } from './card-reconciliation-sync'
-import { classifyCardNavigationFailure } from './card-navigation-failure'
+import {
+  classifyCardNavigationFailure,
+  classifyCardNavigationException
+} from './card-navigation-failure'
 
 const ISSUER_TIMEOUT_MS = 10 * 60_000
+const LOGIN_PATHS: Readonly<Record<CardDailyIssuer, string>> = {
+  hyundai_card: '/index.jsp',
+  samsung_card: '/personal/login/UHPPCO0301M0.jsp',
+  lotte_card: '/app/LPMANAA_V200.lc'
+}
+
+function knownLoginEntry(value: string, issuer: CardDailyIssuer): boolean {
+  if (issuerForCardUrl(value) !== issuer) return false
+  try {
+    const url = new URL(value)
+    return (
+      !url.search &&
+      [new URL(CARD_HISTORY_URLS[issuer]).pathname, LOGIN_PATHS[issuer]].includes(url.pathname)
+    )
+  } catch {
+    return false
+  }
+}
 
 function interrupted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -214,6 +235,7 @@ export function createCardDailyRuntime(options: {
     let verifiedSignedIn = false
     let stage: CardDailyStage = 'prepare_tab'
     let loginAttempted = false
+    let loadResult: NonNullable<CardDailyResult['navigationTrace']>['loadResult'] = 'not_started'
     const previousActive = options.tabs.active()?.id
     const guard = setInterval(() => {
       try {
@@ -272,13 +294,25 @@ export function createCardDailyRuntime(options: {
         if (wc.isDestroyed() || wc.getURL() !== 'about:blank') throw new Error()
       }
       stage = 'open_history'
-      await interrupted(wc.loadURL(CARD_HISTORY_URLS[issuer]), signal)
+      const navigation = wc.loadURL(CARD_HISTORY_URLS[issuer])
+      if (!navigation || typeof navigation.then !== 'function') {
+        loadResult = 'non_thenable'
+        throw new Error('Card navigation returned no promise')
+      }
+      loadResult = 'promise'
+      await interrupted(navigation, signal)
+      loadResult = 'resolved'
+      stage = 'verify_history_navigation'
       opening = false
       if (issuerForCardUrl(wc.getURL()) !== issuer) throw new Error()
       stage = 'inspect_session'
       const before = await interrupted(settledAuth(tab, signal), signal)
       if (before.issuer !== issuer) throw new Error()
-      if (before.auth === 'unknown')
+      if (
+        before.auth === 'unsupported' ||
+        (before.auth === 'unknown' &&
+          (before.state !== 'unknown' || !knownLoginEntry(wc.getURL(), issuer)))
+      )
         return { issuer, state: 'needs_login', reason: 'login_unconfirmed', stage, loginAttempted }
       if (before.auth !== 'signed_in') {
         if (!allowLogin)
@@ -404,9 +438,30 @@ export function createCardDailyRuntime(options: {
       }
       return { ...saved, verifiedSignedIn }
     } catch (error: unknown) {
-      const navigationFailure = ['open_history', 'reopen_history', 'prepare_tab'].includes(stage)
-        ? classifyCardNavigationFailure(error)
-        : undefined
+      const navigationStage = [
+        'open_history',
+        'reopen_history',
+        'prepare_tab',
+        'verify_history_navigation'
+      ].includes(stage)
+      const navigationFailure = navigationStage ? classifyCardNavigationFailure(error) : undefined
+      let observedOrigin: NonNullable<CardDailyResult['navigationTrace']>['observedOrigin'] =
+        'unavailable'
+      if (navigationStage) {
+        try {
+          if (wc && !wc.isDestroyed()) {
+            const url = wc.getURL()
+            observedOrigin =
+              url === 'about:blank'
+                ? 'about_blank'
+                : issuerForCardUrl(url) === issuer
+                  ? 'expected_issuer'
+                  : 'other'
+          }
+        } catch {
+          /* a destroyed view has no current URL */
+        }
+      }
       const failureKind =
         navigationFailure?.category === 'aborted'
           ? 'navigation_aborted'
@@ -420,6 +475,15 @@ export function createCardDailyRuntime(options: {
         loginAttempted,
         failureKind,
         ...(navigationFailure ? { navigationFailure } : {}),
+        ...(navigationStage
+          ? {
+              navigationTrace: {
+                loadResult,
+                observedOrigin,
+                ...classifyCardNavigationException(error)
+              }
+            }
+          : {}),
         state: 'failed',
         reason: timeout ? 'timeout' : signal.aborted ? 'interrupted' : 'sync_unavailable'
       }

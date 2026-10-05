@@ -20,6 +20,20 @@ const result = z
       .object({ code: z.enum(CARD_NAVIGATION_CODES), category: z.enum(CARD_NAVIGATION_CATEGORIES) })
       .strict()
       .optional(),
+    navigationTrace: z
+      .object({
+        loadResult: z.enum(['not_started', 'promise', 'resolved', 'non_thenable']),
+        observedOrigin: z.enum(['about_blank', 'expected_issuer', 'other', 'unavailable']),
+        errorName: z.enum(['TypeError', 'ReferenceError', 'Error', 'unknown']),
+        errorHint: z.enum([
+          'then_not_callable',
+          'undefined_property',
+          'destroyed_object',
+          'unknown'
+        ])
+      })
+      .strict()
+      .optional(),
     approvalComplete: z.boolean().optional(),
     complete: z.boolean().optional(),
     totalRows: count.optional(),

@@ -1,7 +1,45 @@
 import { describe, expect, it } from 'vitest'
-import { classifyCardNavigationFailure } from '../src/main/finance/card-navigation-failure'
+import {
+  classifyCardNavigationFailure,
+  classifyCardNavigationException
+} from '../src/main/finance/card-navigation-failure'
 
 describe('safe Chromium navigation failure classification', () => {
+  it('projects only known local exception categories, never error names or messages from user data', () => {
+    expect(classifyCardNavigationException(new TypeError('work.then is not a function'))).toEqual({
+      errorName: 'TypeError',
+      errorHint: 'then_not_callable'
+    })
+    expect(
+      classifyCardNavigationException(
+        new TypeError("Cannot read properties of undefined (reading 'then')")
+      )
+    ).toEqual({
+      errorName: 'TypeError',
+      errorHint: 'undefined_property'
+    })
+    expect(classifyCardNavigationException(new ReferenceError('PRIVATE is not defined'))).toEqual({
+      errorName: 'ReferenceError',
+      errorHint: 'unknown'
+    })
+    const custom = { name: 'PRIVATE-PASSWORD', message: 'SECRET-CARD-1234567890123456' }
+    expect(classifyCardNavigationException(custom)).toEqual({
+      errorName: 'unknown',
+      errorHint: 'unknown'
+    })
+    let calls = 0
+    const getter = Object.defineProperty({}, 'message', {
+      get: () => {
+        calls++
+        return 'SECRET'
+      }
+    })
+    expect(classifyCardNavigationException(getter)).toEqual({
+      errorName: 'unknown',
+      errorHint: 'unknown'
+    })
+    expect(calls).toBe(0)
+  })
   it.each([
     ['ERR_ABORTED', 'aborted'],
     ['ERR_CERT_AUTHORITY_INVALID', 'tls'],

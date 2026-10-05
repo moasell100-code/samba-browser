@@ -22,6 +22,7 @@ export type CardDailyReason = (typeof CARD_DAILY_REASONS)[number]
 export const CARD_DAILY_STAGES = [
   'prepare_tab',
   'open_history',
+  'verify_history_navigation',
   'inspect_session',
   'restore_session',
   'reopen_history',
@@ -39,6 +40,12 @@ export interface CardDailyResult {
   loginAttempted?: boolean
   failureKind?: 'navigation_aborted' | 'navigation_failed' | 'operation_failed'
   navigationFailure?: CardNavigationFailure
+  navigationTrace?: {
+    loadResult: 'not_started' | 'promise' | 'resolved' | 'non_thenable'
+    observedOrigin: 'about_blank' | 'expected_issuer' | 'other' | 'unavailable'
+    errorName: 'TypeError' | 'ReferenceError' | 'Error' | 'unknown'
+    errorHint: 'then_not_callable' | 'undefined_property' | 'destroyed_object' | 'unknown'
+  }
   approvalComplete?: boolean
   complete?: boolean
   totalRows?: number

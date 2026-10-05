@@ -1,4 +1,5 @@
 import { CARD_NAVIGATION_CODES, type CardNavigationFailure } from '../../shared/card-navigation'
+import type { CardDailyResult } from '../../shared/card-daily'
 
 const errnoCodes: Readonly<Record<number, CardNavigationFailure['code']>> = {
   [-2]: 'ERR_FAILED',
@@ -31,6 +32,30 @@ function knownCode(value: unknown): CardNavigationFailure['code'] | undefined {
   return (CARD_NAVIGATION_CODES as readonly string[]).includes(normalized)
     ? (normalized as CardNavigationFailure['code'])
     : undefined
+}
+
+/** Classify local programming failures without exposing their message, property names or values. */
+export function classifyCardNavigationException(
+  error: unknown
+): Pick<NonNullable<CardDailyResult['navigationTrace']>, 'errorName' | 'errorHint'> {
+  const errorName =
+    error instanceof TypeError
+      ? 'TypeError'
+      : error instanceof ReferenceError
+        ? 'ReferenceError'
+        : error instanceof Error
+          ? 'Error'
+          : 'unknown'
+  const message = own(error, 'message')
+  const text = typeof message === 'string' ? message.slice(0, 160) : ''
+  const errorHint = /^\S{1,60}\.then is not a function$/.test(text)
+    ? 'then_not_callable'
+    : /^Cannot read properties of (?:undefined|null) \(reading '[A-Za-z]{1,40}'\)$/.test(text)
+      ? 'undefined_property'
+      : /^Object has been destroyed$/.test(text)
+        ? 'destroyed_object'
+        : 'unknown'
+  return { errorName, errorHint }
 }
 
 /** Extract only an allowlisted net code; all unrecognized details remain inside main-process RAM. */
