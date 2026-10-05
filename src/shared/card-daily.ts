@@ -24,6 +24,7 @@ export const CARD_DAILY_STAGES = [
   'open_history',
   'verify_history_navigation',
   'inspect_session',
+  'prepare_login_page',
   'restore_session',
   'reopen_history',
   'verify_restored_session',

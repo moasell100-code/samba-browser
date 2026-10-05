@@ -479,6 +479,68 @@ describe('deterministic daily card runtime', () => {
     expect(f.runtime.status().results.every((row) => row.state === 'saved')).toBe(true)
     f.runtime.dispose()
   })
+  it.each(['allowed', 'prior_block', 'wrong_path', 'external_origin'] as const)(
+    'handles Samsung QR login return parameters with a fixed entry for %s',
+    async (scenario) => {
+      if (scenario === 'prior_block')
+        mocks.record = {
+          version: 1,
+          gapDays: 0,
+          lastCovered: {},
+          loginBlocked: { samsung_card: true }
+        }
+      const f = setup()
+      const canonical = 'https://www.samsungcard.com/personal/login/UHPPCO0301M0.jsp'
+      const redirected =
+        scenario === 'wrong_path'
+          ? 'https://www.samsungcard.com/unverified-login?returnUrl=PRIVATE'
+          : scenario === 'external_origin'
+            ? 'https://untrusted.test/personal/login/UHPPCO0301M0.jsp?returnUrl=PRIVATE'
+            : `${canonical}?returnUrl=PRIVATE-REDIRECT-TOKEN`
+      let restored = false
+      const create = f.tabs.create.getMockImplementation()!
+      f.tabs.create.mockImplementation((options: { url: string }) => {
+        const tab = create(options) as Tab
+        const load = vi.mocked(tab.view.webContents.loadURL).getMockImplementation()!
+        vi.mocked(tab.view.webContents.loadURL).mockImplementation(async (url, options) => {
+          return load(
+            !restored && url === 'https://www.samsungcard.com/history' ? redirected : url,
+            options
+          )
+        })
+        return tab
+      })
+      mocks.inspect.mockImplementation(async (tab: Tab) => {
+        const issuer = issuerForCardUrl(tab.view.webContents.getURL())
+        const unknown = issuer === 'samsung_card' && !restored
+        return {
+          issuer,
+          auth: unknown ? 'unknown' : 'signed_in',
+          state: unknown ? 'unknown' : 'ready'
+        }
+      })
+      mocks.restore.mockImplementation(async ({ tabId }: { tabId: string }) => {
+        expect(f.tabs.get(tabId)!.view.webContents.getURL()).toBe(canonical)
+        restored = true
+        return { auth: 'signed_in', state: 'signed_in' }
+      })
+      const done = f.runtime.tick()
+      await vi.advanceTimersByTimeAsync(20_000)
+      await done
+      const samsungTab = f.tabs.create.mock.results[1].value as Tab
+      const urls = vi.mocked(samsungTab.view.webContents.loadURL).mock.calls.map(([url]) => url)
+      expect(urls.filter((url) => url === canonical)).toHaveLength(scenario === 'allowed' ? 1 : 0)
+      expect(urls.some((url) => url.includes('PRIVATE'))).toBe(false)
+      expect(mocks.restore).toHaveBeenCalledTimes(scenario === 'allowed' ? 1 : 0)
+      expect(f.runtime.status().results[1]).toMatchObject(
+        scenario === 'allowed'
+          ? { state: 'saved', loginAttempted: true }
+          : { loginAttempted: false }
+      )
+      expect(JSON.stringify(f.statuses)).not.toContain('PRIVATE')
+      f.runtime.dispose()
+    }
+  )
   it.each(['unknown_path', 'inspection_error', 'prior_block'])(
     'does not restore unknown auth for %s',
     async (scenario) => {

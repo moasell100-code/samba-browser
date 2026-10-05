@@ -23,10 +23,24 @@ import {
 } from './card-navigation-failure'
 
 const ISSUER_TIMEOUT_MS = 10 * 60_000
+const SAMSUNG_LOGIN_URL = 'https://www.samsungcard.com/personal/login/UHPPCO0301M0.jsp'
 const LOGIN_PATHS: Readonly<Record<CardDailyIssuer, string>> = {
   hyundai_card: '/index.jsp',
   samsung_card: '/personal/login/UHPPCO0301M0.jsp',
   lotte_card: '/app/LPMANAA_V200.lc'
+}
+
+function samsungLoginRedirect(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      issuerForCardUrl(value) === 'samsung_card' &&
+      url.origin + url.pathname === SAMSUNG_LOGIN_URL &&
+      !!url.search
+    )
+  } catch {
+    return false
+  }
 }
 
 function knownLoginEntry(value: string, issuer: CardDailyIssuer): boolean {
@@ -70,7 +84,8 @@ async function waitForHistoryDocument(
   wc: Tab['view']['webContents'],
   issuer: CardDailyIssuer,
   signal: AbortSignal,
-  valid: () => boolean
+  valid: () => boolean,
+  canonicalUrl?: string
 ): Promise<boolean> {
   const deadline = Date.now() + 20_000
   let committed = false
@@ -80,7 +95,14 @@ async function waitForHistoryDocument(
     const url = wc.getURL()
     if (issuerForCardUrl(url) === issuer) {
       committed = true
-      if (!wc.isLoading()) return true
+      const current = new URL(url)
+      if (canonicalUrl && current.origin + current.pathname !== canonicalUrl)
+        throw new Error('Card login entry changed')
+      if (
+        !wc.isLoading() &&
+        (!canonicalUrl || (!current.search && current.origin + current.pathname === canonicalUrl))
+      )
+        return true
     } else if (url !== 'about:blank' || committed) {
       throw new Error('Card navigation changed')
     }
@@ -349,8 +371,28 @@ export function createCardDailyRuntime(options: {
       opening = false
       if (issuerForCardUrl(wc.getURL()) !== issuer) throw new Error()
       stage = 'inspect_session'
-      const before = await interrupted(settledAuth(tab, signal), signal)
+      let before = await interrupted(settledAuth(tab, signal), signal)
       if (before.issuer !== issuer) throw new Error()
+      if (before.auth !== 'signed_in' && !allowLogin)
+        return { issuer, state: 'needs_login', reason: 'attempt_protected', stage, loginAttempted }
+      if (
+        issuer === 'samsung_card' &&
+        before.auth === 'unknown' &&
+        before.state === 'unknown' &&
+        samsungLoginRedirect(wc.getURL())
+      ) {
+        // An official QR/ID login redirect carries return parameters. Never follow or
+        // forward their values: load the fixed public login entry once before native preparation.
+        stage = 'prepare_login_page'
+        await interrupted(wc.loadURL(SAMSUNG_LOGIN_URL), signal)
+        if (!(await waitForHistoryDocument(wc, issuer, signal, sameContext, SAMSUNG_LOGIN_URL))) {
+          timeout = true
+          throw new Error('Card login entry did not settle')
+        }
+        stage = 'inspect_session'
+        before = await interrupted(settledAuth(tab, signal), signal)
+        if (before.issuer !== issuer) throw new Error()
+      }
       if (
         before.auth === 'unsupported' ||
         (before.auth === 'unknown' &&
@@ -358,14 +400,6 @@ export function createCardDailyRuntime(options: {
       )
         return { issuer, state: 'needs_login', reason: 'login_unconfirmed', stage, loginAttempted }
       if (before.auth !== 'signed_in') {
-        if (!allowLogin)
-          return {
-            issuer,
-            state: 'needs_login',
-            reason: 'attempt_protected',
-            stage,
-            loginAttempted
-          }
         // Exactly one existing login-tool invocation. Its failed-attempt stores are never reset.
         options.tabs.focusTarget(tab.id)
         enteringCredentials = true
@@ -489,6 +523,7 @@ export function createCardDailyRuntime(options: {
         'open_history',
         'reopen_history',
         'prepare_tab',
+        'prepare_login_page',
         'verify_history_navigation'
       ].includes(stage)
       const navigationFailure = navigationStage ? classifyCardNavigationFailure(error) : undefined
@@ -512,7 +547,10 @@ export function createCardDailyRuntime(options: {
       const failureKind =
         navigationFailure?.category === 'aborted'
           ? 'navigation_aborted'
-          : stage === 'open_history' || stage === 'reopen_history' || stage === 'prepare_tab'
+          : stage === 'open_history' ||
+              stage === 'reopen_history' ||
+              stage === 'prepare_tab' ||
+              stage === 'prepare_login_page'
             ? 'navigation_failed'
             : 'operation_failed'
       return {
