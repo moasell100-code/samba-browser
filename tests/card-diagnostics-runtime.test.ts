@@ -184,6 +184,22 @@ afterEach(async () => {
 })
 
 describe('card diagnostics runtime lifetime', () => {
+  it('reports safe load failure metadata without inspecting an error document or exposing the failed URL', async () => {
+    const h = await fixture()
+    h.wc.loadURL.mockRejectedValueOnce(
+      new Error("net::ERR_PROXY_CONNECTION_FAILED loading 'https://PRIVATE-ACCOUNT?token=SECRET'")
+    )
+    const outcome = await h.backend.openHistory('lotte_card')
+    expect(outcome).toEqual({
+      tabId: h.tab.id,
+      issuer: 'lotte_card',
+      state: 'navigation_failed',
+      auth: 'unknown',
+      navigationFailure: { code: 'ERR_PROXY_CONNECTION_FAILED', category: 'proxy' }
+    })
+    expect(fixtureState.inspect).not.toHaveBeenCalled()
+    expect(JSON.stringify(outcome)).not.toMatch(/PRIVATE|SECRET/)
+  })
   it('finishes a new tab empty-to-about:blank transition before observing or opening history', async () => {
     const h = await fixture({ fresh: true })
     const wait = deferred()

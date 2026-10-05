@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { CARD_DAILY_ISSUERS, CARD_DAILY_REASONS, CARD_DAILY_STAGES } from '../../shared/card-daily'
 import { isCardDate } from './card-date-range'
+import { CARD_NAVIGATION_CODES, CARD_NAVIGATION_CATEGORIES } from '../../shared/card-navigation'
 
 const date = z.string().refine(isCardDate)
 const count = z.number().int().nonnegative().max(10_000_000)
@@ -15,6 +16,10 @@ const result = z
     stage: z.enum(CARD_DAILY_STAGES).optional(),
     loginAttempted: z.boolean().optional(),
     failureKind: z.enum(['navigation_aborted', 'navigation_failed', 'operation_failed']).optional(),
+    navigationFailure: z
+      .object({ code: z.enum(CARD_NAVIGATION_CODES), category: z.enum(CARD_NAVIGATION_CATEGORIES) })
+      .strict()
+      .optional(),
     approvalComplete: z.boolean().optional(),
     complete: z.boolean().optional(),
     totalRows: count.optional(),

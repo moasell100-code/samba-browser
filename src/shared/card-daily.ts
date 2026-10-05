@@ -38,6 +38,7 @@ export interface CardDailyResult {
   stage?: CardDailyStage
   loginAttempted?: boolean
   failureKind?: 'navigation_aborted' | 'navigation_failed' | 'operation_failed'
+  navigationFailure?: CardNavigationFailure
   approvalComplete?: boolean
   complete?: boolean
   totalRows?: number
@@ -63,3 +64,4 @@ export interface CardDailyStatus {
   nextRunAt: string | null
   reason?: CardDailyReason
 }
+import type { CardNavigationFailure } from './card-navigation'

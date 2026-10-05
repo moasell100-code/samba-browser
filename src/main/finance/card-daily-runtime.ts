@@ -17,6 +17,7 @@ import { CardDailyScheduler } from './card-daily-scheduler'
 import { FileCardDailyStore } from './card-daily-store'
 import { reportCardSchedule } from './card-schedule-report'
 import { reconcileKnownCards } from './card-reconciliation-sync'
+import { classifyCardNavigationFailure } from './card-navigation-failure'
 
 const ISSUER_TIMEOUT_MS = 10 * 60_000
 
@@ -403,11 +404,11 @@ export function createCardDailyRuntime(options: {
       }
       return { ...saved, verifiedSignedIn }
     } catch (error: unknown) {
-      // Error objects may contain URLs or site content; expose only fixed known categories.
-      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
-      const errno = error && typeof error === 'object' && 'errno' in error ? error.errno : undefined
+      const navigationFailure = ['open_history', 'reopen_history', 'prepare_tab'].includes(stage)
+        ? classifyCardNavigationFailure(error)
+        : undefined
       const failureKind =
-        code === 'ERR_ABORTED' || errno === -3
+        navigationFailure?.category === 'aborted'
           ? 'navigation_aborted'
           : stage === 'open_history' || stage === 'reopen_history' || stage === 'prepare_tab'
             ? 'navigation_failed'
@@ -418,6 +419,7 @@ export function createCardDailyRuntime(options: {
         stage,
         loginAttempted,
         failureKind,
+        ...(navigationFailure ? { navigationFailure } : {}),
         state: 'failed',
         reason: timeout ? 'timeout' : signal.aborted ? 'interrupted' : 'sync_unavailable'
       }

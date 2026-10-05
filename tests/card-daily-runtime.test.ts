@@ -182,6 +182,38 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('deterministic daily card runtime', () => {
+  it('records allowlisted navigation errors at open_history with zero login attempts', async () => {
+    const f = setup()
+    const create = f.tabs.create.getMockImplementation()!
+    f.tabs.create.mockImplementation((options: { url: string }) => {
+      const tab = create(options) as Tab
+      const load = vi.mocked(tab.view.webContents.loadURL).getMockImplementation()!
+      vi.mocked(tab.view.webContents.loadURL).mockImplementation(async (url, options) => {
+        if (url !== 'about:blank')
+          throw new Error(
+            "net::ERR_CERT_AUTHORITY_INVALID (-202) loading 'https://PRIVATE/?account=SECRET'"
+          )
+        return load(url, options)
+      })
+      return tab
+    })
+    await f.runtime.tick()
+    expect(mocks.restore).not.toHaveBeenCalled()
+    expect(mocks.sync).not.toHaveBeenCalled()
+    expect(
+      f.runtime
+        .status()
+        .results.every(
+          (row) =>
+            row.stage === 'open_history' &&
+            row.loginAttempted === false &&
+            row.navigationFailure?.category === 'tls' &&
+            row.navigationFailure?.code === 'ERR_CERT_AUTHORITY_INVALID'
+        )
+    ).toBe(true)
+    expect(JSON.stringify(f.statuses)).not.toMatch(/PRIVATE|SECRET/)
+    f.runtime.dispose()
+  })
   it('settles the newly created blank document before issuing a history navigation', async () => {
     const f = setup({ initialNavigationRace: true })
     await f.runtime.tick()

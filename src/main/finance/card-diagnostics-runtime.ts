@@ -14,6 +14,8 @@ import { collectSamsungApi } from './samsung-api-collector'
 import { collectLotteApi } from './lotte-api-collector'
 import { collectHyundaiApi, inspectHyundaiScope } from './hyundai-api-collector'
 import { inspectSamsungIdLogin } from './samsung-login-preparation'
+import { classifyCardNavigationFailure } from './card-navigation-failure'
+import type { CardNavigationFailure } from '../../shared/card-navigation'
 
 const TTL_MS = 30 * 60 * 1000
 
@@ -170,7 +172,12 @@ export async function startCardDiagnosticsRuntime(options: {
       await observe(tab, issuer, initialUrl)
       assertTabContext(tab, initialUrl)
       // Only these constant history URLs can be navigated. No arbitrary URL or form submission.
-      const load = tab.view.webContents.loadURL(CARD_HISTORY_URLS[issuer]).catch(() => undefined)
+      let navigationFailure: CardNavigationFailure | undefined
+      const load = tab.view.webContents
+        .loadURL(CARD_HISTORY_URLS[issuer])
+        .catch((error: unknown) => {
+          navigationFailure = classifyCardNavigationFailure(error)
+        })
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
         await Promise.race([
@@ -183,6 +190,8 @@ export async function startCardDiagnosticsRuntime(options: {
         if (timer) clearTimeout(timer)
       }
       assertLiveTab(tab)
+      if (navigationFailure)
+        return { tabId: id, issuer, state: 'navigation_failed', auth: 'unknown', navigationFailure }
       const loadedUrl = tab.view.webContents.getURL()
       if (issuerForCardUrl(loadedUrl) !== issuer) throw new Error('Card tab changed')
       assertTabContext(tab, loadedUrl)
