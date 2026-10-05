@@ -65,6 +65,38 @@ function interrupted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     )
   })
 }
+
+async function waitForHistoryDocument(
+  wc: Tab['view']['webContents'],
+  issuer: CardDailyIssuer,
+  signal: AbortSignal,
+  valid: () => boolean
+): Promise<boolean> {
+  const deadline = Date.now() + 20_000
+  let committed = false
+  for (;;) {
+    if (signal.aborted || !valid() || wc.isDestroyed())
+      throw new Error('Card navigation interrupted')
+    const url = wc.getURL()
+    if (issuerForCardUrl(url) === issuer) {
+      committed = true
+      if (!wc.isLoading()) return true
+    } else if (url !== 'about:blank' || committed) {
+      throw new Error('Card navigation changed')
+    }
+    if (Date.now() >= deadline) return false
+    await new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', done)
+        resolve()
+      }
+      const timer = setTimeout(done, Math.min(250, deadline - Date.now()))
+      if (signal.aborted) done()
+      else signal.addEventListener('abort', done, { once: true })
+    })
+  }
+}
 function loginReason(state: string): CardDailyReason {
   if (state === 'attempt_protected') return 'attempt_protected'
   if (state === 'vault_locked') return 'vault_locked'
@@ -303,6 +335,17 @@ export function createCardDailyRuntime(options: {
       await interrupted(navigation, signal)
       loadResult = 'resolved'
       stage = 'verify_history_navigation'
+      // Electron can resolve on a preceding about:blank did-finish-load. Observe the
+      // actual committed document without issuing another request or weakening auth.
+      const sameContext = (): boolean =>
+        !!tab &&
+        options.tabs.get(tab.id) === tab &&
+        tab.view.webContents === wc &&
+        tab.profile === profile
+      if (!(await waitForHistoryDocument(wc, issuer, signal, sameContext))) {
+        timeout = true
+        throw new Error('Card navigation did not settle')
+      }
       opening = false
       if (issuerForCardUrl(wc.getURL()) !== issuer) throw new Error()
       stage = 'inspect_session'
@@ -349,6 +392,10 @@ export function createCardDailyRuntime(options: {
           }
         stage = 'reopen_history'
         await interrupted(wc.loadURL(CARD_HISTORY_URLS[issuer]), signal)
+        if (!(await waitForHistoryDocument(wc, issuer, signal, sameContext))) {
+          timeout = true
+          throw new Error('Card navigation did not settle')
+        }
         stage = 'verify_restored_session'
         const confirmed = await interrupted(settledAuth(tab, signal), signal)
         if (confirmed.issuer !== issuer || confirmed.auth !== 'signed_in')

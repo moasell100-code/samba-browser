@@ -84,6 +84,7 @@ function setup(options: { initialNavigationRace?: boolean; failBlank?: boolean }
         webContents: {
           getURL: () => url,
           isDestroyed: () => false,
+          isLoading: vi.fn().mockReturnValue(false),
           loadURL: vi.fn(async (next: string) => {
             url = next
             if (next === 'about:blank') {
@@ -182,7 +183,72 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('deterministic daily card runtime', () => {
-  it('distinguishes a resolved navigation that still reports the blank document', async () => {
+  it('waits for the committed history document after an earlier blank load resolves its promise', async () => {
+    const f = setup()
+    const create = f.tabs.create.getMockImplementation()!
+    f.tabs.create.mockImplementation((options: { url: string }) => {
+      const tab = create(options) as Tab
+      const load = vi.mocked(tab.view.webContents.loadURL).getMockImplementation()!
+      vi.mocked(tab.view.webContents.loadURL).mockImplementation(async (url, options) => {
+        if (url === 'about:blank') return load(url, options)
+        vi.mocked(tab.view.webContents.isLoading).mockReturnValue(true)
+        setTimeout(() => {
+          void load(url, options)
+        }, 500)
+        setTimeout(() => vi.mocked(tab.view.webContents.isLoading).mockReturnValue(false), 1_000)
+        // A stale blank-document finish resolves before this navigation commits.
+      })
+      return tab
+    })
+    const done = f.runtime.tick()
+    await vi.advanceTimersByTimeAsync(750)
+    expect(mocks.inspect).not.toHaveBeenCalled()
+    expect(mocks.restore).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2_250)
+    await done
+    expect(mocks.sync).toHaveBeenCalledTimes(3)
+    expect(mocks.restore).not.toHaveBeenCalled()
+    for (const entry of f.tabs.create.mock.results) {
+      const tab = entry.value as Tab
+      expect(vi.mocked(tab.view.webContents.loadURL).mock.calls.map(([url]) => url)).toEqual([
+        'about:blank',
+        expect.stringContaining('/history')
+      ])
+    }
+    f.runtime.dispose()
+  })
+  it.each(['external', 'removed', 'aborted'] as const)(
+    'stops pending document initialization on %s without login',
+    async (kind) => {
+      const f = setup()
+      const create = f.tabs.create.getMockImplementation()!
+      f.tabs.create.mockImplementation((options: { url: string }) => {
+        const tab = create(options) as Tab
+        vi.mocked(tab.view.webContents.loadURL).mockImplementation(async () => {
+          // Keep the actual document blank after a stale load promise resolves.
+        })
+        setTimeout(() => {
+          if (kind === 'external') tab.view.webContents.getURL = () => 'https://untrusted.test/'
+          if (kind === 'removed') tab.profile = 'replaced-profile'
+          if (kind === 'aborted') f.settings.financeDailyEnabled = false
+        }, 500)
+        return tab
+      })
+      const done = f.runtime.tick()
+      await vi.advanceTimersByTimeAsync(2_000)
+      await done
+      expect(mocks.restore).not.toHaveBeenCalled()
+      expect(mocks.inspect).not.toHaveBeenCalled()
+      expect(mocks.sync).not.toHaveBeenCalled()
+      expect(f.runtime.status().results[0]).toMatchObject({
+        stage: 'verify_history_navigation',
+        loginAttempted: false,
+        state: 'failed'
+      })
+      f.runtime.dispose()
+    }
+  )
+  it('times out a resolved navigation that never leaves the blank document without another request', async () => {
     const f = setup()
     const create = f.tabs.create.getMockImplementation()!
     f.tabs.create.mockImplementation((options: { url: string }) => {
@@ -193,10 +259,13 @@ describe('deterministic daily card runtime', () => {
       })
       return tab
     })
-    await f.runtime.tick()
+    const done = f.runtime.tick()
+    await vi.advanceTimersByTimeAsync(60_000)
+    await done
     expect(mocks.restore).not.toHaveBeenCalled()
     expect(f.runtime.status().results[0]).toMatchObject({
       stage: 'verify_history_navigation',
+      reason: 'timeout',
       loginAttempted: false,
       navigationTrace: {
         loadResult: 'resolved',
