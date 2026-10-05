@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkS
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { CARD_DAILY_ISSUERS, CARD_DAILY_REASONS } from '../../shared/card-daily'
+import { CARD_DAILY_ISSUERS, CARD_DAILY_REASONS, CARD_DAILY_STAGES } from '../../shared/card-daily'
 import { isCardDate } from './card-date-range'
 
 const date = z.string().refine(isCardDate)
@@ -12,6 +12,9 @@ const result = z
     issuer: z.enum(CARD_DAILY_ISSUERS),
     state: z.enum(['saved', 'needs_login', 'failed', 'pending', 'running']),
     reason: z.enum(CARD_DAILY_REASONS).optional(),
+    stage: z.enum(CARD_DAILY_STAGES).optional(),
+    loginAttempted: z.boolean().optional(),
+    failureKind: z.enum(['navigation_aborted', 'navigation_failed', 'operation_failed']).optional(),
     approvalComplete: z.boolean().optional(),
     complete: z.boolean().optional(),
     totalRows: count.optional(),

@@ -49,7 +49,7 @@ vi.mock('../src/main/finance/card-daily-store', () => ({
 import { createCardDailyRuntime } from '../src/main/finance/card-daily-runtime'
 import { issuerForCardUrl } from '../src/main/finance/card-page-diagnostics'
 
-function setup(): {
+function setup(options: { initialNavigationRace?: boolean; failBlank?: boolean } = {}): {
   runtime: ReturnType<typeof createCardDailyRuntime>
   settings: ReturnType<typeof parseSettings>
   tabs: {
@@ -75,8 +75,9 @@ function setup(): {
   })
   const all = new Map<string, Tab>()
   let active = 'user'
-  const makeTab = (id: string, url: string): Tab =>
-    ({
+  const makeTab = (id: string, url: string): Tab => {
+    let initialBlankPending = !!options.initialNavigationRace && id !== 'user'
+    return {
       id,
       profile: 'default',
       view: {
@@ -85,11 +86,25 @@ function setup(): {
           isDestroyed: () => false,
           loadURL: vi.fn(async (next: string) => {
             url = next
+            if (next === 'about:blank') {
+              if (options.failBlank)
+                throw Object.assign(new Error('PRIVATE-SITE-ERROR'), {
+                  code: 'ERR_ABORTED',
+                  errno: -3
+                })
+              initialBlankPending = false
+            } else if (initialBlankPending) {
+              throw Object.assign(new Error('PRIVATE-NAVIGATION-ERROR'), {
+                code: 'ERR_ABORTED',
+                errno: -3
+              })
+            }
           }),
           stop: vi.fn()
         }
       }
-    }) as unknown as Tab
+    } as unknown as Tab
+  }
   all.set('user', makeTab('user', 'https://example.test/untouched'))
   const tabs = {
     create: vi.fn((options: { url: string }) => {
@@ -167,6 +182,57 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('deterministic daily card runtime', () => {
+  it('settles the newly created blank document before issuing a history navigation', async () => {
+    const f = setup({ initialNavigationRace: true })
+    await f.runtime.tick()
+    expect(mocks.sync).toHaveBeenCalledTimes(3)
+    for (const result of f.tabs.create.mock.results) {
+      const tab = result.value as Tab
+      const calls = vi.mocked(tab.view.webContents.loadURL).mock.calls
+      expect(calls.map(([url]) => url)).toEqual([
+        'about:blank',
+        expect.stringMatching(/^https:\/\/www\./)
+      ])
+    }
+    expect(mocks.restore).not.toHaveBeenCalled()
+    f.runtime.dispose()
+  })
+  it('persists fixed failure stage and proof that login was never invoked without exposing raw errors', async () => {
+    const f = setup({ failBlank: true })
+    await f.runtime.tick()
+    expect(mocks.restore).not.toHaveBeenCalled()
+    expect(mocks.sync).not.toHaveBeenCalled()
+    expect(
+      f.runtime
+        .status()
+        .results.every(
+          (row) =>
+            row.stage === 'prepare_tab' &&
+            row.loginAttempted === false &&
+            row.failureKind === 'navigation_aborted'
+        )
+    ).toBe(true)
+    expect(JSON.stringify(f.statuses)).not.toContain('PRIVATE')
+    expect(JSON.stringify(mocks.report.mock.calls)).not.toContain('PRIVATE')
+    expect(mocks.record?.loginBlocked).toEqual({
+      hyundai_card: false,
+      samsung_card: false,
+      lotte_card: false
+    })
+    f.runtime.dispose()
+  })
+  it('does not remove a pre-existing credential block after a proven no-login navigation failure', async () => {
+    mocks.record = { version: 1, gapDays: 0, lastCovered: {}, loginBlocked: { samsung_card: true } }
+    const f = setup({ failBlank: true })
+    await f.runtime.tick()
+    expect(mocks.record?.loginBlocked).toEqual({
+      hyundai_card: false,
+      samsung_card: true,
+      lotte_card: false
+    })
+    expect(mocks.restore).not.toHaveBeenCalled()
+    f.runtime.dispose()
+  })
   it('retains a prior credential block across days and only clears it after a verified saved session', async () => {
     mocks.record = { version: 1, gapDays: 0, lastCovered: {}, loginBlocked: { samsung_card: true } }
     const f = setup()

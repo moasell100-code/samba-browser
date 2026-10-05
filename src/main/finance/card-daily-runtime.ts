@@ -6,7 +6,8 @@ import type {
   CardDailyIssuer,
   CardDailyReason,
   CardDailyResult,
-  CardDailyStatus
+  CardDailyStatus,
+  CardDailyStage
 } from '../../shared/card-daily'
 import { CARD_DAILY_ISSUERS } from '../../shared/card-daily'
 import { createCardAgentSync } from './card-agent-sync'
@@ -35,8 +36,9 @@ function interrupted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
         signal.removeEventListener('abort', stop)
         resolve(value)
       },
-      () => {
-        stop()
+      (error: unknown) => {
+        signal.removeEventListener('abort', stop)
+        reject(error)
       }
     )
   })
@@ -209,6 +211,8 @@ export function createCardDailyRuntime(options: {
     let opening = true
     let enteringCredentials = false
     let verifiedSignedIn = false
+    let stage: CardDailyStage = 'prepare_tab'
+    let loginAttempted = false
     const previousActive = options.tabs.active()?.id
     const guard = setInterval(() => {
       try {
@@ -251,6 +255,7 @@ export function createCardDailyRuntime(options: {
         )
           existing = undefined
       }
+      const created = !existing
       if (!existing) {
         existing = options.tabs.create({ url: 'about:blank', profile: 'default' }).id
         dedicated.set(issuer, existing)
@@ -259,18 +264,35 @@ export function createCardDailyRuntime(options: {
       if (!tab) throw new Error()
       wc = tab.view.webContents
       profile = tab.profile
+      if (created) {
+        // create() has already started a non-awaited blank navigation. Finish that document
+        // before starting history navigation, just as the existing diagnostics runtime does.
+        await interrupted(wc.loadURL('about:blank'), signal)
+        if (wc.isDestroyed() || wc.getURL() !== 'about:blank') throw new Error()
+      }
+      stage = 'open_history'
       await interrupted(wc.loadURL(CARD_HISTORY_URLS[issuer]), signal)
       opening = false
       if (issuerForCardUrl(wc.getURL()) !== issuer) throw new Error()
+      stage = 'inspect_session'
       const before = await interrupted(settledAuth(tab, signal), signal)
       if (before.issuer !== issuer) throw new Error()
       if (before.auth === 'unknown')
-        return { issuer, state: 'needs_login', reason: 'login_unconfirmed' }
+        return { issuer, state: 'needs_login', reason: 'login_unconfirmed', stage, loginAttempted }
       if (before.auth !== 'signed_in') {
-        if (!allowLogin) return { issuer, state: 'needs_login', reason: 'attempt_protected' }
+        if (!allowLogin)
+          return {
+            issuer,
+            state: 'needs_login',
+            reason: 'attempt_protected',
+            stage,
+            loginAttempted
+          }
         // Exactly one existing login-tool invocation. Its failed-attempt stores are never reset.
         options.tabs.focusTarget(tab.id)
         enteringCredentials = true
+        stage = 'restore_session'
+        loginAttempted = true
         const login = await interrupted(
           restoreCardSession({
             tabs: options.tabs,
@@ -283,11 +305,25 @@ export function createCardDailyRuntime(options: {
         )
         enteringCredentials = false
         if (login.auth !== 'signed_in')
-          return { issuer, state: 'needs_login', reason: loginReason(login.state) }
+          return {
+            issuer,
+            state: 'needs_login',
+            reason: loginReason(login.state),
+            stage,
+            loginAttempted
+          }
+        stage = 'reopen_history'
         await interrupted(wc.loadURL(CARD_HISTORY_URLS[issuer]), signal)
+        stage = 'verify_restored_session'
         const confirmed = await interrupted(settledAuth(tab, signal), signal)
         if (confirmed.issuer !== issuer || confirmed.auth !== 'signed_in')
-          return { issuer, state: 'needs_login', reason: 'login_unconfirmed' }
+          return {
+            issuer,
+            state: 'needs_login',
+            reason: 'login_unconfirmed',
+            stage,
+            loginAttempted
+          }
       }
       if (
         signal.aborted ||
@@ -299,17 +335,29 @@ export function createCardDailyRuntime(options: {
       )
         throw new Error()
       verifiedSignedIn = true
+      stage = 'prepare_sync'
       const sync = await createCardAgentSync({
         tokenFile: options.settings().financeCollectorTokenFile,
         transport: options.settings().financeCollectorTransport,
         signal
       })
-      if (!sync) return { issuer, state: 'failed', reason: 'not_configured', verifiedSignedIn }
+      if (!sync)
+        return {
+          issuer,
+          state: 'failed',
+          reason: 'not_configured',
+          verifiedSignedIn,
+          stage,
+          loginAttempted
+        }
+      stage = 'collect_save'
       const result = await interrupted(sync(tab), signal)
       if (!result.ok)
         return {
           issuer,
           verifiedSignedIn,
+          stage,
+          loginAttempted,
           state: result.reason === 'login_required' ? 'needs_login' : 'failed',
           reason:
             result.reason === 'login_required'
@@ -323,6 +371,8 @@ export function createCardDailyRuntime(options: {
       const saved: CardDailyResult = {
         issuer,
         state: 'saved',
+        stage,
+        loginAttempted,
         approvalComplete: result.approvalComplete,
         complete: result.complete,
         totalRows: result.totalRows,
@@ -336,6 +386,7 @@ export function createCardDailyRuntime(options: {
             : {})
       }
       if (result.approvalComplete) {
+        stage = 'reconcile'
         try {
           saved.reconciliation = await interrupted(
             reconcileKnownCards(tab, {
@@ -351,10 +402,22 @@ export function createCardDailyRuntime(options: {
         }
       }
       return { ...saved, verifiedSignedIn }
-    } catch {
+    } catch (error: unknown) {
+      // Error objects may contain URLs or site content; expose only fixed known categories.
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+      const errno = error && typeof error === 'object' && 'errno' in error ? error.errno : undefined
+      const failureKind =
+        code === 'ERR_ABORTED' || errno === -3
+          ? 'navigation_aborted'
+          : stage === 'open_history' || stage === 'reopen_history' || stage === 'prepare_tab'
+            ? 'navigation_failed'
+            : 'operation_failed'
       return {
         issuer,
         verifiedSignedIn,
+        stage,
+        loginAttempted,
+        failureKind,
         state: 'failed',
         reason: timeout ? 'timeout' : signal.aborted ? 'interrupted' : 'sync_unavailable'
       }

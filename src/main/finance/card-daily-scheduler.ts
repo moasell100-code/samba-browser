@@ -246,7 +246,12 @@ export class CardDailyScheduler {
           result = { issuer, state: 'failed', reason: 'sync_unavailable' }
         run.results[index] = result
         // Private, trusted session proof also survives a later save/network failure; never expose it.
-        if (verifiedSignedIn || result.state === 'saved') this.record.loginBlocked[issuer] = false
+        if (
+          verifiedSignedIn ||
+          result.state === 'saved' ||
+          (allowLogin && result.loginAttempted === false)
+        )
+          this.record.loginBlocked[issuer] = false
         if (result.state === 'saved' && result.approvalComplete)
           this.record.lastCovered[issuer] = recentCardDateRange(new Date(run.startedAt)).to
         this.persist()

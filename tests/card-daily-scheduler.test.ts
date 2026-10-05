@@ -53,6 +53,28 @@ afterEach(() => {
 })
 
 describe('KST fixed daily schedule', () => {
+  it.each([false, true])(
+    'preserves an existing login block=%s after an explicitly proven pre-login failure',
+    async (previouslyBlocked) => {
+      const f = fixture({
+        version: 1,
+        gapDays: 0,
+        lastCovered: {},
+        loginBlocked: { samsung_card: previouslyBlocked }
+      })
+      f.run.mockImplementation(async (issuer): Promise<CardDailyResult> => ({
+        issuer,
+        state: 'failed',
+        reason: 'sync_unavailable',
+        stage: 'prepare_tab',
+        loginAttempted: false,
+        failureKind: 'navigation_aborted'
+      }))
+      await f.scheduler.tick()
+      expect(f.run.mock.calls[1][2]).toBe(!previouslyBlocked)
+      expect(f.getRecord().loginBlocked?.samsung_card).toBe(previouslyBlocked)
+    }
+  )
   it('does not invent a prior run on initial enable before 09:00', async () => {
     vi.setSystemTime(new Date('2026-10-04T23:00:00Z'))
     const f = fixture()

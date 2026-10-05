@@ -19,10 +19,25 @@ export const CARD_DAILY_REASONS = [
   'review_required'
 ] as const
 export type CardDailyReason = (typeof CARD_DAILY_REASONS)[number]
+export const CARD_DAILY_STAGES = [
+  'prepare_tab',
+  'open_history',
+  'inspect_session',
+  'restore_session',
+  'reopen_history',
+  'verify_restored_session',
+  'prepare_sync',
+  'collect_save',
+  'reconcile'
+] as const
+export type CardDailyStage = (typeof CARD_DAILY_STAGES)[number]
 export interface CardDailyResult {
   issuer: CardDailyIssuer
   state: 'saved' | 'needs_login' | 'failed' | 'pending' | 'running'
   reason?: CardDailyReason
+  stage?: CardDailyStage
+  loginAttempted?: boolean
+  failureKind?: 'navigation_aborted' | 'navigation_failed' | 'operation_failed'
   approvalComplete?: boolean
   complete?: boolean
   totalRows?: number
