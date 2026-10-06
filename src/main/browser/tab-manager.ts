@@ -222,7 +222,10 @@ export class TabManager {
   private closedListeners: Array<(tab: ClosedTabRecord) => void> = []
   // === 마우스 제스처 끝 ======================================================
 
-  constructor(private win: BrowserWindow) {
+  constructor(
+    private win: BrowserWindow,
+    private options: { collectorOnly?: boolean } = {}
+  ) {
     // 창이 닫히면 남은 리스너·탭을 정리해 파괴된 창에 접근하지 않게 한다
     win.once('closed', () => this.dispose())
     // 창 크기가 바뀌면 렌더러 보고를 기다리지 않고 메인이 먼저 맞춘다.
@@ -626,6 +629,7 @@ export class TabManager {
         session: ses,
         sandbox: true,
         contextIsolation: true,
+        ...(this.options.collectorOnly ? { backgroundThrottling: false } : {}),
         // iframe(카카오 우편번호·결제 키패드) 안에도 페이지 preload(__samba)가 돌게 한다.
         // 이 값이 없으면 Electron 은 최상위 프레임에서만 preload 를 실행한다
         nodeIntegrationInSubFrames: true
@@ -703,6 +707,8 @@ export class TabManager {
       onMessage: (message) => this.lastDialogMessage.set(tab.id, message)
     })
     wc.setWindowOpenHandler(({ url: target, disposition }) => {
+      // Unattended card collection cannot approve or interact with additional popup flows.
+      if (this.options.collectorOnly) return { action: 'deny' }
       if (!isAllowedUrl(target)) {
         console.warn(`새 창 차단: ${target}`)
         return { action: 'deny' }

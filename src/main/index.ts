@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, crashReporter, powerMonitor } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, powerMonitor } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { createMainWindow } from './window'
 import { TabManager } from './browser/tab-manager'
@@ -16,6 +16,7 @@ import type { JajaManager } from './jaja/manager'
 import { registerValidationFixtures } from './jaja/validation-fixtures'
 import { registerValidationIpc } from './jaja/validation-ipc'
 import { startCardDiagnosticsRuntime } from './finance/card-diagnostics-runtime'
+import { acquireProfileProcessLock } from './finance/profile-process-lock'
 import {
   configureValidationProfile,
   isJajaValidation,
@@ -33,10 +34,11 @@ for (const stream of [process.stdout, process.stderr]) {
 // E2E 하네스용 userData 분리 — 실행 중인 사용자 앱의 DB 를 건드리지 않기 위해 복사본을 쓴다.
 // app.whenReady() 이전에 지정해야 하므로 모듈 최상단에서 처리한다
 const userDataOverride = process.env.SAMBA_USER_DATA
+const cardCollectorOnly = process.argv.includes('--card-collector-only')
 if (isJajaValidation()) configureValidationProfile(app)
 else if (userDataOverride) app.setPath('userData', userDataOverride)
 // 프로필을 정한 뒤 시작해야 검증 크래시 자료도 기존 프로필에 남지 않는다.
-crashReporter.start({ uploadToServer: false, compress: false })
+if (!cardCollectorOnly) crashReporter.start({ uploadToServer: false, compress: false })
 registerValidationNetwork(app)
 registerValidationFixtures(app)
 
@@ -45,10 +47,12 @@ app.setName('SAMBA Browser')
 
 // 같은 userData 로 두 번째 인스턴스가 뜨면 data.db 저장이 서로 충돌한다(rename EPERM).
 // 락은 userData 경로별이라 SAMBA_USER_DATA 를 나눈 E2E·검증 인스턴스는 나란히 뜰 수 있다
-if (!app.requestSingleInstanceLock()) {
+const ownsSingleInstanceLock = app.requestSingleInstanceLock()
+if (!ownsSingleInstanceLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
+    if (cardCollectorOnly) return
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) return
     if (win.isMinimized()) win.restore()
@@ -61,7 +65,8 @@ registerInternalScheme()
 
 // 어디서도 잡지 못한 Promise 거부는 조용히 사라지지 않게 기록한다
 process.on('unhandledRejection', (reason) => {
-  console.error('처리되지 않은 Promise 거부', reason)
+  if (cardCollectorOnly) console.error('Card collector operation unavailable')
+  else console.error('처리되지 않은 Promise 거부', reason)
 })
 
 // 종료 정리(shutdown)에서 써야 하므로 모듈 스코프로 올려둔다
@@ -71,6 +76,9 @@ let sync: SyncEngineHolder | undefined
 let jaja: JajaManager | undefined
 let stopCardDiagnostics: (() => void) | undefined
 let stopCardDaily: (() => void) | undefined
+let stopCardCollector: (() => void) | undefined
+let cardCollectorPending = false
+let profileProcessLock: { release(): void } | undefined
 
 // 종료 순서: vault.dispose()(lock 포함, DB 조회 발생) → db.close() 순으로 해야 한다.
 // 반대로 하면(예전 버그) db.close() 뒤에 창이 닫히며 vault.dispose() → lock() →
@@ -81,6 +89,7 @@ let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
+  stopCardCollector?.()
   stopCardDaily?.()
   stopCardDiagnostics?.()
   jaja?.dispose()
@@ -101,11 +110,47 @@ function shutdown(): void {
   } catch (e: unknown) {
     console.error('DB 종료 실패', e)
   }
+  profileProcessLock?.release()
+  profileProcessLock = undefined
 }
 
 app
   .whenReady()
   .then(async () => {
+    if (!ownsSingleInstanceLock || shuttingDown) return
+    const acquired = await acquireProfileProcessLock({
+      profileDir: app.getPath('userData'),
+      onLost: () => app.exit(1)
+    })
+    if (!acquired) {
+      if (!cardCollectorOnly) {
+        await dialog.showMessageBox({
+          type: 'info',
+          message: '카드 수집 또는 다른 자자 브라우저가 실행 중입니다. 잠시 후 다시 열어 주세요.'
+        })
+      }
+      app.exit(0)
+      return
+    }
+    profileProcessLock = acquired
+    if (cardCollectorOnly) {
+      const controller = new AbortController()
+      stopCardCollector = () => controller.abort()
+      cardCollectorPending = true
+      let exitCode = 1
+      try {
+        const { runCardCollectorOnly } = await import('./finance/card-collector-runtime')
+        const state = await runCardCollectorOnly(app.getPath('userData'), controller.signal)
+        exitCode = ['completed', 'needs_attention'].includes(state) ? 0 : 1
+      } catch {
+        console.error('Card collector initialization unavailable')
+      } finally {
+        cardCollectorPending = false
+        shutdown()
+      }
+      app.exit(exitCode)
+      return
+    }
     electronApp.setAppUserModelId('com.samba.browser')
     app.on('browser-window-created', (_, w) => optimizer.watchWindowShortcuts(w))
     // 자체 새 탭 페이지 서빙. 개발 모드에서는 vite 개발 서버로 넘긴다
@@ -198,18 +243,31 @@ app
     // macOS 의 activate 재생성은 1단계(Windows 전용) 범위 밖이라 배선하지 않는다
   })
   .catch((e: unknown) => {
-    console.error('앱 초기화 실패', e)
-    app.quit()
+    if (cardCollectorOnly) {
+      console.error('Card collector initialization unavailable')
+      shutdown()
+      app.exit(1)
+    } else {
+      console.error('앱 초기화 실패', e)
+      app.quit()
+    }
   })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (!cardCollectorOnly && process.platform !== 'darwin') app.quit()
 })
 
 // 종료 직전 금고를 먼저 잠그고 DB 를 안전하게 저장/닫는다(내부적으로 pending save 를 즉시 flush 함).
 // markQuitting 을 먼저 세운다 — 이 표식이 없으면 팝업 창(결제창)의 close 지연이
 // preventDefault 로 종료 자체를 취소해, DB·금고만 닫힌 좀비 앱이 남는다
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  // Keep the cross-session profile lock until the bounded worker has stopped its native
+  // operation, persisted attempt claims, and closed its own vault/database resources.
+  if (cardCollectorPending) {
+    event.preventDefault()
+    stopCardCollector?.()
+    return
+  }
   markQuitting()
   shutdown()
 })
