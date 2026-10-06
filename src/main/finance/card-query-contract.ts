@@ -75,6 +75,14 @@ const SCRIPT = String.raw`(() => {
     budget -= source.length;
     result.functions.push({ name, source: clean(source) });
   }
+  if (location.hostname.includes('hyundaicard')) {
+    const jquery = Object.getOwnPropertyDescriptor(window, 'jQuery');
+    const ajax = jquery && typeof jquery.value === 'function' && Object.getOwnPropertyDescriptor(jquery.value, 'hcAjax');
+    if (ajax && typeof ajax.value === 'function') {
+      const source = Function.prototype.toString.call(ajax.value);
+      if (source.length <= 40000 && source.length <= budget) result.functions.push({ name: 'jQuery.hcAjax', source: clean(source) });
+    }
+  }
   for (const id of controls) {
     const el = document.getElementById(id);
     const jq = window.jQuery;

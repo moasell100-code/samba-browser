@@ -10,7 +10,10 @@ import {
 
 const HISTORY = 'https://www.hyundaicard.com/cpa/cb/CPACB0101_01.hc'
 const RANGE = { from: '2026-07-01', to: '2026-07-31' }
-const OLE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0])
+const workbook = (count: number, date = '2026년 07월 01일'): Buffer =>
+  Buffer.from(
+    `<html><table><tr>${['승인일', '승인시각', '카드구분', '카드종류', '가맹점명', '승인금액', '이용구분', '할부개월', '승인번호', '취소일', '승인구분'].map((header) => `<th>${header}</th>`).join('')}</tr>${Array.from({ length: count }, () => `<tr><td>${date}</td>${'<td>PRIVATE</td>'.repeat(10)}</tr>`).join('')}</table></html>`
+  )
 const windows: JSDOM[] = []
 afterEach(() => {
   vi.restoreAllMocks()
@@ -52,7 +55,9 @@ function fixture(count = 2): {
         { headers: { 'content-type': 'application/json' } }
       )
     }
-    return new Response(OLE, { headers: { 'content-type': 'application/vnd.ms-excel' } })
+    return new Response(workbook(count), {
+      headers: { 'content-type': 'application/vnd.ms-excel' }
+    })
   })
   const execute = vi.fn(async (code: string, gesture: boolean) => {
     expect(gesture).toBe(false)
@@ -95,7 +100,7 @@ describe('Hyundai recent approval Excel export', () => {
       queryRows: 2,
       rowLimitPossible: false,
       issues: [],
-      bytes: OLE,
+      bytes: workbook(2),
       extension: 'xls'
     })
     expect(f.fetch.mock.calls.map((call) => call[0])).toEqual([
@@ -118,7 +123,9 @@ describe('Hyundai recent approval Excel export', () => {
     expect(Object.keys(body)).toHaveLength(10)
     expect(String(request.body)).not.toContain('PASSWORD')
     expect(f.dom.window.document.documentElement.outerHTML).toBe(before)
-    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|NOT_RETURNED|PASSWORD/)
+    expect(JSON.stringify({ ...result, bytes: undefined })).not.toMatch(
+      /PRIVATE|NOT_RETURNED|PASSWORD/
+    )
     expect(f.auth).toHaveBeenCalledTimes(3)
   })
 
@@ -142,17 +149,58 @@ describe('Hyundai recent approval Excel export', () => {
     expect(f.fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('continues an Excel download with explicit unverified count when the count endpoint is unavailable', async () => {
+  it('never downloads a potentially cached workbook after an unavailable query', async () => {
     const f = fixture()
     f.fetch.mockRejectedValueOnce(new Error('PRIVATE_QUERY_FAILURE'))
-    const result = await exportHyundaiWorkbook(f.tab, RANGE)
-    expect(result).toMatchObject({
-      expectedRows: null,
-      reportedTotal: null,
-      queryRows: null,
-      issues: ['query_count_unavailable']
-    })
-    expect(result.bytes).toEqual(OLE)
+    await expect(exportHyundaiWorkbook(f.tab, RANGE)).rejects.toThrow('query_response_unavailable')
+    expect(f.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires the query to confirm both the date range and all-card scope before export', async () => {
+    const f = fixture()
+    f.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          bdy: {
+            rcntSummaryInfo: { totUseCnt: 2, srtDt: '20260920', endDt: '20261006' },
+            rcntAvItm: [{}, {}]
+          }
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      )
+    )
+    await expect(exportHyundaiWorkbook(f.tab, RANGE)).rejects.toThrow('query_scope_unverified')
+    expect(f.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects an apparently valid file containing another date range before returning bytes', async () => {
+    const f = fixture()
+    f.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          bdy: {
+            rcntSummaryInfo: {
+              srtDt: '20260701',
+              endDt: '20260731',
+              crno: 'ALL_PRIVATE_CARDS',
+              dtClsf: 'DIRECT_PRIVATE',
+              useClsf: 'ALL_PRIVATE_useClsf',
+              usplClsf: 'ALL_PRIVATE_usplClsf',
+              zoneClsf: 'ALL_PRIVATE_zoneClsf',
+              totUseCnt: 2
+            },
+            rcntAvItm: [{}, {}]
+          }
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      )
+    )
+    f.fetch.mockResolvedValueOnce(
+      new Response(workbook(2, '2026년 09월 20일'), {
+        headers: { 'content-type': 'application/vnd.ms-excel' }
+      })
+    )
+    await expect(exportHyundaiWorkbook(f.tab, RANGE)).rejects.toThrow('export_range_mismatch')
   })
 
   it('rejects ambiguous all-card controls, stale date plans, overlong ranges and preserves existing API four-day limits', async () => {
@@ -199,7 +247,7 @@ describe('Hyundai recent approval Excel export', () => {
         new Response('<html>PRIVATE_LOGIN</html>', { headers: { 'content-type': 'text/html' } })
     )
     await expect(exportHyundaiWorkbook(loginHtml.tab, RANGE)).rejects.toThrow(
-      'export_file_unrecognized'
+      'query_response_non_json'
     )
     const aborted = fixture()
     const controller = new AbortController()

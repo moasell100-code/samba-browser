@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { parse } from 'node-html-parser'
 import type { Tab } from '../browser/tab-manager'
 import { pageBridge } from '../browser/page-bridge'
 import type { CardDateRange } from './card-api-types'
@@ -11,6 +12,19 @@ const QUERY_PATH = '/cpa/cb/apiCPACB0101_21.hc'
 const EXPORT_PATH = '/cpa/cb/CPACB0101_105.hc'
 const MAX_BYTES = 25 * 1024 * 1024
 const MAX_QUERY_BYTES = 4 * 1024 * 1024
+const EXCEL_HEADERS = [
+  '승인일',
+  '승인시각',
+  '카드구분',
+  '카드종류',
+  '가맹점명',
+  '승인금액',
+  '이용구분',
+  '할부개월',
+  '승인번호',
+  '취소일',
+  '승인구분'
+]
 const FIELDS = [
   'crno',
   'dmfrClsf',
@@ -150,6 +164,39 @@ function countEvidence(
   }
 }
 
+/** Validate only the observed issuer HTML workbook's date column, without emitting row data. */
+function validateWorkbookDates(bytes: Buffer, range: CardDateRange): number {
+  const html = bytes.toString('utf8')
+  if (!/<(?:html|table)\b/i.test(html.slice(0, 8192)))
+    throw new Error('export_date_schema_unverified')
+  const document = parse(html)
+  const tables = document.querySelectorAll('table').filter((table) =>
+    table.querySelectorAll('tr').some((row) => {
+      const headers = row.querySelectorAll('th').map((cell) => cell.text.trim())
+      return (
+        headers.length === EXCEL_HEADERS.length &&
+        headers.every((text, index) => text === EXCEL_HEADERS[index])
+      )
+    })
+  )
+  if (tables.length !== 1) throw new Error('export_date_schema_unverified')
+  let count = 0
+  for (const row of tables[0].querySelectorAll('tr')) {
+    const cells = row.querySelectorAll('td')
+    if (!cells.length) continue
+    if (cells.length !== EXCEL_HEADERS.length) throw new Error('export_date_schema_unverified')
+    const raw = cells[0].text.trim()
+    if (raw === '-') continue // The observed export has three total rows with a dash in this column.
+    const match = /^(\d{4})년\s+(\d{2})월\s+(\d{2})일$/.exec(raw)
+    if (!match) throw new Error('export_date_schema_unverified')
+    const date = `${match[1]}-${match[2]}-${match[3]}`
+    if (!isCardDate(date)) throw new Error('export_date_schema_unverified')
+    if (date < range.from || date > range.to) throw new Error('export_range_mismatch')
+    count += 1
+  }
+  return count
+}
+
 const SAFE_ERRORS = new Set([
   'invalid_export_range',
   'history_page_required',
@@ -162,7 +209,17 @@ const SAFE_ERRORS = new Set([
   'export_response_limit',
   'export_file_unrecognized',
   'export_cancelled',
-  'export_timeout'
+  'export_timeout',
+  'query_scope_unverified',
+  'query_count_unverified',
+  'query_count_mismatch',
+  'query_response_non_json',
+  'query_response_http',
+  'query_response_unavailable',
+  'query_service_error',
+  'export_range_mismatch',
+  'export_date_schema_unverified',
+  'export_count_mismatch'
 ])
 
 /** Read-only issuer export; private response bytes must be saved locally, never sent in MCP output. */
@@ -263,13 +320,7 @@ export async function exportHyundaiWorkbook(
       body: body.toString(),
       signal
     } as const
-    let evidence: ReturnType<typeof countEvidence> = {
-      expectedRows: null,
-      reportedTotal: null,
-      queryRows: null,
-      rowLimitPossible: false,
-      issues: ['query_count_unavailable']
-    }
+    let evidence: ReturnType<typeof countEvidence>
     try {
       const query = await bounded(
         wc.session.fetch(issuerOrigin + QUERY_PATH, {
@@ -278,20 +329,34 @@ export async function exportHyundaiWorkbook(
         })
       )
       context()
-      if (
-        (query.url && query.url !== issuerOrigin + QUERY_PATH) ||
-        !/^(?:application|text)\/json(?:;|$)/i.test(query.headers.get('content-type') ?? '')
-      ) {
+      if (!query.ok) {
         void query.body?.cancel().catch(() => undefined)
-        throw new Error('query_unavailable')
+        throw new Error('query_response_http')
+      }
+      if (query.url && query.url !== issuerOrigin + QUERY_PATH) {
+        void query.body?.cancel().catch(() => undefined)
+        throw new Error('query_response_unavailable')
+      }
+      if (!/^(?:application|text)\/json(?:;|$)/i.test(query.headers.get('content-type') ?? '')) {
+        void query.body?.cancel().catch(() => undefined)
+        throw new Error('query_response_non_json')
       }
       evidence = countEvidence(
         JSON.parse((await read(query, MAX_QUERY_BYTES)).toString('utf8')),
         form
       )
-    } catch {
+    } catch (error) {
       context()
+      throw new Error(
+        error instanceof Error && SAFE_ERRORS.has(error.message)
+          ? error.message
+          : 'query_response_unavailable'
+      )
     }
+    // The Excel endpoint can return the last successful server-side query even when the
+    // posted dates differ. Never download until the fresh query echoes the requested scope.
+    const failure = evidence.issues.find((issue) => issue !== 'export_row_limit_possible')
+    if (failure) throw new Error(failure)
     await authenticate()
     if (evidence.expectedRows === 0)
       return {
@@ -319,6 +384,9 @@ export async function exportHyundaiWorkbook(
       (attachment || /excel|spreadsheet/.test(type)) &&
       /<(?:html|table|Workbook)\b/i.test(bytes.subarray(0, 8192).toString('utf8'))
     if (!bytes.length || (!zip && !ole && !htmlExcel)) throw new Error('export_file_unrecognized')
+    const workbookRows = validateWorkbookDates(bytes, range)
+    if (evidence.expectedRows !== null && workbookRows !== evidence.expectedRows)
+      throw new Error('export_count_mismatch')
     await authenticate()
     return {
       issuer: 'hyundai_card',
