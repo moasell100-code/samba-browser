@@ -49,7 +49,11 @@ function fixture(count = 2): {
       return new Response(
         JSON.stringify({
           bdy: {
-            rcntSummaryInfo: { ...data, totUseCnt: count },
+            rcntSummaryInfo: {
+              ...data,
+              ...(endpoint.endsWith('_22.hc') ? { usplClsf: '' } : {}),
+              totUseCnt: count
+            },
             [endpoint.endsWith('_22.hc') ? 'acqrUseItmList' : 'rcntAvItm']: Array.from(
               { length: count },
               () => ({ private: 'NOT_RETURNED' })
@@ -156,6 +160,20 @@ describe('Hyundai recent approval Excel export', () => {
     expect(new URLSearchParams(String(f.fetch.mock.calls[0][1].body)).get('listClsf')).toBe(
       'ACQUIRED_PRIVATE'
     )
+  })
+
+  it('validates a uniquely labelled historical transaction-date column independently of importer columns', async () => {
+    const f = fixture()
+    const original = f.fetch.getMockImplementation()!
+    f.fetch.mockImplementation(async (endpoint, options) =>
+      endpoint.endsWith('CPACB0101_10.hc')
+        ? new Response(
+            workbook(2, '2026-07-01').toString().replace('<th>승인일</th>', '<th>이용일</th>'),
+            { headers: { 'content-type': 'application/vnd.ms-excel' } }
+          )
+        : original(endpoint, options)
+    )
+    expect((await exportHyundaiWorkbook(f.tab, RANGE, { mode: 'acquired' })).expectedRows).toBe(2)
   })
 
   it('returns only structural workbook diagnostics when an observed layout cannot be validated', async () => {

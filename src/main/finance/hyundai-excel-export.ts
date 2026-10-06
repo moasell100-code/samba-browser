@@ -151,6 +151,10 @@ function countEvidence(
   ] as const) {
     const returned = own(summary, field)
     const expected = form[field]
+    // The observed posted-purchase response explicitly clears this recent-only
+    // merchant-type filter. The plan still selects the page's labelled all option.
+    // All other scope echoes, including both dates and the card selection, must match.
+    if (mode === 'acquired' && field === 'usplClsf' && returned === '') continue
     if (
       (typeof returned !== 'string' && typeof returned !== 'number') ||
       String(returned).replaceAll('-', '') !== expected.replaceAll('-', '')
@@ -210,7 +214,11 @@ export class HyundaiExportValidationError extends Error {
   }
 }
 
-function validateWorkbookDates(bytes: Buffer, range: CardDateRange): number {
+function validateWorkbookDates(
+  bytes: Buffer,
+  range: CardDateRange,
+  mode: 'recent' | 'acquired'
+): number {
   const html = bytes.toString('utf8')
   if (!/<(?:html|table)\b/i.test(html.slice(0, 8192)))
     throw new Error('export_date_schema_unverified')
@@ -273,26 +281,37 @@ function validateWorkbookDates(bytes: Buffer, range: CardDateRange): number {
   const fail = (stage: string): never => {
     throw new HyundaiExportValidationError({ ...diagnostic, stage })
   }
-  const tables = document.querySelectorAll('table').filter((table) =>
-    table.querySelectorAll('tr').some((row) => {
+  const candidates = document.querySelectorAll('table').flatMap((table) =>
+    table.querySelectorAll('tr').flatMap((row) => {
       const headers = row.querySelectorAll('th').map((cell) => cell.text.trim())
-      return (
-        headers.length === EXCEL_HEADERS.length &&
-        headers.every((text, index) => text === EXCEL_HEADERS[index])
-      )
+      if (mode === 'recent')
+        return headers.length === EXCEL_HEADERS.length &&
+          headers.every((text, index) => text === EXCEL_HEADERS[index])
+          ? [{ table, dateColumn: 0 }]
+          : []
+      // Posted exports are reviewed by the dedicated importer separately. For
+      // download safety require one explicitly labelled transaction-date column.
+      const dateColumns = headers
+        .map((header, index) => (['이용일', '이용일자', '승인일'].includes(header) ? index : -1))
+        .filter((index) => index >= 0)
+      return dateColumns.length === 1 ? [{ table, dateColumn: dateColumns[0] }] : []
     })
   )
-  if (tables.length !== 1) fail('headers')
+  if (candidates.length !== 1) fail('headers')
+  const { table, dateColumn } = candidates[0]
   let count = 0
-  for (const row of tables[0].querySelectorAll('tr')) {
+  for (const row of table.querySelectorAll('tr')) {
     const cells = row.querySelectorAll('td')
     if (!cells.length) continue
     // Some issuer rows contain an additional cell. This guard verifies only the
     // unambiguous leading approval date; the ledger importer validates full row layout.
-    if (cells.length < EXCEL_HEADERS.length) fail('cells')
-    const raw = cells[0].text.trim()
+    if ((mode === 'recent' && cells.length < EXCEL_HEADERS.length) || cells.length <= dateColumn)
+      fail('cells')
+    const raw = cells[dateColumn].text.trim()
     if (raw === '-') continue // The observed export has three total rows with a dash in this column.
-    const match = /^(\d{4})년\s+(\d{2})월\s+(\d{2})일$/.exec(raw)
+    const match =
+      /^(\d{4})년\s+(\d{2})월\s+(\d{2})일$/.exec(raw) ??
+      (mode === 'acquired' ? /^(\d{4})[./-]?(\d{2})[./-]?(\d{2})$/.exec(raw) : null)
     if (!match) return fail('date')
     const date = `${match[1]}-${match[2]}-${match[3]}`
     if (!isCardDate(date)) fail('date')
@@ -498,7 +517,7 @@ export async function exportHyundaiWorkbook(
       (attachment || /excel|spreadsheet/.test(type)) &&
       /<(?:html|table|Workbook)\b/i.test(bytes.subarray(0, 8192).toString('utf8'))
     if (!bytes.length || (!zip && !ole && !htmlExcel)) throw new Error('export_file_unrecognized')
-    const workbookRows = validateWorkbookDates(bytes, range)
+    const workbookRows = validateWorkbookDates(bytes, range, mode)
     if (evidence.expectedRows !== null && workbookRows !== evidence.expectedRows)
       throw new Error('export_count_mismatch')
     await authenticate()
