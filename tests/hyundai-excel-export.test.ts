@@ -168,7 +168,10 @@ describe('Hyundai recent approval Excel export', () => {
     f.fetch.mockImplementation(async (endpoint, options) =>
       endpoint.endsWith('CPACB0101_10.hc')
         ? new Response(
-            workbook(2, '2026-07-01').toString().replace('<th>승인일</th>', '<th>이용일</th>'),
+            workbook(2, '2026-07-01')
+              .toString()
+              .replace('<table>', '<table><tr><td colspan="12"></td></tr>')
+              .replace('<th>승인일</th>', '<th>이용일</th>'),
             { headers: { 'content-type': 'application/vnd.ms-excel' } }
           )
         : original(endpoint, options)

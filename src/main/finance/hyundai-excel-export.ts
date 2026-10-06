@@ -302,7 +302,7 @@ function validateWorkbookDates(
   let count = 0
   for (const row of table.querySelectorAll('tr')) {
     const cells = row.querySelectorAll('td')
-    if (!cells.length) continue
+    if (!cells.length || cells.every((cell) => cell.text.trim() === '')) continue
     // Some issuer rows contain an additional cell. This guard verifies only the
     // unambiguous leading approval date; the ledger importer validates full row layout.
     if ((mode === 'recent' && cells.length < EXCEL_HEADERS.length) || cells.length <= dateColumn)
