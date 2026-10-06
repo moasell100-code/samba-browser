@@ -12,12 +12,12 @@ const SCRIPT = String.raw`(() => {
   );
   if (!allowed) return { state: 'unsupported', auth: 'unknown' };
   const targets = location.hostname.includes('lottecard')
-    ? ['fnSetFormData','ajaxSearchFilterCallBack','ajaxInquryAprUseListCallBack','setAprUseDetail','svcf_Ajax','svcf_AjaxParam','fnValidateInquryDate','fnCheckOver12Month','fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
-    : ['cardSelect','convertGeneralApprovalItem','convertTrafficItem','convertHipassItem','convertPurchaseItem','recentList','rcntSummaryInfo','goFilter','goAjax','getDate','getUseGb','getUseTypeNm'];
+    ? ['fnSaveExcel','svcf_Submit','fnSetFormData','ajaxSearchFilterCallBack','ajaxInquryAprUseListCallBack','setAprUseDetail','svcf_Ajax','svcf_AjaxParam','fnValidateInquryDate','fnCheckOver12Month','fnSearchFilter','fnSearchSetting','fnAprUseList','fnSearch','fnMore','fnGetList','fnUseList']
+    : ['excelAction','cardSelect','convertGeneralApprovalItem','convertTrafficItem','convertHipassItem','convertPurchaseItem','recentList','rcntSummaryInfo','goFilter','goAjax','getDate','getUseGb','getUseTypeNm'];
   const controls = location.hostname.includes('lottecard')
     ? ['searchFilterBtn','aprUseMoreBtn'] : ['goFilter'];
   const fields = ['form1','LPMCDAAAprUseList','pageNo','pageRows','nextKey','schDv','stDv','useDv','useCdDv','uplDv','ptnBnkYn','sortDv','sortObj','listClsf','dtClsf','zoneClsf','useClsf','usplClsf','sortType','dmfrClsf','srtDt','startDt','endDt','inqTeDt','iqrySrtDt','iqryEndDt','startDtShow','endDtShow','crno','encCdno','Content','Status','code','message'];
-  const literals = new Set([...fields, ...fields.map(f => '#' + f), '', '0','1','2','3','4','5','6','7','8','9','00','01','02','03','04','05','06','07','08','09','10','20','30','Y','N','KRW','POST','GET','승인','취소','정상','승인취소','취소완료','부분취소','전체','일시불','YYYYMMDD','YYYYMMDDHHmmss','YYYY-MM-DD']);
+  const literals = new Set([...fields, ...fields.map(f => '#' + f), 'action','method','target','_self','_blank','#usplClsf_04','#listClsf_01',':checked','', '0','1','2','3','4','5','6','7','8','9','00','01','02','03','04','05','06','07','08','09','10','20','30','Y','N','KRW','POST','GET','승인','취소','정상','승인취소','취소완료','부분취소','전체','일시불','YYYYMMDD','YYYYMMDDHHmmss','YYYY-MM-DD']);
   const clean = source => source.includes(String.fromCharCode(96)) ? '[template source omitted]' : source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60/g, (token, offset) => {
     if (token.startsWith('//') || token.startsWith('/*')) return '';
     const value = token.slice(1, -1);
