@@ -311,7 +311,7 @@ export async function startCardDiagnosticsRuntime(options: {
         // Adapters expose only fixed codes; never forward Electron/network response errors.
         const code = error instanceof Error ? error.message : ''
         const allowed =
-          /^(?:hyundai_|lotte_|samsung_)?(?:invalid_export_range|history_page_required|authentication_required|navigation_changed|page_not_ready|card_scope_not_all|query_failed|query_timeout|invalid_response|export_plan_unavailable|export_response_unavailable|export_response_limit|export_file_unrecognized|export_timeout|export_cancelled)$/
+          /^(?:hyundai_|lotte_|samsung_)?(?:invalid_export_range|invalid_export_scope|export_range_mismatch|export_date_schema_unverified|export_count_mismatch|query_scope_unverified|query_count_unverified|query_count_mismatch|query_response_non_json|query_response_http|query_response_unavailable|query_service_error|history_page_required|authentication_required|navigation_changed|page_not_ready|card_scope_not_all|query_failed|query_timeout|invalid_response|export_plan_unavailable|export_response_unavailable|export_response_limit|export_file_unrecognized|export_timeout|export_cancelled)$/
         return { state: 'export_failed', issue: allowed.test(code) ? code : 'export_unavailable' }
       } finally {
         exporting = false
