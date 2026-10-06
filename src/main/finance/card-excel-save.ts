@@ -33,7 +33,7 @@ export async function saveCardExcel(
     !validExcelRange(file.range) ||
     !['hyundai_card', 'samsung_card', 'lotte_card'].includes(file.issuer) ||
     !['xls', 'xlsx'].includes(file.extension) ||
-    !/^[a-z_]{1,40}$/.test(file.scope ?? 'all') ||
+    !/^[a-z_]{1,64}$/.test(file.scope ?? 'all') ||
     file.bytes.length > 25 * 1024 * 1024
   )
     throw new Error('Invalid card export')

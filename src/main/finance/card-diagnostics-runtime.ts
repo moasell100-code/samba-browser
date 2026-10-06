@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { saveCardExcel, validExcelRange } from './card-excel-save'
 import { exportSamsungWorkbook, type SamsungExcelScope } from './samsung-excel-export'
 import { exportLotteWorkbook } from './lotte-excel-export'
-import { exportHyundaiWorkbook } from './hyundai-excel-export'
+import { exportHyundaiWorkbook, HyundaiExportValidationError } from './hyundai-excel-export'
 import type { Tab, TabManager } from '../browser/tab-manager'
 import { isTabAlive } from '../browser/tab-manager'
 import { CardNetworkObserver } from './card-network-observer'
@@ -289,7 +289,14 @@ export async function startCardDiagnosticsRuntime(options: {
       const issuer = issuerForCardUrl(url)
       if (!validExcelRange({ from, to })) return { state: 'invalid_export_range' }
       if (exporting) return { state: 'export_busy' }
-      if (scope && issuer !== 'samsung_card') return { state: 'invalid_export_scope' }
+      if (
+        scope &&
+        issuer !== 'samsung_card' &&
+        !(issuer === 'hyundai_card' && scope === 'acquired')
+      )
+        return { state: 'invalid_export_scope' }
+      if (scope === 'acquired' && issuer !== 'hyundai_card')
+        return { state: 'invalid_export_scope' }
       exporting = true
       try {
         const result =
@@ -302,12 +309,21 @@ export async function startCardDiagnosticsRuntime(options: {
             : issuer === 'lotte_card'
               ? await exportLotteWorkbook(tab, { from, to }, { signal: controller.signal })
               : issuer === 'hyundai_card'
-                ? await exportHyundaiWorkbook(tab, { from, to }, { signal: controller.signal })
+                ? await exportHyundaiWorkbook(
+                    tab,
+                    { from, to },
+                    {
+                      signal: controller.signal,
+                      mode: scope === 'acquired' ? 'acquired' : 'recent'
+                    }
+                  )
                 : null
         assertTabContext(tab, url)
         if (!result) return { state: 'export_unavailable' }
         return await saveCardExcel(join(homedir(), 'Downloads', 'finance-card-history'), result)
       } catch (error) {
+        if (error instanceof HyundaiExportValidationError)
+          return { state: 'export_failed', issue: error.message, diagnostic: error.diagnostic }
         // Adapters expose only fixed codes; never forward Electron/network response errors.
         const code = error instanceof Error ? error.message : ''
         const allowed =

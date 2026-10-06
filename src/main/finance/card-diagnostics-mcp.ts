@@ -128,7 +128,8 @@ export async function startCardDiagnosticsMcp(
             'overseas_cancellation',
             'transport',
             'transport_tmoney',
-            'hipass'
+            'hipass',
+            'acquired'
           ])
           .optional()
       },
