@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, crashReporter, dialog, powerMonitor } from 'electron'
-import { electronApp, is, optimizer } from '@electron-toolkit/utils'
+import { is, optimizer } from '@electron-toolkit/utils'
 import { createMainWindow } from './window'
 import { TabManager } from './browser/tab-manager'
 import { markQuitting } from './browser/popups'
@@ -56,6 +56,7 @@ if (!ownsSingleInstanceLock) {
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) return
     if (win.isMinimized()) win.restore()
+    win.show()
     win.focus()
   })
 }
@@ -151,7 +152,11 @@ app
       app.exit(exitCode)
       return
     }
-    electronApp.setAppUserModelId('com.samba.browser')
+    // The toolkit substitutes electron.exe's identity in development, breaking taskbar pins.
+    if (process.platform === 'win32')
+      app.setAppUserModelId(
+        isJajaValidation() ? 'com.samba.browser.validation' : 'com.samba.browser'
+      )
     app.on('browser-window-created', (_, w) => optimizer.watchWindowShortcuts(w))
     // 자체 새 탭 페이지 서빙. 개발 모드에서는 vite 개발 서버로 넘긴다
     registerInternalProtocol({

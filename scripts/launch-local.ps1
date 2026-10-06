@@ -10,6 +10,6 @@ $env:SAMBA_USER_DATA = Join-Path $env:LOCALAPPDATA 'JAJA-Samba-Browser'
 New-Item -ItemType Directory -Path $env:SAMBA_USER_DATA -Force | Out-Null
 $browserLog = Join-Path $env:TEMP ('jaja-browser-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 Start-Process -FilePath $browserElectron -ArgumentList ('"' + $browserRoot + '"') `
-  -WindowStyle Hidden `
+  -WindowStyle Normal `
   -WorkingDirectory $browserRoot -RedirectStandardOutput ($browserLog + '.stdout.log') `
   -RedirectStandardError ($browserLog + '.stderr.log')

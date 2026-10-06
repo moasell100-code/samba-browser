@@ -1,4 +1,4 @@
-import { BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { isHttpUrl } from '../shared/url'
@@ -25,6 +25,23 @@ export function createMainWindow(): BrowserWindow {
       contextIsolation: true
     }
   })
+  if (process.platform === 'win32' && !isJajaValidation()) {
+    const powershell = join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32/WindowsPowerShell/v1.0/powershell.exe'
+    )
+    const launcher = join(app.getAppPath(), 'scripts/launch-local.ps1')
+    win.setAppDetails({
+      appId: 'com.samba.browser',
+      appIconPath: join(__dirname, '../../resources/icon.ico'),
+      appIconIndex: 0,
+      relaunchDisplayName: '자자 브라우저',
+      // The launcher restores the existing LocalAppData profile, including KeyMaster.
+      relaunchCommand: app.isPackaged
+        ? `"${process.execPath}"`
+        : `"${powershell}" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "${launcher}"`
+    })
+  }
   win.on('ready-to-show', () => win.show())
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isJajaValidation()) return { action: 'deny' }
