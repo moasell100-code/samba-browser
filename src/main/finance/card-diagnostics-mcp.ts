@@ -14,6 +14,7 @@ export interface CardDiagnosticsBackend {
   requests(tabId: string): unknown
   queryContract?(tabId: string): Promise<unknown>
   exportContract?(tabId: string): Promise<unknown>
+  exportHistory?(tabId: string, from: string, to: string, scope?: string): Promise<unknown>
   login?(tabId: string): Promise<unknown>
   collect?(tabId: string, save: boolean): Promise<unknown>
   dispose(): void
@@ -110,6 +111,35 @@ export async function startCardDiagnosticsMcp(
       'Inspect value-free Excel export controls and static function metadata on the signed-in issuer history page. Does not export, submit forms or return financial rows.',
       { tabId: z.string().uuid() },
       ({ tabId }) => backend.exportContract!(String(tabId))
+    )
+  if (backend.exportHistory)
+    register(
+      'card_export_history',
+      'Download the signed-in card issuer original Excel for one calendar month or shorter. Saves locally and returns only file receipt and counts. No ledger write. Samsung scope defaults to domestic.',
+      {
+        tabId: z.string().uuid(),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        scope: z
+          .enum([
+            'domestic',
+            'domestic_cancellation',
+            'overseas',
+            'overseas_cancellation',
+            'transport',
+            'transport_tmoney',
+            'hipass'
+          ])
+          .optional()
+      },
+      ({ tabId, from, to, scope }) =>
+        backend.exportHistory!(
+          String(tabId),
+          String(from),
+          String(to),
+          scope as string | undefined
+        ),
+      false
     )
   if (backend.login)
     register(

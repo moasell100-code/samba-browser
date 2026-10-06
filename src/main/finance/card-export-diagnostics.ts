@@ -13,7 +13,7 @@ const functionName = z
 const path = z
   .string()
   .regex(
-    /^\/(?:cpa\/cb\/(?:api)?CPACB0101_[0-9]{2}\.hc|app\/LPMCDAA_[A-Z][0-9]{3}\.lc|personal\/card\/activity\/UHPPRP0801[A-Z0-9]{2}\.jsp|frontservice\/SHPPRP0801S[0-9]{2})$/
+    /^\/(?:cpa\/cb\/(?:api)?CPACB0101_(?:[0-9]{2}|105)\.hc|app\/LPMCDAA_[A-Z][0-9]{3}\.lc|personal\/card\/activity\/UHPPRP0801[A-Z0-9]{2}\.jsp|frontservice\/SHPPRP0801S[0-9]{2})$/
   )
 const exportSchema = z
   .object({
@@ -68,7 +68,7 @@ const SCRIPT = String.raw`(() => {
   const id = value => typeof value === 'string' && /^[A-Za-z_$][A-Za-z0-9_$-]{0,79}$/.test(value) && !/\d{4,}/.test(value);
   const fn = value => typeof value === 'string' && value.length <= 160 && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){0,3}$/.test(value) && !/\d{4,}/.test(value);
   const isExport = value => /excel|download|export|xls/i.test(value) && !/login|password|credential|vault|payment/i.test(value);
-  const isPath = value => /^\/(?:cpa\/cb\/(?:api)?CPACB0101_[0-9]{2}\.hc|app\/LPMCDAA_[A-Z][0-9]{3}\.lc|personal\/card\/activity\/UHPPRP0801[A-Z0-9]{2}\.jsp|frontservice\/SHPPRP0801S[0-9]{2})$/.test(value);
+  const isPath = value => /^\/(?:cpa\/cb\/(?:api)?CPACB0101_(?:[0-9]{2}|105)\.hc|app\/LPMCDAA_[A-Z][0-9]{3}\.lc|personal\/card\/activity\/UHPPRP0801[A-Z0-9]{2}\.jsp|frontservice\/SHPPRP0801S[0-9]{2})$/.test(value);
   const sameIssuerPath = value => isPath(value) && (url.hostname.includes('hyundaicard') ? value.startsWith('/cpa/cb/') : url.hostname.includes('lottecard') ? value.startsWith('/app/') : /^\/(?:personal\/card\/activity|frontservice)\//.test(value));
   const output = { controls: [], functions: [], paths: [], inputNames: [], truncated: false };
   const targets = new Set();

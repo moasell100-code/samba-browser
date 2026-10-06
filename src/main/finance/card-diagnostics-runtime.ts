@@ -1,5 +1,10 @@
 import { mkdir, writeFile, unlink, rmdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { saveCardExcel, validExcelRange } from './card-excel-save'
+import { exportSamsungWorkbook, type SamsungExcelScope } from './samsung-excel-export'
+import { exportLotteWorkbook } from './lotte-excel-export'
+import { exportHyundaiWorkbook } from './hyundai-excel-export'
 import type { Tab, TabManager } from '../browser/tab-manager'
 import { isTabAlive } from '../browser/tab-manager'
 import { CardNetworkObserver } from './card-network-observer'
@@ -49,6 +54,7 @@ export async function startCardDiagnosticsRuntime(options: {
   let closed = false
   let disposed = false
   let timeout: ReturnType<typeof setTimeout> | undefined
+  let exporting = false
   const assertAvailable = (): void => {
     if (
       closed ||
@@ -276,6 +282,40 @@ export async function startCardDiagnosticsRuntime(options: {
       const result = await inspectCardExportContract(tab)
       assertTabContext(tab, url)
       return result
+    },
+    async exportHistory(id: string, from: string, to: string, scope?: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      const issuer = issuerForCardUrl(url)
+      if (!validExcelRange({ from, to })) return { state: 'invalid_export_range' }
+      if (exporting) return { state: 'export_busy' }
+      if (scope && issuer !== 'samsung_card') return { state: 'invalid_export_scope' }
+      exporting = true
+      try {
+        const result =
+          issuer === 'samsung_card'
+            ? await exportSamsungWorkbook(
+                tab,
+                { from, to },
+                { signal: controller.signal, scope: scope as SamsungExcelScope | undefined }
+              )
+            : issuer === 'lotte_card'
+              ? await exportLotteWorkbook(tab, { from, to }, { signal: controller.signal })
+              : issuer === 'hyundai_card'
+                ? await exportHyundaiWorkbook(tab, { from, to }, { signal: controller.signal })
+                : null
+        assertTabContext(tab, url)
+        if (!result) return { state: 'export_unavailable' }
+        return await saveCardExcel(join(homedir(), 'Downloads', 'finance-card-history'), result)
+      } catch (error) {
+        // Adapters expose only fixed codes; never forward Electron/network response errors.
+        const code = error instanceof Error ? error.message : ''
+        const allowed =
+          /^(?:hyundai_|lotte_|samsung_)?(?:invalid_export_range|history_page_required|authentication_required|navigation_changed|page_not_ready|card_scope_not_all|query_failed|query_timeout|invalid_response|export_plan_unavailable|export_response_unavailable|export_response_limit|export_file_unrecognized|export_timeout|export_cancelled)$/
+        return { state: 'export_failed', issue: allowed.test(code) ? code : 'export_unavailable' }
+      } finally {
+        exporting = false
+      }
     },
     ...(options.vault && options.settings
       ? {

@@ -41,7 +41,7 @@ async function main() {
       signal: AbortSignal.timeout(
         toolName === 'card_collect_recent'
           ? 600_000
-          : toolName === 'card_restore_session'
+          : ['card_restore_session', 'card_export_history'].includes(toolName)
             ? 120_000
             : 45_000
       ),

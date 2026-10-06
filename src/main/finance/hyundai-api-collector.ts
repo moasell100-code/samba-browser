@@ -183,7 +183,7 @@ export async function inspectHyundaiScope(tab: Tab): Promise<HyundaiScopeInspect
   }
 }
 
-function requestPlanScript(from: string, to: string): string {
+export function requestPlanScript(from: string, to: string): string {
   return `(() => {
     const url = new URL(location.href);
     const fail = issue => ({ ok: false, issue });
