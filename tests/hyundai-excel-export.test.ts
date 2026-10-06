@@ -185,6 +185,22 @@ describe('Hyundai recent approval Excel export', () => {
     }
   })
 
+  it('validates the leading date and count without discarding issuer rows containing an extra cell', async () => {
+    const f = fixture()
+    const original = f.fetch.getMockImplementation()!
+    f.fetch.mockImplementation(async (endpoint, options) =>
+      endpoint.endsWith('_105.hc')
+        ? new Response(
+            workbook(2)
+              .toString()
+              .replaceAll('<td>PRIVATE</td></tr>', '<td>PRIVATE</td><td>EXTRA_PRIVATE</td></tr>'),
+            { headers: { 'content-type': 'application/vnd.ms-excel' } }
+          )
+        : original(endpoint, options)
+    )
+    expect((await exportHyundaiWorkbook(f.tab, RANGE)).expectedRows).toBe(2)
+  })
+
   it('skips downloads only for a verified empty all-card range', async () => {
     const f = fixture(0)
     const result = await exportHyundaiWorkbook(f.tab, RANGE)

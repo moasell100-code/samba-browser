@@ -139,6 +139,7 @@ function countEvidence(
   if (own(body, 'error_code') && own(body, 'error_message')) issues.push('query_service_error')
   if (reportedTotal === null || queryRows === null) issues.push('query_count_unverified')
   else if (reportedTotal !== queryRows) issues.push('query_count_mismatch')
+  const scopeMismatches: string[] = []
   for (const field of [
     'srtDt',
     'endDt',
@@ -154,9 +155,31 @@ function countEvidence(
       (typeof returned !== 'string' && typeof returned !== 'number') ||
       String(returned).replaceAll('-', '') !== expected.replaceAll('-', '')
     ) {
-      issues.push('query_scope_unverified')
-      break
+      scopeMismatches.push(field)
     }
+  }
+  if (scopeMismatches.length) {
+    const dates = ['srtDt', 'endDt'].map((field) => {
+      const rawDate = String(own(summary, field) ?? '').replaceAll('-', '')
+      const date = /^(\d{4})(\d{2})(\d{2})$/.exec(rawDate)
+      const normalized = date ? `${date[1]}-${date[2]}-${date[3]}` : ''
+      return isCardDate(normalized) ? normalized : null
+    })
+    const filterCodes = Object.fromEntries(
+      ['dtClsf', 'useClsf', 'usplClsf', 'zoneClsf'].map((field) => {
+        const code = String(own(summary, field) ?? '')
+        return [field, /^[A-Z0-9]{0,2}$/.test(code) ? code : '[unrecognized]']
+      })
+    )
+    throw new HyundaiExportValidationError(
+      {
+        stage: 'query_scope',
+        scopeMismatches,
+        dateRange: { from: dates[0], to: dates[1] },
+        filterCodes
+      },
+      'query_scope_unverified'
+    )
   }
   if (rowLimitPossible) issues.push('export_row_limit_possible')
   return {
@@ -172,13 +195,18 @@ function countEvidence(
 export class HyundaiExportValidationError extends Error {
   constructor(
     public readonly diagnostic: {
-      headerLabels: string[][]
-      cellCounts: number[]
-      dateShapes: string[]
+      headerLabels?: string[][]
+      cellCounts?: number[]
+      dateShapes?: string[]
       stage: string
-    }
+      scopeMismatches?: string[]
+      dateRange?: { from: string | null; to: string | null }
+      filterCodes?: Record<string, string>
+    },
+    message:
+      'export_date_schema_unverified' | 'query_scope_unverified' = 'export_date_schema_unverified'
   ) {
-    super('export_date_schema_unverified')
+    super(message)
   }
 }
 
@@ -259,7 +287,9 @@ function validateWorkbookDates(bytes: Buffer, range: CardDateRange): number {
   for (const row of tables[0].querySelectorAll('tr')) {
     const cells = row.querySelectorAll('td')
     if (!cells.length) continue
-    if (cells.length !== EXCEL_HEADERS.length) fail('cells')
+    // Some issuer rows contain an additional cell. This guard verifies only the
+    // unambiguous leading approval date; the ledger importer validates full row layout.
+    if (cells.length < EXCEL_HEADERS.length) fail('cells')
     const raw = cells[0].text.trim()
     if (raw === '-') continue // The observed export has three total rows with a dash in this column.
     const match = /^(\d{4})년\s+(\d{2})월\s+(\d{2})일$/.exec(raw)
@@ -430,6 +460,7 @@ export async function exportHyundaiWorkbook(
       )
     } catch (error) {
       context()
+      if (error instanceof HyundaiExportValidationError) throw error
       throw new Error(
         error instanceof Error && SAFE_ERRORS.has(error.message)
           ? error.message
