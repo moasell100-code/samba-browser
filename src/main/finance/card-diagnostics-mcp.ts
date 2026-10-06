@@ -13,6 +13,7 @@ export interface CardDiagnosticsBackend {
   inspect(tabId: string): Promise<unknown>
   requests(tabId: string): unknown
   queryContract?(tabId: string): Promise<unknown>
+  exportContract?(tabId: string): Promise<unknown>
   login?(tabId: string): Promise<unknown>
   collect?(tabId: string, save: boolean): Promise<unknown>
   dispose(): void
@@ -102,6 +103,13 @@ export async function startCardDiagnosticsMcp(
       'Read sanitized static history-query functions. Never reads form values, invokes query functions, or returns account data.',
       { tabId: z.string().uuid() },
       ({ tabId }) => backend.queryContract!(String(tabId))
+    )
+  if (backend.exportContract)
+    register(
+      'card_export_contract',
+      'Inspect value-free Excel export controls and static function metadata on the signed-in issuer history page. Does not export, submit forms or return financial rows.',
+      { tabId: z.string().uuid() },
+      ({ tabId }) => backend.exportContract!(String(tabId))
     )
   if (backend.login)
     register(

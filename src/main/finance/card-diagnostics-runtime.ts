@@ -6,6 +6,7 @@ import { CardNetworkObserver } from './card-network-observer'
 import { CARD_HISTORY_URLS, inspectCardPage, issuerForCardUrl } from './card-page-diagnostics'
 import { startCardDiagnosticsMcp, type CardDiagnosticIssuer } from './card-diagnostics-mcp'
 import { inspectCardQueryContract } from './card-query-contract'
+import { inspectCardExportContract } from './card-export-diagnostics'
 import { restoreCardSession, inspectLotteKeypadStatus } from './card-login-session'
 import type { VaultService } from '../vault/service'
 import type { Settings } from '../../shared/settings'
@@ -266,6 +267,13 @@ export async function startCardDiagnosticsRuntime(options: {
       const tab = getTab(id)
       const url = tab.view.webContents.getURL()
       const result = await inspectCardQueryContract(tab)
+      assertTabContext(tab, url)
+      return result
+    },
+    async exportContract(id: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      const result = await inspectCardExportContract(tab)
       assertTabContext(tab, url)
       return result
     },
