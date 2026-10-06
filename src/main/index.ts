@@ -1,8 +1,9 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, crashReporter, dialog, powerMonitor } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, powerMonitor, session } from 'electron'
 import { is, optimizer } from '@electron-toolkit/utils'
 import { createMainWindow } from './window'
 import { TabManager } from './browser/tab-manager'
+import { installSessionRequestHooks } from './browser/request-hooks'
 import { markQuitting } from './browser/popups'
 import { registerInternalProtocol, registerInternalScheme } from './browser/internal-protocol'
 import { registerIpc } from './ipc/handlers'
@@ -158,6 +159,9 @@ app
         isJajaValidation() ? 'com.samba.browser.validation' : 'com.samba.browser'
       )
     app.on('browser-window-created', (_, w) => optimizer.watchWindowShortcuts(w))
+    // UI icons and internal-page resources use net.fetch's default session.
+    // Install before either can issue requests, just as we do for tab sessions.
+    installSessionRequestHooks(session.defaultSession)
     // 자체 새 탭 페이지 서빙. 개발 모드에서는 vite 개발 서버로 넘긴다
     registerInternalProtocol({
       rendererDir: join(__dirname, '../renderer'),

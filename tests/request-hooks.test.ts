@@ -1,6 +1,7 @@
 import type { BeforeSendResponse, OnBeforeSendHeadersListenerDetails, Session } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  installSessionRequestHooks,
   observeSessionRequests,
   transformSessionRequestHeaders
 } from '../src/main/browser/request-hooks'
@@ -45,6 +46,22 @@ function fakeSession(): {
 }
 
 describe('session request dispatcher', () => {
+  it('initializes unmodified requests once and retains later observers and transforms', () => {
+    const fake = fakeSession()
+    installSessionRequestHooks(fake.session)
+    installSessionRequestHooks(fake.session)
+    expect(fake.request('https://site.example/favicon.ico').requestHeaders).toEqual({
+      Cookie: 'test-session=opaque'
+    })
+    const observe = vi.fn()
+    observeSessionRequests(fake.session, 'jaja', observe)
+    installWebstoreUserAgent(fake.session)
+    const response = fake.request('https://chromewebstore.google.com/detail/test')
+    expect(response.requestHeaders?.['User-Agent']).not.toContain('Electron')
+    expect(observe).toHaveBeenCalledOnce()
+    expect(fake.install).toHaveBeenCalledOnce()
+  })
+
   it.each(['observer-first', 'ua-first'])(
     '%s: UA 와 쿠키 관측은 한 리스너에서 함께 동작한다',
     (order) => {

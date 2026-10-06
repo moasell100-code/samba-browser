@@ -23,6 +23,16 @@ interface RequestHooks {
 
 const sessions = new WeakMap<Session, RequestHooks>()
 
+/**
+ * Initialize the shared dispatcher before any browser-process fetch or window load.
+ * Electron 39's extension fallback can dereference a missing RenderFrameHost for
+ * browser-process requests. Its own webRequest dispatcher handles that case.
+ * Keep the default session on this path too; tab sessions already initialize it.
+ */
+export function installSessionRequestHooks(session: Session): void {
+  hooksFor(session)
+}
+
 function snapshot(
   details: OnBeforeSendHeadersListenerDetails,
   headers: Record<string, string>
