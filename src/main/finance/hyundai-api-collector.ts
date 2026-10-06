@@ -183,7 +183,11 @@ export async function inspectHyundaiScope(tab: Tab): Promise<HyundaiScopeInspect
   }
 }
 
-export function requestPlanScript(from: string, to: string): string {
+export function requestPlanScript(
+  from: string,
+  to: string,
+  listMode: 'recent' | 'acquired' = 'recent'
+): string {
   return `(() => {
     const url = new URL(location.href);
     const fail = issue => ({ ok: false, issue });
@@ -237,7 +241,7 @@ export function requestPlanScript(from: string, to: string): string {
       if (cardTails.filter(other => other.crno === entry.crno).length > 1) { entry.status = 'ambiguous'; entry.diagnostic = 'reference_ambiguous'; delete entry.last4; }
     }
     const direct = fixedRadio('dtClsf_04', 'dtClsf', '직접입력');
-    const recent = fixedRadio('listClsf_01', 'listClsf', null);
+    const recent = fixedRadio('${listMode === 'acquired' ? 'listClsf_02' : 'listClsf_01'}', 'listClsf', null);
     if (direct === null || recent === null) return fail('request_schema_unverified');
     const formatDate = (id, date) => {
       const input = form.querySelector('#' + id);

@@ -34,6 +34,7 @@ function fixture(count = 2): {
     <input name="dmfrClsf" type="hidden" value=""><input name="sortType" type="hidden" value="SORT_PRIVATE">
     <input name="dtClsf" id="dtClsf_04" type="radio" value="DIRECT_PRIVATE"><label for="dtClsf_04">직접 입력</label>
     <input name="listClsf" id="listClsf_01" type="radio" value="RECENT_PRIVATE">
+    <input name="listClsf" id="listClsf_02" type="radio" value="ACQUIRED_PRIVATE">
     <input id="iqrySrtDt" type="hidden" value="20261001"><input id="iqryEndDt" type="hidden" value="20261006">
     ${['useClsf', 'usplClsf', 'zoneClsf'].map((name) => `<input name="${name}" type="radio" id="${name}_all" value="ALL_PRIVATE_${name}"><label for="${name}_all">전체</label>`).join('')}
     <input name="password" type="password" value="NEVER_EXPORT_PASSWORD">
@@ -43,13 +44,16 @@ function fixture(count = 2): {
   windows.push(dom)
   let url = HISTORY
   const fetch = vi.fn(async (endpoint: string, options: RequestInit) => {
-    if (endpoint.endsWith('apiCPACB0101_21.hc')) {
+    if (/apiCPACB0101_2[12]\.hc$/.test(endpoint)) {
       const data = Object.fromEntries(new URLSearchParams(String(options.body)))
       return new Response(
         JSON.stringify({
           bdy: {
             rcntSummaryInfo: { ...data, totUseCnt: count },
-            rcntAvItm: Array.from({ length: count }, () => ({ private: 'NOT_RETURNED' }))
+            [endpoint.endsWith('_22.hc') ? 'acqrUseItmList' : 'rcntAvItm']: Array.from(
+              { length: count },
+              () => ({ private: 'NOT_RETURNED' })
+            )
           }
         }),
         { headers: { 'content-type': 'application/json' } }
@@ -139,6 +143,46 @@ describe('Hyundai recent approval Excel export', () => {
       rowLimitPossible: true,
       issues: ['export_row_limit_possible']
     })
+  })
+
+  it('supports the separately selected, observed posted-purchase query and export routes', async () => {
+    const f = fixture()
+    const result = await exportHyundaiWorkbook(f.tab, RANGE, { mode: 'acquired' })
+    expect(result.scope).toBe('acquired_purchases_all_cards_all_merchants')
+    expect(f.fetch.mock.calls.map((call) => call[0])).toEqual([
+      'https://www.hyundaicard.com/cpa/cb/apiCPACB0101_22.hc',
+      'https://www.hyundaicard.com/cpa/cb/CPACB0101_10.hc'
+    ])
+    expect(new URLSearchParams(String(f.fetch.mock.calls[0][1].body)).get('listClsf')).toBe(
+      'ACQUIRED_PRIVATE'
+    )
+  })
+
+  it('returns only structural workbook diagnostics when an observed layout cannot be validated', async () => {
+    const f = fixture()
+    const original = f.fetch.getMockImplementation()!
+    f.fetch.mockImplementation(async (endpoint, options) =>
+      endpoint.endsWith('_105.hc')
+        ? new Response(
+            '<table><tr><th>이용일</th><th>PRIVATE_HEADER</th></tr><tr><td>PRIVATE_PERSON 2026</td><td>PRIVATE_VALUE</td></tr></table>',
+            { headers: { 'content-type': 'application/vnd.ms-excel' } }
+          )
+        : original(endpoint, options)
+    )
+    try {
+      await exportHyundaiWorkbook(f.tab, RANGE)
+      expect.fail('must reject unknown layout')
+    } catch (error) {
+      expect((error as Error).message).toBe('export_date_schema_unverified')
+      expect(JSON.stringify(error)).not.toContain('PRIVATE')
+      expect(error).toMatchObject({
+        diagnostic: {
+          headerLabels: [['이용일', '[unrecognized]']],
+          cellCounts: [0, 2],
+          stage: 'headers'
+        }
+      })
+    }
   })
 
   it('skips downloads only for a verified empty all-card range', async () => {

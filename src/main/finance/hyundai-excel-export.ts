@@ -10,6 +10,9 @@ const HISTORY_PATH = '/cpa/cb/CPACB0101_01.hc'
 const QUERY_PATH = '/cpa/cb/apiCPACB0101_21.hc'
 // Observed in the authenticated page's excelAction for recent approvals/all merchant types.
 const EXPORT_PATH = '/cpa/cb/CPACB0101_105.hc'
+// Observed in goFilter/goAjax and excelAction for listClsf_02 (posted purchases).
+const ACQUIRED_QUERY_PATH = '/cpa/cb/apiCPACB0101_22.hc'
+const ACQUIRED_EXPORT_PATH = '/cpa/cb/CPACB0101_10.hc'
 const MAX_BYTES = 25 * 1024 * 1024
 const MAX_QUERY_BYTES = 4 * 1024 * 1024
 const EXCEL_HEADERS = [
@@ -78,7 +81,7 @@ const planSchema = z.discriminatedUnion('ok', [
 export interface HyundaiExcelExport {
   issuer: 'hyundai_card'
   range: CardDateRange
-  scope: 'recent_approvals_all_cards_all_merchants'
+  scope: 'recent_approvals_all_cards_all_merchants' | 'acquired_purchases_all_cards_all_merchants'
   bytes: Buffer
   extension: 'xls' | 'xlsx'
   /** Null when the API count is capped/unverified; the workbook still requires validation. */
@@ -114,7 +117,8 @@ function validRange(range: CardDateRange): boolean {
 
 function countEvidence(
   raw: unknown,
-  form: HyundaiApiForm
+  form: HyundaiApiForm,
+  mode: 'recent' | 'acquired'
 ): Pick<
   HyundaiExcelExport,
   'expectedRows' | 'reportedTotal' | 'queryRows' | 'rowLimitPossible' | 'issues'
@@ -124,7 +128,7 @@ function countEvidence(
       ? Object.getOwnPropertyDescriptor(value, key)?.value
       : undefined
   const body = own(raw, 'bdy') ?? raw
-  const items = own(body, 'rcntAvItm')
+  const items = own(body, mode === 'acquired' ? 'acqrUseItmList' : 'rcntAvItm')
   const summary = own(body, 'rcntSummaryInfo')
   const count = String(own(summary, 'totUseCnt') ?? '')
   const reportedTotal =
@@ -165,11 +169,82 @@ function countEvidence(
 }
 
 /** Validate only the observed issuer HTML workbook's date column, without emitting row data. */
+export class HyundaiExportValidationError extends Error {
+  constructor(
+    public readonly diagnostic: {
+      headerLabels: string[][]
+      cellCounts: number[]
+      dateShapes: string[]
+      stage: string
+    }
+  ) {
+    super('export_date_schema_unverified')
+  }
+}
+
 function validateWorkbookDates(bytes: Buffer, range: CardDateRange): number {
   const html = bytes.toString('utf8')
   if (!/<(?:html|table)\b/i.test(html.slice(0, 8192)))
     throw new Error('export_date_schema_unverified')
   const document = parse(html)
+  const publicLabels = new Set([
+    ...EXCEL_HEADERS,
+    '이용일',
+    '이용일자',
+    '매출일자',
+    '매입일자',
+    '카드번호',
+    '가맹점',
+    '이용금액',
+    '이용금액(원)',
+    '청구금액',
+    '수수료',
+    '결제예정일',
+    '접수일',
+    '전표접수일',
+    '이용국가',
+    '통화',
+    '해외이용금액',
+    '매출구분',
+    '카드명',
+    '이용구분',
+    '할부개월수',
+    '승인번호',
+    '카드구분'
+  ])
+  const diagnostic = {
+    headerLabels: document
+      .querySelectorAll('tr')
+      .filter((row) => row.querySelectorAll('th').length > 1)
+      .slice(0, 5)
+      .map((row) =>
+        row
+          .querySelectorAll('th')
+          .slice(0, 30)
+          .map((cell) => (publicLabels.has(cell.text.trim()) ? cell.text.trim() : '[unrecognized]'))
+      ),
+    cellCounts: [
+      ...new Set(document.querySelectorAll('tr').map((row) => row.querySelectorAll('td').length))
+    ].slice(0, 15),
+    dateShapes: [
+      ...new Set(
+        document
+          .querySelectorAll('tr')
+          .map((row) => row.querySelector('td')?.text.trim())
+          .filter((value) => value !== undefined)
+          .map((value) =>
+            String(value)
+              .replace(/\d/g, 'd')
+              .replace(/[^d년월일\s/.:-]/g, '?')
+              .slice(0, 45)
+          )
+      )
+    ].slice(0, 15),
+    stage: 'headers'
+  }
+  const fail = (stage: string): never => {
+    throw new HyundaiExportValidationError({ ...diagnostic, stage })
+  }
   const tables = document.querySelectorAll('table').filter((table) =>
     table.querySelectorAll('tr').some((row) => {
       const headers = row.querySelectorAll('th').map((cell) => cell.text.trim())
@@ -179,18 +254,18 @@ function validateWorkbookDates(bytes: Buffer, range: CardDateRange): number {
       )
     })
   )
-  if (tables.length !== 1) throw new Error('export_date_schema_unverified')
+  if (tables.length !== 1) fail('headers')
   let count = 0
   for (const row of tables[0].querySelectorAll('tr')) {
     const cells = row.querySelectorAll('td')
     if (!cells.length) continue
-    if (cells.length !== EXCEL_HEADERS.length) throw new Error('export_date_schema_unverified')
+    if (cells.length !== EXCEL_HEADERS.length) fail('cells')
     const raw = cells[0].text.trim()
     if (raw === '-') continue // The observed export has three total rows with a dash in this column.
     const match = /^(\d{4})년\s+(\d{2})월\s+(\d{2})일$/.exec(raw)
-    if (!match) throw new Error('export_date_schema_unverified')
+    if (!match) return fail('date')
     const date = `${match[1]}-${match[2]}-${match[3]}`
-    if (!isCardDate(date)) throw new Error('export_date_schema_unverified')
+    if (!isCardDate(date)) fail('date')
     if (date < range.from || date > range.to) throw new Error('export_range_mismatch')
     count += 1
   }
@@ -226,7 +301,7 @@ const SAFE_ERRORS = new Set([
 export async function exportHyundaiWorkbook(
   tab: Tab,
   range: CardDateRange,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; mode?: 'recent' | 'acquired' } = {}
 ): Promise<HyundaiExcelExport> {
   if (!validRange(range)) throw new Error('invalid_export_range')
   const controller = new AbortController()
@@ -295,8 +370,15 @@ export async function exportHyundaiWorkbook(
     const issuerOrigin = origin(url)
     if (!issuerOrigin) throw new Error('history_page_required')
     await authenticate()
+    const mode = options.mode ?? 'recent'
+    const queryPath = mode === 'acquired' ? ACQUIRED_QUERY_PATH : QUERY_PATH
+    const exportPath = mode === 'acquired' ? ACQUIRED_EXPORT_PATH : EXPORT_PATH
+    const scope =
+      mode === 'acquired'
+        ? 'acquired_purchases_all_cards_all_merchants'
+        : 'recent_approvals_all_cards_all_merchants'
     const parsed = planSchema.safeParse(
-      await bounded(wc.executeJavaScript(requestPlanScript(range.from, range.to), false))
+      await bounded(wc.executeJavaScript(requestPlanScript(range.from, range.to, mode), false))
     )
     context()
     if (!parsed.success) throw new Error('export_plan_unavailable')
@@ -323,7 +405,7 @@ export async function exportHyundaiWorkbook(
     let evidence: ReturnType<typeof countEvidence>
     try {
       const query = await bounded(
-        wc.session.fetch(issuerOrigin + QUERY_PATH, {
+        wc.session.fetch(issuerOrigin + queryPath, {
           ...request,
           headers: { ...request.headers, 'X-Requested-With': 'XMLHttpRequest' }
         })
@@ -333,7 +415,7 @@ export async function exportHyundaiWorkbook(
         void query.body?.cancel().catch(() => undefined)
         throw new Error('query_response_http')
       }
-      if (query.url && query.url !== issuerOrigin + QUERY_PATH) {
+      if (query.url && query.url !== issuerOrigin + queryPath) {
         void query.body?.cancel().catch(() => undefined)
         throw new Error('query_response_unavailable')
       }
@@ -343,7 +425,8 @@ export async function exportHyundaiWorkbook(
       }
       evidence = countEvidence(
         JSON.parse((await read(query, MAX_QUERY_BYTES)).toString('utf8')),
-        form
+        form,
+        mode
       )
     } catch (error) {
       context()
@@ -362,14 +445,14 @@ export async function exportHyundaiWorkbook(
       return {
         issuer: 'hyundai_card',
         range: { ...range },
-        scope: 'recent_approvals_all_cards_all_merchants',
+        scope,
         bytes: Buffer.alloc(0),
         extension: 'xls',
         ...evidence
       }
-    const response = await bounded(wc.session.fetch(issuerOrigin + EXPORT_PATH, request))
+    const response = await bounded(wc.session.fetch(issuerOrigin + exportPath, request))
     context()
-    if (response.url && response.url !== issuerOrigin + EXPORT_PATH) {
+    if (response.url && response.url !== issuerOrigin + exportPath) {
       void response.body?.cancel().catch(() => undefined)
       throw new Error('export_response_unavailable')
     }
@@ -391,7 +474,7 @@ export async function exportHyundaiWorkbook(
     return {
       issuer: 'hyundai_card',
       range: { ...range },
-      scope: 'recent_approvals_all_cards_all_merchants',
+      scope,
       bytes,
       extension: zip ? 'xlsx' : 'xls',
       ...evidence
@@ -399,6 +482,7 @@ export async function exportHyundaiWorkbook(
   } catch (error) {
     if (options.signal?.aborted) throw new Error('export_cancelled')
     if (controller.signal.aborted) throw new Error('export_timeout')
+    if (error instanceof HyundaiExportValidationError) throw error
     throw new Error(
       error instanceof Error && SAFE_ERRORS.has(error.message)
         ? error.message
