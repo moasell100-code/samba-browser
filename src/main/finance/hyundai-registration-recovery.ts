@@ -353,21 +353,29 @@ export async function recoverHyundaiRegistration(
     navigating = true
     await bounded(() => wc.loadURL(HYUNDAI_LOGIN_URL))
     context()
-    // Loading the public entry reevaluates the existing issuer registration cookie.
+    // Loading the public entry starts the issuer's asynchronous PINsign certificate
+    // list initialization. Restored cookies alone do not establish PIN registration.
     // Reading auth never enters PIN digits or invokes a registration/authentication flow.
     const deadline = Date.now() + 5_000
-    do {
+    let readySince: number | undefined
+    for (;;) {
       auth = (await bounded(() => pageBridge.hyundaiAuth(tab))).state
       context()
-      if (auth === 'signed_in' || auth === 'pin_ready')
-        return { state: 'restored', auth, restoredCookies: applied.length }
-      // Registration controls can remain visible while issuer AJAX initializes.
-      // Wait the full short window for positive proof before deciding to undo.
+      if (auth === 'signed_in') return { state: 'restored', auth, restoredCookies: applied.length }
+      const now = Date.now()
+      readySince = auth === 'pin_ready' ? (readySince ?? now) : undefined
+      // PINsign.list completes asynchronously and can replace the initial PIN
+      // form with enrollment. Require a fresh read at the end of the window and
+      // a continuous final second of readiness, not the first visible PIN form.
+      if (now >= deadline) {
+        if (auth === 'pin_ready' && readySince !== undefined && now - readySince >= 1_000)
+          return { state: 'restored', auth, restoredCookies: applied.length }
+        break
+      }
       await bounded(
-        () =>
-          new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, deadline - Date.now())))
+        () => new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, deadline - now)))
       )
-    } while (Date.now() < deadline)
+    }
     throw new RecoveryError('authentication_unchanged')
   } catch (error) {
     let rollbackConflict = false

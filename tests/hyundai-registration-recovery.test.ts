@@ -43,6 +43,7 @@ beforeAll(async () => {
   SQL = await initSqlJs({ locateFile: (file) => require.resolve(`sql.js/dist/${file}`) })
 })
 beforeEach(() => {
+  vi.useFakeTimers()
   vi.mocked(app.getPath).mockReturnValue(USER_DATA)
 })
 afterEach(() => {
@@ -218,6 +219,14 @@ async function unchanged(f: RecoveryFixture): Promise<HyundaiRegistrationRecover
   return await result
 }
 
+async function runRecovery(
+  ...args: Parameters<typeof recoverHyundaiRegistration>
+): Promise<HyundaiRegistrationRecoveryResult> {
+  const result = recoverHyundaiRegistration(...args)
+  await vi.advanceTimersByTimeAsync(5_001)
+  return await result
+}
+
 describe('fixed Hyundai registration cookie recovery', () => {
   it('restores only retained official-host cookies with exact expiry and flags', async () => {
     const row = sourceRow()
@@ -236,7 +245,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
       value: 'SYNTHETIC_OTHER_SECRET'
     }
     const f = fixture([other])
-    expect(await recoverHyundaiRegistration(f.tab)).toEqual({
+    expect(await runRecovery(f.tab)).toEqual({
       state: 'restored',
       auth: 'pin_ready',
       restoredCookies: 2
@@ -260,7 +269,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
   ] as const)('does not read or write a backup for %s', async (state) => {
     const f = fixture()
     f.auth.mockResolvedValue({ state })
-    const result = await recoverHyundaiRegistration(f.tab)
+    const result = await runRecovery(f.tab)
     expect(result.state).toBe(
       state === 'signed_in'
         ? 'already_signed_in'
@@ -290,7 +299,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
     if (mode === 'foreign-url') f.setUrl('https://attacker.invalid/')
     if (mode === 'credentials-url') f.setUrl('https://synthetic:secret@www.hyundaicard.com/')
     if (mode === 'foreign-port') f.setUrl('https://www.hyundaicard.com:444/')
-    const result = await recoverHyundaiRegistration(f.tab)
+    const result = await runRecovery(f.tab)
     expect(result.state).toBe('failed')
     expect(readFile).not.toHaveBeenCalled()
     expect(f.set).not.toHaveBeenCalled()
@@ -309,7 +318,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
   ])('rejects unsupported retained source attributes %j before writing', async (override) => {
     backup([sourceRow(override)])
     const f = fixture()
-    expect((await recoverHyundaiRegistration(f.tab)).state).toBe('failed')
+    expect((await runRecovery(f.tab)).state).toBe('failed')
     expect(f.set).not.toHaveBeenCalled()
     expect(f.loadURL).not.toHaveBeenCalled()
   })
@@ -325,7 +334,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
       })
     ])
     const f = fixture()
-    expect((await recoverHyundaiRegistration(f.tab)).restoredCookies).toBe(1)
+    expect((await runRecovery(f.tab)).restoredCookies).toBe(1)
     expect(f.jar).toEqual([candidate(row)])
   })
 
@@ -333,7 +342,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
     const row = sourceRow({ value: '' })
     backup([row])
     const f = fixture()
-    expect(await recoverHyundaiRegistration(f.tab)).toEqual({
+    expect(await runRecovery(f.tab)).toEqual({
       state: 'restored',
       auth: 'pin_ready',
       restoredCookies: 1
@@ -355,7 +364,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
       if (mode === 'unavailable')
         vi.mocked(readFile).mockRejectedValue(new Error('SYNTHETIC_SECRET_RAW_ERROR'))
       const f = fixture()
-      const result = await recoverHyundaiRegistration(f.tab)
+      const result = await runRecovery(f.tab)
       expect(result.state).toBe('failed')
       expect(JSON.stringify(result)).not.toContain('SYNTHETIC')
       expect(f.set).not.toHaveBeenCalled()
@@ -366,7 +375,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
     const row = sourceRow()
     backup([row])
     const f = fixture([candidate(row)])
-    expect(await recoverHyundaiRegistration(f.tab)).toEqual({
+    expect(await runRecovery(f.tab)).toEqual({
       state: 'restored',
       auth: 'pin_ready',
       restoredCookies: 0
@@ -384,9 +393,38 @@ describe('fixed Hyundai registration cookie recovery', () => {
     }))
     vi.setSystemTime(0)
     const result = recoverHyundaiRegistration(f.tab)
-    await vi.advanceTimersByTimeAsync(1_001)
+    await vi.advanceTimersByTimeAsync(5_001)
     expect((await result).state).toBe('restored')
     expect(f.remove).not.toHaveBeenCalled()
+  })
+
+  it('rejects a transient initial PIN form when issuer list initialization later requires registration', async () => {
+    backup()
+    const f = fixture()
+    const start = Date.now()
+    f.auth.mockImplementation(async () => ({
+      state:
+        f.loadURL.mock.calls.length && Date.now() - start < 1_000
+          ? 'pin_ready'
+          : 'registration_required'
+    }))
+    const result = recoverHyundaiRegistration(f.tab)
+    await vi.advanceTimersByTimeAsync(1_001)
+    let finished = false
+    void result.then(() => {
+      finished = true
+    })
+    await Promise.resolve()
+    expect(finished).toBe(false)
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(await result).toEqual({
+      state: 'failed',
+      auth: 'registration_required',
+      restoredCookies: 0,
+      issue: 'authentication_unchanged'
+    })
+    expect(f.jar).toEqual([])
+    expect(f.remove).toHaveBeenCalledTimes(1)
   })
 
   it('rolls back the exact prior value and flags if auth remains unregistered', async () => {
@@ -439,7 +477,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
       f.commit(details)
       throw new Error('SYNTHETIC_SECRET_ERROR')
     })
-    expect((await recoverHyundaiRegistration(f.tab)).issue).toBe('cookie_restore_failed')
+    expect((await runRecovery(f.tab)).issue).toBe('cookie_restore_failed')
     expect(f.jar).toEqual([])
     expect(f.remove).toHaveBeenCalledTimes(1)
   })
@@ -453,7 +491,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
       if (f.auth.mock.calls.length === 2) f.jar[0].value = 'SYNTHETIC_NORMAL_USAGE'
       return { state: 'registration_required' }
     })
-    expect((await recoverHyundaiRegistration(f.tab)).issue).toBe('cookie_conflict')
+    expect((await runRecovery(f.tab)).issue).toBe('cookie_conflict')
     expect(f.jar[0].value).toBe('SYNTHETIC_NORMAL_USAGE')
     expect(f.set).not.toHaveBeenCalled()
   })
@@ -462,13 +500,13 @@ describe('fixed Hyundai registration cookie recovery', () => {
     const row = sourceRow({ host_key: 'www.hyundaicard.com' })
     backup([row])
     const f = fixture([{ ...candidate(row), hostOnly: false, domain: '.hyundaicard.com' }])
-    expect((await recoverHyundaiRegistration(f.tab)).issue).toBe('cookie_conflict')
+    expect((await runRecovery(f.tab)).issue).toBe('cookie_conflict')
     expect(f.set).not.toHaveBeenCalled()
   })
 
   it('aborts without mutation or backup access when already cancelled', async () => {
     const f = fixture()
-    expect((await recoverHyundaiRegistration(f.tab, AbortSignal.abort())).issue).toBe('cancelled')
+    expect((await runRecovery(f.tab, AbortSignal.abort())).issue).toBe('cancelled')
     expect(readFile).not.toHaveBeenCalled()
     expect(f.set).not.toHaveBeenCalled()
   })
@@ -480,7 +518,7 @@ describe('fixed Hyundai registration cookie recovery', () => {
       f.commit(details)
       f.tab.view = { webContents: { ...f.wc } } as Tab['view']
     })
-    expect((await recoverHyundaiRegistration(f.tab)).issue).toBe('navigation_changed')
+    expect((await runRecovery(f.tab)).issue).toBe('navigation_changed')
     expect(f.jar).toEqual([])
   })
 
@@ -521,9 +559,9 @@ describe('fixed Hyundai registration cookie recovery', () => {
   it('allows only one mutation attempt per live session', async () => {
     backup()
     const f = fixture()
-    await recoverHyundaiRegistration(f.tab)
+    await runRecovery(f.tab)
     f.auth.mockResolvedValue({ state: 'registration_required' })
-    expect(await recoverHyundaiRegistration(f.tab)).toEqual({
+    expect(await runRecovery(f.tab)).toEqual({
       state: 'already_attempted',
       auth: 'registration_required'
     })
