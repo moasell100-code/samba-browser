@@ -14,6 +14,7 @@ const fixtureState = vi.hoisted(() => ({
   startPause: undefined as Promise<void> | undefined,
   inspectPause: undefined as Promise<void> | undefined,
   inspect: vi.fn(),
+  cancellationProbe: vi.fn(),
   mkdir: vi.fn(),
   writeFile: vi.fn(),
   unlink: vi.fn(),
@@ -92,6 +93,10 @@ vi.mock('../src/main/finance/card-diagnostics-mcp', () => ({
       }
     }
   }
+}))
+vi.mock('../src/main/finance/samsung-api-collector', () => ({
+  collectSamsungApi: vi.fn(),
+  probeSamsungCancellationDetails: fixtureState.cancellationProbe
 }))
 
 import { startCardDiagnosticsRuntime } from '../src/main/finance/card-diagnostics-runtime'
@@ -175,6 +180,7 @@ beforeEach(() => {
   fixtureState.writeFile.mockResolvedValue(undefined)
   fixtureState.unlink.mockResolvedValue(undefined)
   fixtureState.rmdir.mockResolvedValue(undefined)
+  fixtureState.cancellationProbe.mockResolvedValue({ detailRows: 1, validAmountRows: 1 })
 })
 afterEach(async () => {
   for (const stop of stops.splice(0)) stop()
@@ -184,6 +190,45 @@ afterEach(async () => {
 })
 
 describe('card diagnostics runtime lifetime', () => {
+  it('rejects future, pre-history, invalid and over-four-day cancellation probes before calling a service', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-07T05:00:00Z'))
+    const h = await fixture()
+    h.setUrl(SAMSUNG)
+    for (const [from, to] of [
+      ['2026-06-30', '2026-07-01'],
+      ['2026-10-07', '2026-10-08']
+    ])
+      expect(await h.backend.cancellationContract!(h.tab.id, from, to)).toEqual({
+        state: 'invalid_range'
+      })
+    await expect(
+      h.backend.cancellationContract!(h.tab.id, '2026-09-31', '2026-09-31')
+    ).rejects.toThrow()
+    await expect(
+      h.backend.cancellationContract!(h.tab.id, '2026-09-01', '2026-09-05')
+    ).rejects.toThrow()
+    expect(fixtureState.cancellationProbe).not.toHaveBeenCalled()
+  })
+
+  it('uses only the fixed cancellation probe and rejects a result after tab navigation', async () => {
+    const h = await fixture()
+    h.setUrl(SAMSUNG)
+    const wait = deferred()
+    fixtureState.cancellationProbe.mockImplementationOnce(async () => {
+      await wait.promise
+      return { detailRows: 1, validAmountRows: 1 }
+    })
+    const pending = h.backend.cancellationContract!(h.tab.id, '2026-08-17', '2026-08-17')
+    expect(fixtureState.cancellationProbe).toHaveBeenCalledExactlyOnceWith(h.tab, {
+      from: '2026-08-17',
+      to: '2026-08-17'
+    })
+    h.setUrl(LOTTE)
+    const rejected = expect(pending).rejects.toThrow('Card tab changed')
+    wait.resolve()
+    await rejected
+  })
   it('reports safe load failure metadata without inspecting an error document or exposing the failed URL', async () => {
     const h = await fixture()
     h.wc.loadURL.mockRejectedValueOnce(

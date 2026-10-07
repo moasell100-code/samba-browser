@@ -17,6 +17,10 @@ import { CardDailyScheduler } from './card-daily-scheduler'
 import { FileCardDailyStore } from './card-daily-store'
 import { reportCardSchedule } from './card-schedule-report'
 import { reconcileKnownCards } from './card-reconciliation-sync'
+import { recoverCardCoverage } from './card-coverage-sync'
+import { collectHyundaiApi } from './hyundai-api-collector'
+import { collectSamsungApi } from './samsung-api-collector'
+import { collectLotteApi } from './lotte-api-collector'
 import {
   classifyCardNavigationFailure,
   classifyCardNavigationException
@@ -202,6 +206,7 @@ export function createCardDailyRuntime(options: {
             state: row.state === 'running' ? 'pending' : row.state,
             reason: row.reason ?? status.reason,
             approvalComplete: row.approvalComplete,
+            cancellationComplete: row.cancellationComplete,
             complete: row.complete,
             insertedRows: row.insertedRows,
             updatedRows: row.updatedRows
@@ -490,6 +495,7 @@ export function createCardDailyRuntime(options: {
         stage,
         loginAttempted,
         approvalComplete: result.approvalComplete,
+        cancellationComplete: result.cancellationComplete,
         complete: result.complete,
         totalRows: result.totalRows,
         insertedRows: result.insertedRows,
@@ -504,6 +510,19 @@ export function createCardDailyRuntime(options: {
       if (result.approvalComplete) {
         stage = 'reconcile'
         try {
+          await recoverCardCoverage(
+            tab,
+            {
+              hyundai_card: collectHyundaiApi,
+              samsung_card: collectSamsungApi,
+              lotte_card: collectLotteApi
+            }[issuer],
+            {
+              tokenFile: options.settings().financeCollectorTokenFile,
+              transport: options.settings().financeCollectorTransport,
+              signal
+            }
+          )
           saved.reconciliation = await interrupted(
             reconcileKnownCards(tab, {
               tokenFile: options.settings().financeCollectorTokenFile,

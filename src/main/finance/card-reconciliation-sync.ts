@@ -16,7 +16,7 @@ const count = z.number().int().nonnegative().max(10000)
 const leaseSchema = z.object({
   job_id: z.string().uuid().nullable(),
   issuer: issuerSchema,
-  dates: z.array(z.string().refine(isCardDate)).max(3),
+  dates: z.array(z.string().refine(isCardDate)).max(31),
   expires_at: z.string().datetime({ offset: true }).nullable(),
   target_count: count,
   state: z.enum(['leased', 'no_work', 'daily_budget_used'])
@@ -24,11 +24,13 @@ const leaseSchema = z.object({
 const receiptSchema = z.object({
   job_id: z.string().uuid(),
   source: issuerSchema,
-  dates: z.array(z.string().refine(isCardDate)).max(3),
+  dates: z.array(z.string().refine(isCardDate)).max(31),
   updated_rows: count,
   review_rows: count,
   new_approvals: z.literal(0),
   coverage_verified: z.boolean(),
+  status_complete: z.boolean().optional(),
+  reconciliation_complete: z.boolean().optional(),
   complete: z.literal(false)
 })
 const collectors: Record<z.infer<typeof issuerSchema>, CardApiCollector> = {
@@ -128,7 +130,12 @@ export async function reconcileKnownCards(
       wc.getURL() === initialUrl
     const requestOptions = { ...options, signal }
     const lease = leaseSchema.parse(
-      await exchange('reconcile-lease', JSON.stringify({ issuer }), 'lease', requestOptions)
+      await exchange(
+        'reconcile-lease',
+        JSON.stringify({ issuer, maxDays: 31 }),
+        'lease',
+        requestOptions
+      )
     )
     if (!unchanged() || lease.issuer !== issuer) return failed
     if (lease.state !== 'leased') {
@@ -145,7 +152,7 @@ export async function reconcileKnownCards(
       Date.parse(lease.expires_at) <= Date.now() ||
       lease.dates.some((day) => {
         const age = (today - Date.parse(day)) / 86400000
-        return age < 4 || age > 89
+        return age < 4 || day < '2026-07-01'
       })
     )
       return failed
@@ -186,8 +193,14 @@ export async function reconcileKnownCards(
     )
       return failed
     return {
-      state: reply.coverage_verified && !reply.review_rows ? 'checked' : 'needs_review',
-      checkedDays: reply.coverage_verified ? days.length : 0,
+      state:
+        reply.coverage_verified &&
+        reply.status_complete === true &&
+        reply.reconciliation_complete === true &&
+        !reply.review_rows
+          ? 'checked'
+          : 'needs_review',
+      checkedDays: reply.coverage_verified && reply.status_complete === true ? days.length : 0,
       reviewRows: reply.review_rows,
       updatedRows: reply.updated_rows
     }

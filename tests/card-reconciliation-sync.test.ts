@@ -43,6 +43,8 @@ const receipt = (changes: Record<string, unknown> = {}): Record<string, unknown>
   review_rows: 0,
   new_approvals: 0,
   coverage_verified: true,
+  status_complete: true,
+  reconciliation_complete: true,
   complete: false,
   ...changes
 })
@@ -145,7 +147,7 @@ describe('backend-scoped known approval reconciliation', () => {
       'reconcile-lease',
       'reconcile-complete'
     ])
-    expect(JSON.parse(mocks.ssh.mock.calls[0][0])).toEqual({ issuer: 'lotte_card' })
+    expect(JSON.parse(mocks.ssh.mock.calls[0][0])).toEqual({ issuer: 'lotte_card', maxDays: 31 })
     const input = JSON.parse(mocks.ssh.mock.calls[1][0])
     expect(Object.keys(input).sort()).toEqual(['data', 'job_id'])
     expect(Object.keys(input.data).sort()).toEqual(['collectedAt', 'days'])
@@ -159,10 +161,10 @@ describe('backend-scoped known approval reconciliation', () => {
   it.each([
     ['recent day', { dates: [dayAgo(3)] }],
     ['today', { dates: [dayAgo(0)] }],
-    ['older than window', { dates: [dayAgo(90)] }],
+    ['before history start', { dates: ['2026-06-30'] }],
     ['future day', { dates: [dayAgo(-1)] }],
     ['duplicate day', { dates: [dayAgo(4), dayAgo(4)] }],
-    ['four days', { dates: [4, 5, 6, 7].map(dayAgo) }],
+    ['over 31 days', { dates: Array.from({ length: 32 }, (_, index) => dayAgo(4 + index)) }],
     ['empty days', { dates: [] }],
     ['invalid calendar', { dates: ['2026-02-30'] }],
     ['other issuer', { issuer: 'samsung_card' }],

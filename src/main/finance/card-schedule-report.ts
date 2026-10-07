@@ -29,6 +29,7 @@ const resultSchema = z
       ])
       .optional(),
     approvalComplete: z.boolean().optional(),
+    cancellationComplete: z.boolean().optional(),
     complete: z.boolean().optional(),
     insertedRows: z.number().int().min(0).max(10_000).optional(),
     updatedRows: z.number().int().min(0).max(10_000).optional()

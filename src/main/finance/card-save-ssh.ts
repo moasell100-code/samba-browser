@@ -10,9 +10,13 @@ export const CARD_SSH_SAVE_TIMEOUT_MS = 45000
 export async function saveCardCollectionOverSsh(
   body: string,
   signal?: AbortSignal,
-  command: 'save' | 'schedule-report' | 'reconcile-lease' | 'reconcile-complete' = 'save'
+  command: 'save' | 'schedule-report' | 'reconcile-lease' | 'reconcile-complete' | 'window' = 'save'
 ): Promise<unknown> {
-  if (!['save', 'schedule-report', 'reconcile-lease', 'reconcile-complete'].includes(command))
+  if (
+    !['save', 'schedule-report', 'reconcile-lease', 'reconcile-complete', 'window'].includes(
+      command
+    )
+  )
     throw new Error('Finance collector command invalid')
   if (Buffer.byteLength(body) > MAX_BODY) throw new Error('Finance collection too large')
   if (signal?.aborted) throw new Error('Finance collector save unavailable')

@@ -12,7 +12,7 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close()
 })
 
-async function fixture(): Promise<{
+async function fixture(extra: Partial<CardDiagnosticsBackend> = {}): Promise<{
   client: Client
   backend: CardDiagnosticsBackend
   abort: AbortController
@@ -24,7 +24,8 @@ async function fixture(): Promise<{
     openHistory: vi.fn(async (issuer) => ({ issuer, state: 'signed_out' })),
     inspect: vi.fn(async () => ({ state: 'signed_in' })),
     requests: vi.fn(() => ({ requests: [] })),
-    dispose: vi.fn()
+    dispose: vi.fn(),
+    ...extra
   }
   const abort = new AbortController()
   const bridge = await startCardDiagnosticsMcp(backend, abort.signal)
@@ -42,6 +43,39 @@ async function fixture(): Promise<{
 }
 
 describe('read-only card MCP boundary', () => {
+  it('exposes bounded cancellation diagnostics without generic request or mutation capability', async () => {
+    const probe = vi.fn(async () => ({ detailRows: 1, validAmountRows: 1 }))
+    const { client } = await fixture({ cancellationContract: probe })
+    const tool = (await client.listTools()).tools.find(
+      (entry) => entry.name === 'card_cancellation_contract'
+    )!
+    expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false })
+    const args = {
+      tabId: '00000000-0000-4000-8000-000000000001',
+      from: '2026-09-06',
+      to: '2026-09-06'
+    }
+    expect(await client.callTool({ name: tool.name, arguments: args })).toMatchObject({
+      content: [{ text: JSON.stringify({ detailRows: 1, validAmountRows: 1 }) }]
+    })
+    expect(probe).toHaveBeenCalledExactlyOnceWith(args.tabId, args.from, args.to)
+    expect(
+      (await client.callTool({ name: tool.name, arguments: { ...args, from: 'arbitrary' } }))
+        .isError
+    ).toBe(true)
+    expect(probe).toHaveBeenCalledTimes(1)
+  })
+  it('allows existing-approval rechecks only on one supported tab without caller dates or payloads', async () => {
+    const reconcile = vi.fn(async () => ({ state: 'checked', checkedDays: 31, reviewRows: 0 }))
+    const { client } = await fixture({ reconcile })
+    const tool = (await client.listTools()).tools.find(
+      (entry) => entry.name === 'card_reconcile_existing'
+    )!
+    expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false })
+    const tabId = '00000000-0000-4000-8000-000000000001'
+    await client.callTool({ name: tool.name, arguments: { tabId } })
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(tabId)
+  })
   it('exposes only four bounded tools over real MCP and rejects arbitrary issuer/URL/actions', async () => {
     const { client, backend } = await fixture()
     const listed = await client.listTools()

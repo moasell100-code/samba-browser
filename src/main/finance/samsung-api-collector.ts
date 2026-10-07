@@ -22,12 +22,35 @@ const rawRowSchema = z
     aprAm: cell,
     mrcNm: cell,
     itgCdnoe: cell,
+    cdnoId: cell,
     canRcpdt: cell,
     poCanDvC: cell,
     canProcsStsC: cell
   })
   .strict()
 type RawRow = z.infer<typeof rawRowSchema>
+const detailSchema = z.discriminatedUnion('ok', [
+  z
+    .object({
+      ok: z.literal(true),
+      rows: z.array(z.object({ aprPoCanDtm: cell, aprPoCanAm: cell }).strict()).max(1000),
+      pagingFieldsPresent: z.boolean()
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      issue: z.enum([
+        'not_history_page',
+        'page_not_ready',
+        'request_timeout',
+        'service_error',
+        'invalid_response'
+      ])
+    })
+    .strict()
+])
+type CancellationDetail = Extract<z.infer<typeof detailSchema>, { ok: true }>
 const pageSchema = z.discriminatedUnion('ok', [
   z
     .object({
@@ -161,6 +184,7 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
   const canDateRaw = text(raw.canRcpdt)
   const eventDate = canDateRaw ? isoDate(canDateRaw) : null
   let status: CardApiRow['status'] = 'approved'
+  let verifiedFullCancellation = false
   if (cancellation) {
     review.push('cancellation_amount_unverified', 'cross_source_cancellation_match_required')
     if (mode === 'cancellation') review.push('cancellation_query_basis_unverified')
@@ -170,8 +194,31 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
     if (mode === 'cancellation' && process !== '1' && process !== '2') {
       status = 'unknown'
       review.push(process === '3' ? 'cancellation_pending' : 'cancellation_status_unrecognized')
+    } else if (['1', '2'].includes(text(raw.poCanDvC))) {
+      status = 'partially_cancelled'
+    } else if (mode === 'cancellation' && raw.poCanDvC !== '') {
+      status = 'unknown'
+      review.push(
+        raw.poCanDvC === null
+          ? 'cancellation_partial_flag_unavailable'
+          : 'cancellation_partial_flag_unrecognized'
+      )
     } else {
-      status = ['1', '2'].includes(text(raw.poCanDvC)) ? 'partially_cancelled' : 'cancelled'
+      status = 'cancelled'
+      // D8 repeats the whole approval amount. Only a completed, explicitly
+      // nonpartial cancellation can prove that the whole amount was refunded.
+      verifiedFullCancellation =
+        mode === 'cancellation' && signedAmount !== 0 && !!eventDate && eventDate >= date
+    }
+  }
+  if (verifiedFullCancellation) {
+    for (const issue of [
+      'cancellation_amount_unverified',
+      'cross_source_cancellation_match_required',
+      'cancellation_query_basis_unverified'
+    ]) {
+      const index = review.indexOf(issue)
+      if (index !== -1) review.splice(index, 1)
     }
   }
   // Separate observations from the two services: their amounts must never be added as two refunds.
@@ -199,8 +246,11 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
     amount: Math.abs(signedAmount),
     currency: 'KRW',
     status,
-    cancellationAmount: null,
-    netAmount: cancellation ? null : signedAmount,
+    cancellationAmount: verifiedFullCancellation ? Math.abs(signedAmount) : null,
+    ...(verifiedFullCancellation
+      ? { cancellationEvidence: true, cancellationAmountType: 'cumulative' as const }
+      : {}),
+    netAmount: verifiedFullCancellation ? 0 : cancellation ? null : signedAmount,
     needsReview: review
   }
 }
@@ -263,7 +313,7 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
               const key = approval ? 'hppRPCardUIzSub01SVO' : 'hppRPDomCanIzSub01SVO';
               const source = response[key] == null && total === 0 ? [] : response[key];
               if (!Array.isArray(source) || source.length > ${PAGE_SIZE}) return finish(fail('invalid_response'));
-              const fields = ['aprDt','aprT','aprno','aprAm','mrcNm','itgCdnoe','canRcpdt','poCanDvC','canProcsStsC'];
+              const fields = ['aprDt','aprT','aprno','aprAm','mrcNm','itgCdnoe','cdnoId','canRcpdt','poCanDvC','canProcsStsC'];
               const rows = source.map(row => {
                 if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error();
                 const result = {};
@@ -289,6 +339,193 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
       } catch { finish(fail('service_error', 'invocation_exception')); }
     });
   })()`
+}
+
+/** Exact read-only popup contract from official UHPPRP0803L0.jsp. */
+function detailScript(raw: RawRow): string {
+  const input = JSON.stringify({
+    aprDt: text(raw.aprDt).replaceAll('-', ''),
+    cdnoId: text(raw.cdnoId),
+    aprT: text(raw.aprT),
+    aprno: text(raw.aprno)
+  })
+  return `(async () => {
+    const input = ${input};
+    const fail = issue => ({ ok: false, issue });
+    const url = new URL(location.href);
+    if (url.origin !== 'https://www.samsungcard.com' || url.username || url.password || url.pathname !== '${HISTORY_PATH}') return fail('not_history_page');
+    if (typeof scard !== 'object' || typeof scard.ajax !== 'function' || typeof scard.decodeXss !== 'function') return fail('page_not_ready');
+    let data;
+    try { data = { ...input, cdnoId: decodeURIComponent(scard.decodeXss(input.cdnoId)) }; }
+    catch { return fail('invalid_response'); }
+    return await new Promise(resolve => {
+      let settled = false;
+      const finish = result => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+      const timer = setTimeout(() => finish(fail('request_timeout')), ${REQUEST_MS});
+      try {
+        scard.ajax({
+          service: 'SHPPRP0801S41', data, timeout: ${REQUEST_MS},
+          success: response => {
+            try {
+              if (!response || typeof response !== 'object' || (response.common && String(response.common.procsRsDvC) !== '0')) return finish(fail('service_error'));
+              const source = response.hppRPPoCanIzSub01SVO;
+              if (!Array.isArray(source) || source.length > 1000) return finish(fail('invalid_response'));
+              const rows = source.map(row => {
+                if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error();
+                const result = {};
+                for (const field of ['aprPoCanDtm','aprPoCanAm']) {
+                  const value = row[field] ?? null;
+                  if (value !== null && typeof value !== 'string' && typeof value !== 'number') throw new Error();
+                  if (typeof value === 'string' && value.length > 2000) throw new Error();
+                  result[field] = value;
+                }
+                return result;
+              });
+              const pagingFieldsPresent = Object.keys(response).some(key => /^(?:no[1-9]NextKeyCn|totDlngCt|pgeNo)$/.test(key));
+              finish({ ok: true, rows, pagingFieldsPresent });
+            } catch { finish(fail('invalid_response')); }
+          },
+          error: () => finish(fail('service_error'))
+        });
+      } catch { finish(fail('service_error')); }
+    });
+  })()`
+}
+
+function detailIdentityAvailable(raw: RawRow): boolean {
+  return (
+    !!text(raw.cdnoId) &&
+    !!text(raw.aprno) &&
+    /^(?:[01]\d|2[0-3])[0-5]\d[0-5]\d$/.test(text(raw.aprT))
+  )
+}
+
+function detailEventDate(value: z.infer<typeof cell>): string | null {
+  const stamp = text(value)
+  if (!/^\d{14}$/.test(stamp) || !/^(?:[01]\d|2[0-3])[0-5]\d[0-5]\d$/.test(stamp.slice(8)))
+    return null
+  return isoDate(stamp.slice(0, 8))
+}
+
+function applySingleDetail(row: CardApiRow, raw: RawRow, detail: CancellationDetail): void {
+  if (detail.pagingFieldsPresent) {
+    row.needsReview.push('cancellation_detail_pagination_unverified')
+    return
+  }
+  if (detail.rows.length !== 1) {
+    row.needsReview.push(
+      detail.rows.length
+        ? 'cancellation_detail_multiple_events_unverified'
+        : 'cancellation_detail_empty'
+    )
+    return
+  }
+  const event = detail.rows[0]
+  const eventDate = detailEventDate(event.aprPoCanDtm)
+  const amount = won(event.aprPoCanAm)
+  if (
+    !eventDate ||
+    eventDate < row.approvedAt.slice(0, 10) ||
+    eventDate !== row.eventDate ||
+    amount === null ||
+    Math.abs(amount) === 0 ||
+    Math.abs(amount) >= row.amount
+  ) {
+    row.needsReview.push('cancellation_detail_evidence_mismatch')
+    return
+  }
+  row.cancellationAmount = Math.abs(amount)
+  row.netAmount = row.amount - row.cancellationAmount
+  row.cancellationEvidence = true
+  row.cancellationAmountType = 'cumulative'
+  row.cancellationEventId = digest([
+    ISSUER,
+    text(raw.cdnoId),
+    text(raw.aprDt),
+    text(raw.aprT),
+    text(raw.aprno),
+    text(event.aprPoCanDtm)
+  ])
+  row.needsReview = row.needsReview.filter(
+    (issue) =>
+      ![
+        'cancellation_amount_unverified',
+        'cross_source_cancellation_match_required',
+        'cancellation_query_basis_unverified'
+      ].includes(issue)
+  )
+}
+
+/** Fixed shape diagnostics only. No approval/card identifiers, amounts or timestamps leave main. */
+export async function probeSamsungCancellationDetails(
+  tab: Parameters<CardApiCollector>[0],
+  suppliedRange: CardDateRange
+): Promise<{
+  ok: boolean
+  issue?: string
+  detailRows?: number
+  validTimestampRows?: number
+  validAmountRows?: number
+  duplicateTimestampRows?: number
+  pagingFieldsPresent?: boolean
+}> {
+  const range = validRange(suppliedRange)
+  if (!range) return { ok: false, issue: 'invalid_date_range' }
+  const wc = tab.view.webContents
+  const initialUrl = wc.getURL()
+  const guard = async (): Promise<void> => {
+    if (
+      wc.isDestroyed() ||
+      tab.view.webContents !== wc ||
+      wc.getURL() !== initialUrl ||
+      !isHistoryUrl(initialUrl)
+    )
+      throw new QueryStopped('navigation_changed')
+    const auth = await bounded(pageBridge.cardSession(tab))
+    if (auth.issuer !== ISSUER || auth.state !== 'signed_in')
+      throw new QueryStopped('session_unverified')
+    if (wc.isDestroyed() || tab.view.webContents !== wc || wc.getURL() !== initialUrl)
+      throw new QueryStopped('navigation_changed')
+  }
+  try {
+    await guard()
+    const page = pageSchema.safeParse(
+      await bounded(wc.executeJavaScript(pageScript('cancellation', range, 1, []), false))
+    )
+    await guard()
+    if (!page.success) return { ok: false, issue: 'invalid_response' }
+    if (!page.data.ok) return { ok: false, issue: page.data.issue }
+    const candidate = page.data.rows.find(
+      (row) =>
+        text(row.poCanDvC) === '1' &&
+        ['1', '2'].includes(text(row.canProcsStsC)) &&
+        detailIdentityAvailable(row)
+    )
+    if (!candidate) return { ok: false, issue: 'no_partial_cancellation_row' }
+    const detail = detailSchema.safeParse(
+      await bounded(wc.executeJavaScript(detailScript(candidate), false))
+    )
+    await guard()
+    if (!detail.success) return { ok: false, issue: 'invalid_response' }
+    if (!detail.data.ok) return { ok: false, issue: detail.data.issue }
+    const stamps = new Set<string>()
+    let duplicateTimestampRows = 0
+    for (const event of detail.data.rows) {
+      const stamp = text(event.aprPoCanDtm)
+      if (stamps.has(stamp)) duplicateTimestampRows++
+      stamps.add(stamp)
+    }
+    return {
+      ok: true,
+      detailRows: detail.data.rows.length,
+      validTimestampRows: detail.data.rows.filter((row) => detailEventDate(row.aprPoCanDtm)).length,
+      validAmountRows: detail.data.rows.filter((row) => won(row.aprPoCanAm) !== null).length,
+      duplicateTimestampRows,
+      pagingFieldsPresent: detail.data.pagingFieldsPresent
+    }
+  } catch (error) {
+    return { ok: false, issue: error instanceof QueryStopped ? error.issue : 'collector_error' }
+  }
 }
 
 class QueryStopped extends Error {
@@ -337,6 +574,12 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
   const issues = new Set<string>()
   let pages = 0
   let approvalComplete = false
+  let cancellationStreamComplete = false
+  let statusComplete = false
+  const approvalObservations: CardApiRow[] = []
+  const cancellationObservations: CardApiRow[] = []
+  const summaryAmounts = new Map<CardApiRow, number>()
+  const cancellationMarkedApprovals = new Set<CardApiRow>()
   const range = validRange(suppliedRange)
   const result = (): CardApiResult => ({
     rows,
@@ -345,8 +588,10 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
       range: range || suppliedRange,
       pages,
       rowCount: rows.length,
-      complete: issues.size === 0,
+      complete: false,
       approvalComplete,
+      cancellationComplete: false,
+      statusComplete,
       issues: [...issues],
       elapsedMs: Date.now() - started
     }
@@ -477,6 +722,32 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
             streamVerified = false
             continue
           }
+          if (mode === 'cancellation' && (day < range.from || day > range.to)) {
+            row.needsReview.push('cancellation_approval_outside_requested_range')
+            streamVerified = false
+          }
+          if (
+            mode === 'cancellation' &&
+            row.status === 'partially_cancelled' &&
+            ['1', '2'].includes(text(item.canProcsStsC))
+          ) {
+            // Only code 1 exposes the official partial-cancellation popup.
+            if (text(item.poCanDvC) !== '1' || !detailIdentityAvailable(item)) {
+              row.needsReview.push('cancellation_detail_identity_unavailable')
+            } else {
+              await guard()
+              if (pages >= maxPages) throw new QueryStopped('page_limit')
+              pages++
+              const detail = detailSchema.safeParse(
+                await bounded(wc.executeJavaScript(detailScript(item), false), options.signal)
+              )
+              await guard()
+              if (!detail.success) row.needsReview.push('cancellation_detail_invalid_response')
+              else if (!detail.data.ok)
+                row.needsReview.push('cancellation_detail_' + detail.data.issue)
+              else applySingleDetail(row, item, detail.data)
+            }
+          }
           const prior = sourceIds.get(row.sourceId)
           if (prior) {
             // Do not silently deduplicate potentially distinct partial cancellation events.
@@ -489,11 +760,18 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
           sourceIds.set(row.sourceId, row)
           for (const review of row.needsReview) issues.add(review)
           rows.push(row)
+          if (mode === 'approval') {
+            approvalObservations.push(row)
+            if (row.kind === 'cancellation') summaryAmounts.set(row, row.amount)
+            else if (text(item.poCanDvC) || text(item.canRcpdt))
+              cancellationMarkedApprovals.add(row)
+          } else cancellationObservations.push(row)
         }
         observed += data.rows.length
         if (observed > total) throw new QueryStopped('total_count_mismatch')
         if (observed === total) {
           if (mode === 'approval') approvalComplete = streamVerified
+          else cancellationStreamComplete = streamVerified
           break
         }
         if (data.rows.length !== PAGE_SIZE) throw new QueryStopped('total_count_mismatch')
@@ -512,5 +790,98 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
     if (/signed_out|auth|session|navigation|abort|card_scope_changed/.test(issue))
       approvalComplete = false
   }
+  // S51 negative rows are summaries, not extra refunds. A uniquely matched,
+  // proved S12 snapshot can safely explain the summary without adding money.
+  for (const row of rows) {
+    if (
+      !row.needsReview.includes('amount_basis_unverified') ||
+      !row.cardKey ||
+      !row.approvalNumber ||
+      !row.eventDate
+    )
+      continue
+    const matches = rows.filter(
+      (candidate) =>
+        candidate !== row &&
+        candidate.cancellationEvidence === true &&
+        candidate.needsReview.length === 0 &&
+        candidate.cardKey === row.cardKey &&
+        candidate.approvalNumber === row.approvalNumber &&
+        candidate.approvedAt === row.approvedAt &&
+        candidate.merchant === row.merchant &&
+        candidate.eventDate === row.eventDate &&
+        candidate.cancellationAmount === row.amount
+    )
+    if (matches.length !== 1) continue
+    const verified = matches[0]
+    row.kind = 'status'
+    row.amount = verified.amount
+    row.status = verified.status
+    row.cancellationAmount = verified.cancellationAmount
+    row.cancellationEvidence = true
+    row.cancellationAmountType = 'cumulative'
+    row.netAmount = verified.netAmount
+    row.needsReview = row.needsReview.filter(
+      (issue) =>
+        ![
+          'cancellation_amount_unverified',
+          'cross_source_cancellation_match_required',
+          'amount_basis_unverified'
+        ].includes(issue)
+    )
+  }
+  // Receipt diagnostics are based on final evidence rather than stale review
+  // flags from a summary that was explained by the separate official service.
+  for (const issue of [
+    'cancellation_amount_unverified',
+    'cross_source_cancellation_match_required',
+    'amount_basis_unverified'
+  ]) {
+    if (!rows.some((row) => row.needsReview.includes(issue))) issues.delete(issue)
+  }
+  // Official M0 calls the fixed inputs "이용기간"; D8 sends the same inputs
+  // to S12 and displays aprDt separately from canRcpdt. Original-date Excel
+  // exports and a live late cancellation confirm that this is approval-scope
+  // status coverage. It does not prove an event-date cancellation feed.
+  const sameApproval = (left: CardApiRow, right: CardApiRow): boolean =>
+    !!left.cardKey &&
+    !!left.approvalNumber &&
+    left.cardKey === right.cardKey &&
+    left.approvalNumber === right.approvalNumber &&
+    left.approvedAt === right.approvedAt &&
+    left.merchant === right.merchant
+  statusComplete =
+    approvalComplete &&
+    cancellationStreamComplete &&
+    rows.every((row) => row.needsReview.length === 0 && row.status !== 'unknown') &&
+    cancellationObservations.every(
+      (row) =>
+        row.cancellationEvidence === true &&
+        row.cancellationAmountType === 'cumulative' &&
+        [...summaryAmounts].filter(
+          ([summary, amount]) =>
+            sameApproval(summary, row) &&
+            amount === row.cancellationAmount &&
+            summary.eventDate === row.eventDate
+        ).length === 1 &&
+        approvalObservations
+          .filter((approval) => !summaryAmounts.has(approval) && sameApproval(approval, row))
+          .every((approval) => approval.amount === row.amount)
+    ) &&
+    [...summaryAmounts].every(
+      ([summary, amount]) =>
+        cancellationObservations.filter(
+          (row) =>
+            sameApproval(summary, row) &&
+            row.cancellationEvidence === true &&
+            row.cancellationAmount === amount &&
+            row.eventDate === summary.eventDate
+        ).length === 1
+    ) &&
+    [...cancellationMarkedApprovals].every((approval) =>
+      cancellationObservations.some(
+        (row) => sameApproval(approval, row) && row.cancellationEvidence === true
+      )
+    )
   return result()
 }

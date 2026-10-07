@@ -17,6 +17,10 @@ export interface CardDiagnosticsBackend {
   exportHistory?(tabId: string, from: string, to: string, scope?: string): Promise<unknown>
   login?(tabId: string): Promise<unknown>
   collect?(tabId: string, save: boolean): Promise<unknown>
+  collectRange?(tabId: string, from: string, to: string): Promise<unknown>
+  cancellationContract?(tabId: string, from: string, to: string): Promise<unknown>
+  reconcile?(tabId: string): Promise<unknown>
+  recoverRegistration?(tabId: string): Promise<unknown>
   dispose(): void
 }
 
@@ -158,7 +162,46 @@ export async function startCardDiagnosticsMcp(
       ({ tabId, save }) => backend.collect!(String(tabId), save === true),
       false
     )
+  if (backend.collectRange)
+    register(
+      'card_collect_range_preview',
+      'Read a bounded historical range of at most four days. Returns only receipt, counts and date-basis diagnostics; never saves or returns transactions.',
+      {
+        tabId: z.string().uuid(),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+      },
+      ({ tabId, from, to }) => backend.collectRange!(String(tabId), String(from), String(to))
+    )
+  if (backend.cancellationContract)
+    register(
+      'card_cancellation_contract',
+      'Inspect fixed issuer cancellation services for at most four dates. Returns only schema and proof counts; no transaction values, request replay, or ledger writes.',
+      {
+        tabId: z.string().uuid(),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+      },
+      ({ tabId, from, to }) =>
+        backend.cancellationContract!(String(tabId), String(from), String(to))
+    )
+  if (backend.reconcile)
+    register(
+      'card_reconcile_existing',
+      'Recheck only backend-leased dates of existing ledger approvals and save verified cancellation changes. Limited to 31 dates, preserves classifications, and returns only counts and completion codes.',
+      { tabId: z.string().uuid() },
+      ({ tabId }) => backend.reconcile!(String(tabId)),
+      false
+    )
   const stop = (): void => backend.dispose()
+  if (backend.recoverRegistration)
+    register(
+      'hyundai_restore_registration',
+      'Recover only unexpired Hyundai registration cookies from the one retained local backup into the same default workspace, only when registration is missing. No PIN change, vault edit, arbitrary path or credential output. One attempt per session.',
+      { tabId: z.string().uuid() },
+      ({ tabId }) => backend.recoverRegistration!(String(tabId)),
+      false
+    )
   signal.addEventListener('abort', stop, { once: true })
   try {
     const bridge = await startCodexMcp({ server: { instance: server, tools }, signal })

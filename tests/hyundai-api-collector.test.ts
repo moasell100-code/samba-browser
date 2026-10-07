@@ -4,6 +4,7 @@ import type { Tab } from '../src/main/browser/tab-manager'
 import { pageBridge } from '../src/main/browser/page-bridge'
 import {
   collectHyundaiApi,
+  inspectHyundaiAcquired,
   inspectHyundaiScope,
   parseHyundaiApiPage,
   requestHyundaiApiPage,
@@ -239,7 +240,8 @@ describe('Hyundai private approval response normalization', () => {
         status: 'cancelled',
         eventDate: '2026-10-02',
         netAmount: null,
-        cancellationAmount: null
+        cancellationAmount: null,
+        cancellationEvidence: false
       })
       expect(result.rows[1].sourceId).not.toBe(result.rows[0].sourceId)
       expect(result.rows[1].needsReview).toContain('cancellation_amount_unverified')
@@ -774,7 +776,8 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
       pages: 4,
       rowCount: 4,
       complete: false,
-      approvalComplete: true
+      approvalComplete: true,
+      cancellationComplete: false
     })
     expect(result.receipt.issues).not.toContain('scope_unverified')
     expect(result.receipt.issues).toContain('cancellation_query_basis_unverified')
@@ -966,6 +969,21 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
     expect(f.auth).toHaveBeenCalledTimes(2)
   })
 
+  it('uses only the separately observed acquired endpoint with the same authenticated bounds', async () => {
+    const f = fixture()
+    await requestHyundaiApiPage(f.tab, form(), undefined, 'acquired')
+    expect(f.fetch).toHaveBeenCalledOnce()
+    const [url, init] = f.fetch.mock.calls[0]
+    expect(url).toBe('https://www.hyundaicard.com/cpa/cb/apiCPACB0101_22.hc')
+    expect(init).toMatchObject({ method: 'POST', credentials: 'include', redirect: 'error' })
+    expect(Object.fromEntries(new URLSearchParams(String(init.body)))).toEqual(form())
+    expect(f.auth).toHaveBeenCalledTimes(2)
+    await expect(
+      requestHyundaiApiPage(f.tab, form(), undefined, 'unverified' as 'recent')
+    ).rejects.toThrow('hyundai_request_invalid')
+    expect(f.fetch).toHaveBeenCalledOnce()
+  })
+
   it('rejects missing, extra, unsafe, or expanded request fields before network access', async () => {
     const f = fixture()
     for (const bad of [
@@ -1016,6 +1034,48 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
       return Response.json(payload())
     })
     await expect(requestHyundaiApiPage(f.tab, form())).rejects.toThrow('hyundai_navigation_changed')
+  })
+
+  it.each(['fetch', 'body'] as const)(
+    'bounds a stalled %s even when the transport ignores abort',
+    async (stage) => {
+      vi.useFakeTimers()
+      const f = fixture()
+      if (stage === 'fetch') f.fetch.mockImplementation(() => new Promise<Response>(() => {}))
+      else
+        f.fetch.mockResolvedValue(
+          new Response(new ReadableStream<Uint8Array>(), {
+            headers: { 'content-type': 'application/json' }
+          })
+        )
+      const pending = requestHyundaiApiPage(f.tab, form(), undefined, 'acquired')
+      const assertion = expect(pending).rejects.toThrow('hyundai_request_timeout')
+      await vi.advanceTimersByTimeAsync(20_000)
+      await assertion
+      expect(f.fetch).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it('stops a stalled acquired fetch immediately on cancellation and rejects replacement tab contents', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    f.fetch.mockImplementation(() => new Promise<Response>(() => {}))
+    const controller = new AbortController()
+    const pending = requestHyundaiApiPage(f.tab, form(), controller.signal, 'acquired')
+    const assertion = expect(pending).rejects.toThrow('hyundai_request_cancelled')
+    await vi.advanceTimersByTimeAsync(100)
+    controller.abort()
+    await assertion
+    expect(vi.getTimerCount()).toBe(0)
+    f.fetch.mockImplementation(async () => {
+      Object.defineProperty(f.tab.view, 'webContents', { value: { ...f.tab.view.webContents } })
+      return Response.json(payload())
+    })
+    await expect(requestHyundaiApiPage(f.tab, form(), undefined, 'acquired')).rejects.toThrow(
+      'hyundai_navigation_changed'
+    )
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('builds private all-card/all-use requests per day without changing visible filters', async () => {
@@ -1094,5 +1154,259 @@ describe('Hyundai fixed authenticated read-only request and daily collector', ()
     const wrongPeriod = await collectHyundaiApi(f.tab, { from: '2026-10-02', to: '2026-10-02' })
     expect(wrongPeriod.rows).toEqual([])
     expect(wrongPeriod.receipt.issues).toContain('response_range_unverified')
+  })
+})
+
+describe('Hyundai acquired value-free inspection', () => {
+  function acquiredFixture(items: object[] = []): ReturnType<typeof fixture> {
+    const f = fixture()
+    f.dom.window.document.querySelector<HTMLInputElement>('[name="dmfrClsf"]')!.value = ''
+    const radio = f.dom.window.document.createElement('input')
+    Object.assign(radio, {
+      type: 'radio',
+      name: 'listClsf',
+      id: 'listClsf_02',
+      value: 'PRIVATE_ACQUIRED_MODE'
+    })
+    f.dom.window.document.querySelector('form')!.append(radio)
+    f.fetch.mockImplementation(async (_url: string, init: RequestInit) => {
+      const data = Object.fromEntries(new URLSearchParams(String(init.body)))
+      return Response.json({
+        bdy: {
+          rcntSummaryInfo: { ...data, usplClsf: '', totUseCnt: items.length },
+          acqrUseItmList: items
+        }
+      })
+    })
+    return f
+  }
+
+  it('queries only fixed acquired daily endpoints and returns field shapes without semantic claims or values', async () => {
+    const f = acquiredFixture([
+      {
+        recordId: 'OFFICIAL_SYNTHETIC_EVENT_IDENTIFIER',
+        useDt: '20261002',
+        avDt: '20260801',
+        avNo: '87654321',
+        useAmt: '-35000',
+        excm: '0',
+        merchant: 'PRIVATE_CUSTOMER_MERCHANT',
+        cdno: '0000-00**-****-5432',
+        token: 'PRIVATE_TOKEN',
+        nested: { eventId: 'NESTED_EVENT_IDENTIFIER' }
+      },
+      { recordId: 'SECOND_IDENTIFIER', useDt: '20261002', useAmt: 42000, excm: 150 },
+      { recordId: '', useAmt: 0, excm: 0 },
+      { recordId: null, useAmt: 'not verified', excm: 0 }
+    ])
+    const before = f.dom.window.document.querySelector('form')!.outerHTML
+    const result = await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result).toMatchObject({
+      state: 'ready',
+      pages: 1,
+      rowCount: 4,
+      reportedTotal: 4,
+      scopeVerified: true,
+      amountSigns: { positive: 1, negative: 1, zero: 1, unverified: 1 },
+      issues: ['acquired_cancellation_semantics_unverified']
+    })
+    expect(result.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'recordId',
+          types: ['null', 'string'],
+          nonemptyCount: 2,
+          distinctCount: 2,
+          dateShapeCount: 0
+        }),
+        expect.objectContaining({ name: 'useDt', dateShapeCount: 2, requestedDayMatchCount: 2 }),
+        expect.objectContaining({ name: 'avDt', dateShapeCount: 1, requestedDayMatchCount: 0 }),
+        expect.objectContaining({ name: 'nested.eventId', distinctCount: 1 })
+      ])
+    )
+    expect(f.fetch.mock.calls.map(([url]) => url)).toEqual([
+      'https://www.hyundaicard.com/cpa/cb/apiCPACB0101_22.hc'
+    ])
+    expect(new URLSearchParams(String(f.fetch.mock.calls[0][1].body)).get('listClsf')).toBe(
+      'PRIVATE_ACQUIRED_MODE'
+    )
+    expect(f.dom.window.document.querySelector('form')!.outerHTML).toBe(before)
+    const serialized = JSON.stringify(result)
+    for (const value of [
+      'OFFICIAL_SYNTHETIC_EVENT_IDENTIFIER',
+      'SECOND_IDENTIFIER',
+      'NESTED_EVENT_IDENTIFIER',
+      '20260801',
+      '87654321',
+      '35000',
+      '42000',
+      'PRIVATE_CUSTOMER_MERCHANT',
+      '0000-00**-****-5432',
+      'PRIVATE_TOKEN',
+      'PRIVATE_ACQUIRED_MODE',
+      'ALL_PRIVATE_CARDS'
+    ])
+      expect(serialized).not.toContain(value)
+    expect(result.fields.some((field) => field.name === 'token')).toBe(false)
+  })
+
+  it('bounds four daily requests and retains empty query evidence without claiming cancellation coverage', async () => {
+    const f = acquiredFixture()
+    const result = await inspectHyundaiAcquired(f.tab, { from: '2026-09-29', to: '2026-10-02' })
+    expect(result).toMatchObject({
+      state: 'ready',
+      pages: 4,
+      rowCount: 0,
+      reportedTotal: 0,
+      fields: [],
+      scopeVerified: true,
+      issues: ['acquired_cancellation_semantics_unverified']
+    })
+    expect(
+      f.fetch.mock.calls.map(([, init]) => new URLSearchParams(String(init.body)).get('srtDt'))
+    ).toEqual(['20260929', '20260930', '20261001', '20261002'])
+  })
+
+  it('bounds the whole inspection at sixty seconds and retains only completed response shapes', async () => {
+    vi.useFakeTimers()
+    const f = acquiredFixture()
+    const original = f.fetch.getMockImplementation()!
+    f.fetch.mockImplementation(
+      (url: string, init: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const delayed = setTimeout(() => {
+            void original(url, init).then(resolve, reject)
+          }, 19_000)
+          init.signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(delayed)
+              reject(new Error('PRIVATE_TRANSPORT_ABORT'))
+            },
+            { once: true }
+          )
+        })
+    )
+    const pending = inspectHyundaiAcquired(f.tab, { from: '2026-09-29', to: '2026-10-02' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    const result = await pending
+    expect(result).toMatchObject({
+      state: 'unavailable',
+      pages: 4,
+      rowCount: 0,
+      scopeVerified: false,
+      issues: ['hyundai_request_timeout']
+    })
+    expect(f.fetch).toHaveBeenCalledTimes(4)
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_TRANSPORT_ABORT')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('rejects invalid dates, expanded ranges, unsupported pages, signed-out sessions and abort before requests', async () => {
+    const f = acquiredFixture()
+    for (const range of [
+      { from: '2026-09-28', to: '2026-10-02' },
+      { from: '2026-10-03', to: '2026-10-02' },
+      { from: '2026-02-30', to: '2026-02-30' }
+    ])
+      expect((await inspectHyundaiAcquired(f.tab, range)).issues).toEqual(['invalid_range'])
+    f.setUrl('https://www.hyundaicard.com.evil.test/cpa/cb/CPACB0101_01.hc')
+    expect(
+      (await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })).issues
+    ).toEqual(['hyundai_history_required'])
+    f.setUrl(HISTORY)
+    f.auth.mockResolvedValue({ state: 'pin_ready' })
+    expect(
+      (await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })).issues
+    ).toEqual(['hyundai_authentication_required'])
+    const controller = new AbortController()
+    controller.abort()
+    expect(
+      (
+        await inspectHyundaiAcquired(
+          f.tab,
+          { from: '2026-10-02', to: '2026-10-02' },
+          controller.signal
+        )
+      ).issues
+    ).toEqual(['cancelled'])
+    expect(f.fetch).not.toHaveBeenCalled()
+  })
+
+  it.each(['srtDt', 'endDt', 'crno', 'useClsf', 'zoneClsf', 'usplClsf', 'dtClsf'])(
+    'does not verify a mismatched %s echo or expose its value',
+    async (field) => {
+      const f = acquiredFixture()
+      const original = f.fetch.getMockImplementation()!
+      f.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+        const response = await original(url, init)
+        const data = await response.json()
+        data.bdy.rcntSummaryInfo[field] = 'PRIVATE_WRONG_ECHO'
+        return Response.json(data)
+      })
+      const result = await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+      expect(result.scopeVerified).toBe(false)
+      expect(result.issues).toContain(
+        field === 'srtDt' || field === 'endDt'
+          ? 'response_range_unverified'
+          : 'response_scope_unverified'
+      )
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_WRONG_ECHO')
+    }
+  )
+
+  it('marks count mismatches and caps without treating array length or negative amounts as completeness', async () => {
+    const f = acquiredFixture(Array.from({ length: 630 }, () => ({ useAmt: -10, excm: 0 })))
+    const original = f.fetch.getMockImplementation()!
+    f.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+      const response = await original(url, init)
+      const data = await response.json()
+      data.bdy.rcntSummaryInfo.totUseCnt = 640
+      return Response.json(data)
+    })
+    const result = await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        'daily_row_limit_possible',
+        'total_count_mismatch',
+        'acquired_cancellation_semantics_unverified'
+      ])
+    )
+    expect(result.amountSigns.negative).toBe(630)
+  })
+
+  it('bounds field metadata and omits private/dynamic keys without returning any scalar', async () => {
+    const f = acquiredFixture()
+    const row = {
+      PRIVATE_FIELD: 'PRIVATE_VALUE',
+      record12345678: 'DYNAMIC_VALUE',
+      ...Object.fromEntries(Array.from({ length: 110 }, (_, i) => [`field${i}`, 'VALUE']))
+    }
+    const response = {
+      bdy: {
+        rcntSummaryInfo: { ...form(), dmfrClsf: '', usplClsf: '', totUseCnt: 1 },
+        acqrUseItmList: [row]
+      }
+    }
+    f.fetch.mockResolvedValue(Response.json(response))
+    const result = await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(result.fields.length).toBeLessThanOrEqual(100)
+    expect(result.issues).toContain('acquired_diagnostic_fields_truncated')
+    expect(JSON.stringify(result)).not.toMatch(
+      /PRIVATE_FIELD|PRIVATE_VALUE|record12345678|DYNAMIC_VALUE/
+    )
+  })
+
+  it('suppresses private service/transport failures and refuses malformed acquired lists', async () => {
+    const f = acquiredFixture()
+    f.fetch.mockRejectedValue(new Error('PRIVATE_COOKIE_NETWORK_FAILURE'))
+    const failed = await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(failed).toMatchObject({ state: 'unavailable', issues: ['hyundai_request_unavailable'] })
+    expect(JSON.stringify(failed)).not.toContain('PRIVATE_COOKIE_NETWORK_FAILURE')
+    f.fetch.mockResolvedValue(Response.json({ bdy: { acqrUseItmList: 'PRIVATE_RESPONSE' } }))
+    const malformed = await inspectHyundaiAcquired(f.tab, { from: '2026-10-02', to: '2026-10-02' })
+    expect(malformed.state).toBe('unavailable')
+    expect(malformed.issues).toContain('acquired_response_schema_unverified')
+    expect(JSON.stringify(malformed)).not.toContain('PRIVATE_RESPONSE')
   })
 })

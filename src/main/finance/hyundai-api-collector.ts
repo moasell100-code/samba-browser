@@ -6,6 +6,7 @@ import type { CardApiCollector, CardApiResult, CardApiRow } from './card-api-typ
 
 const HISTORY_PATH = '/cpa/cb/CPACB0101_01.hc'
 const QUERY_PATH = '/cpa/cb/apiCPACB0101_21.hc'
+const ACQUIRED_QUERY_PATH = '/cpa/cb/apiCPACB0101_22.hc'
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_ROWS = 1000
 const ALL_CARD_LABELS = [
@@ -618,6 +619,7 @@ export function parseHyundaiApiPage(
       currency: 'KRW',
       status,
       cancellationAmount: null,
+      ...(cancelled ? { cancellationEvidence: false } : {}),
       netAmount: approved && isKrw && !loan && amount >= 0 ? amount : null,
       needsReview: review
     }
@@ -639,9 +641,11 @@ export function parseHyundaiApiPage(
 export async function requestHyundaiApiPage(
   tab: Tab,
   form: HyundaiApiForm,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  mode: 'recent' | 'acquired' = 'recent'
 ): Promise<unknown> {
   if (signal?.aborted) throw new Error('hyundai_request_cancelled')
+  if (mode !== 'recent' && mode !== 'acquired') throw new Error('hyundai_request_invalid')
   const keys = Object.keys(form)
   if (
     keys.length !== REQUEST_FIELDS.length ||
@@ -669,7 +673,7 @@ export async function requestHyundaiApiPage(
   const origin = !wc.isDestroyed() && historyOrigin(wc.getURL())
   if (!origin) throw new Error('hyundai_history_required')
   const initialUrl = wc.getURL()
-  const endpoint = origin + QUERY_PATH
+  const endpoint = origin + (mode === 'acquired' ? ACQUIRED_QUERY_PATH : QUERY_PATH)
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), 20_000)
   timer.unref?.()
@@ -677,7 +681,7 @@ export async function requestHyundaiApiPage(
   const assertContext = (): void => {
     if (signal?.aborted) throw new Error('hyundai_request_cancelled')
     if (timeout.signal.aborted) throw new Error('hyundai_request_timeout')
-    if (wc.isDestroyed() || wc.getURL() !== initialUrl)
+    if (tab.view.webContents !== wc || wc.isDestroyed() || wc.getURL() !== initialUrl)
       throw new Error('hyundai_navigation_changed')
   }
   let response: Response | undefined
@@ -685,18 +689,21 @@ export async function requestHyundaiApiPage(
     const auth = await bounded(pageBridge.hyundaiAuth(tab), combinedSignal)
     assertContext()
     if (auth.state !== 'signed_in') throw new Error('hyundai_authentication_required')
-    response = await wc.session.fetch(endpoint, {
-      method: 'POST',
-      credentials: 'include',
-      redirect: 'error',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest',
-        Referer: origin + HISTORY_PATH
-      },
-      body: body.toString(),
-      signal: combinedSignal
-    })
+    response = await bounded(
+      wc.session.fetch(endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        redirect: 'error',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest',
+          Referer: origin + HISTORY_PATH
+        },
+        body: body.toString(),
+        signal: combinedSignal
+      }),
+      combinedSignal
+    )
     assertContext()
     if (!response.ok || (response.url && response.url !== endpoint) || !response.body)
       throw new Error('hyundai_response_unavailable')
@@ -712,7 +719,7 @@ export async function requestHyundaiApiPage(
     try {
       while (true) {
         assertContext()
-        const chunk = await reader.read()
+        const chunk = await bounded(reader.read(), combinedSignal)
         if (chunk.done) break
         bytes += chunk.value.byteLength
         if (bytes > MAX_RESPONSE_BYTES) throw new Error('hyundai_response_limit')
@@ -753,18 +760,263 @@ function transactionShape(row: CardApiRow): string {
     row.currency,
     row.status,
     row.cancellationAmount,
+    row.cancellationEvidence,
+    row.cancellationAmountType,
+    row.cancellationEventId,
     row.netAmount
   ])
 }
 
-function responseScopeIssue(response: unknown, form: HyundaiApiForm, iso: string): string | null {
+function responseScopeIssue(
+  response: unknown,
+  form: HyundaiApiForm,
+  iso: string,
+  mode: 'recent' | 'acquired' = 'recent'
+): string | null {
   const summary = own(own(response, 'bdy') ?? response, 'rcntSummaryInfo')
   if (date(own(summary, 'srtDt')) !== iso || date(own(summary, 'endDt')) !== iso)
     return 'response_range_unverified'
   for (const field of ['crno', 'zoneClsf', 'useClsf', 'usplClsf', 'dtClsf'] as const) {
+    // The observed acquired response clears this recent-only merchant filter.
+    if (mode === 'acquired' && field === 'usplClsf' && own(summary, field) === '') continue
     if (scalar(own(summary, field), 256) !== form[field].trim()) return 'response_scope_unverified'
   }
   return null
+}
+
+export interface HyundaiAcquiredInspection {
+  state: 'ready' | 'unavailable'
+  pages: number
+  rowCount: number
+  reportedTotal: number | null
+  scopeVerified: boolean
+  /** Shape observations only: these do not establish refund or date semantics. */
+  fields: Array<{
+    name: string
+    types: string[]
+    lengths: string[]
+    nonemptyCount: number
+    distinctCount: number
+    dateShapeCount: number
+    requestedDayMatchCount: number
+  }>
+  amountSigns: { positive: number; negative: number; zero: number; unverified: number }
+  issues: string[]
+}
+
+/** Fixed acquired query diagnostics. Never returns any scalar response/form/card value. */
+export async function inspectHyundaiAcquired(
+  tab: Tab,
+  range: { from: string; to: string },
+  signal?: AbortSignal
+): Promise<HyundaiAcquiredInspection> {
+  let pages = 0
+  let rowCount = 0
+  let reportedTotal: number | null = 0
+  let scopeVerified = true
+  const issues = new Set<string>()
+  const amountSigns = { positive: 0, negative: 0, zero: 0, unverified: 0 }
+  const fields = new Map<
+    string,
+    {
+      types: Set<string>
+      lengths: Set<string>
+      nonemptyCount: number
+      distinct: Set<string>
+      dateShapeCount: number
+      requestedDayMatchCount: number
+    }
+  >()
+  const result = (state: HyundaiAcquiredInspection['state']): HyundaiAcquiredInspection => ({
+    state,
+    pages,
+    rowCount,
+    reportedTotal,
+    scopeVerified,
+    fields: [...fields].map(([name, field]) => ({
+      name,
+      types: [...field.types].sort(),
+      lengths: [...field.lengths].sort(),
+      nonemptyCount: field.nonemptyCount,
+      distinctCount: field.distinct.size,
+      dateShapeCount: field.dateShapeCount,
+      requestedDayMatchCount: field.requestedDayMatchCount
+    })),
+    amountSigns,
+    issues: [...issues]
+  })
+  const from = date(range.from)
+  const to = date(range.to)
+  if (!from || !to || from > to || Date.parse(to) - Date.parse(from) > 3 * 86_400_000) {
+    issues.add('invalid_range')
+    scopeVerified = false
+    return result('unavailable')
+  }
+  if (signal?.aborted) {
+    issues.add('cancelled')
+    scopeVerified = false
+    return result('unavailable')
+  }
+  const inspectionTimeout = new AbortController()
+  const timer = setTimeout(() => inspectionTimeout.abort(), 60_000)
+  timer.unref?.()
+  const inspectionSignal = signal
+    ? AbortSignal.any([signal, inspectionTimeout.signal])
+    : inspectionTimeout.signal
+  const observe = (raw: unknown, iso: string, parent = '', depth = 0): void => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    const names = Object.keys(raw)
+    if (names.length > 100) issues.add('acquired_diagnostic_fields_truncated')
+    for (const name of names.slice(0, 100)) {
+      // Schema identifiers only. Dynamic/private keys and credential fields are omitted.
+      if (
+        !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ||
+        /\d{5}|private|password|passwd|secret|token|cookie|credential|session|authorization|csrf/i.test(
+          name
+        )
+      )
+        continue
+      const path = parent ? `${parent}.${name}` : name
+      if (!fields.has(path) && fields.size >= 100) {
+        issues.add('acquired_diagnostic_fields_truncated')
+        continue
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(raw, name)
+      if (!descriptor || !('value' in descriptor)) continue
+      const value: unknown = descriptor.value
+      const field = fields.get(path) ?? {
+        types: new Set<string>(),
+        lengths: new Set<string>(),
+        nonemptyCount: 0,
+        distinct: new Set<string>(),
+        dateShapeCount: 0,
+        requestedDayMatchCount: 0
+      }
+      field.types.add(value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value)
+      const text = scalar(value, 2048)
+      if (text !== null) {
+        field.lengths.add(
+          text.length === 0
+            ? 'empty'
+            : text.length <= 8
+              ? '1_8'
+              : text.length <= 32
+                ? '9_32'
+                : text.length <= 128
+                  ? '33_128'
+                  : '129_plus'
+        )
+        if (text) {
+          field.nonemptyCount++
+          field.distinct.add(text)
+        }
+        const day = dateTime(text)?.slice(0, 10)
+        if (day) {
+          field.dateShapeCount++
+          if (day === iso) field.requestedDayMatchCount++
+        }
+      }
+      fields.set(path, field)
+      if (depth < 1) observe(value, iso, path, depth + 1)
+    }
+  }
+  try {
+    const wc = tab.view.webContents
+    const url = wc.getURL()
+    if (wc.isDestroyed() || !historyOrigin(url)) throw new Error('hyundai_history_required')
+    const context = (): void => {
+      if (signal?.aborted) throw new Error('hyundai_request_cancelled')
+      if (inspectionTimeout.signal.aborted) throw new Error('hyundai_request_timeout')
+      if (tab.view.webContents !== wc || wc.isDestroyed() || wc.getURL() !== url)
+        throw new Error('hyundai_navigation_changed')
+    }
+    const auth = await bounded(pageBridge.hyundaiAuth(tab), inspectionSignal)
+    context()
+    if (auth.state !== 'signed_in') throw new Error('hyundai_authentication_required')
+    for (let day = Date.parse(from); day <= Date.parse(to); day += 86_400_000) {
+      context()
+      const iso = new Date(day).toISOString().slice(0, 10)
+      const plan: unknown = await bounded(
+        wc.executeJavaScript(requestPlanScript(iso, iso, 'acquired'), false),
+        inspectionSignal
+      )
+      context()
+      if (own(plan, 'ok') !== true) {
+        const issue = own(plan, 'issue')
+        throw new Error(issue === 'card_selector_unverified' ? issue : 'request_schema_unverified')
+      }
+      const form = own(plan, 'data') as HyundaiApiForm
+      if (!form || typeof form !== 'object') throw new Error('request_schema_unverified')
+      if (date(own(form, 'srtDt')) !== iso || date(own(form, 'endDt')) !== iso)
+        throw new Error('request_schema_unverified')
+      if (form.dmfrClsf !== '') {
+        scopeVerified = false
+        issues.add('scope_unverified')
+      }
+      pages++
+      const response = await requestHyundaiApiPage(tab, form, inspectionSignal, 'acquired')
+      context()
+      const body = own(response, 'bdy') ?? response
+      const summary = own(body, 'rcntSummaryInfo')
+      const scope = responseScopeIssue(response, form, iso, 'acquired')
+      if (scope) {
+        scopeVerified = false
+        issues.add(scope)
+      }
+      if (scalar(own(body, 'error_code')) && scalar(own(body, 'error_message')))
+        throw new Error('service_error')
+      const items = own(body, 'acqrUseItmList')
+      if (!Array.isArray(items) || items.length > MAX_ROWS)
+        throw new Error('acquired_response_schema_unverified')
+      const count = scalar(own(summary, 'totUseCnt'), 10)
+      const total =
+        count && /^\d+$/.test(count) && Number.isSafeInteger(Number(count)) ? Number(count) : null
+      if (total === null) {
+        reportedTotal = null
+        issues.add('total_count_unverified')
+      } else {
+        if (reportedTotal !== null) reportedTotal += total
+        if (total !== items.length) issues.add('total_count_mismatch')
+      }
+      rowCount += items.length
+      if (Math.max(items.length, total ?? 0) >= 630) issues.add('daily_row_limit_possible')
+      for (const item of items) {
+        observe(item, iso)
+        // The retained official converter/importer establishes this displayed KRW
+        // arithmetic. Its sign is diagnostic only, never refund/event-date proof.
+        const amount = won(own(item, 'useAmt'))
+        const fee = won(own(item, 'excm'))
+        if (amount === null || fee === null || !Number.isSafeInteger(amount + fee))
+          amountSigns.unverified++
+        else if (amount + fee < 0) amountSigns.negative++
+        else if (amount + fee > 0) amountSigns.positive++
+        else amountSigns.zero++
+      }
+    }
+    issues.add('acquired_cancellation_semantics_unverified')
+    return result('ready')
+  } catch (error) {
+    scopeVerified = false
+    const safe = new Set([
+      ...SAFE_ERRORS,
+      'card_selector_unverified',
+      'request_schema_unverified',
+      'service_error',
+      'acquired_response_schema_unverified'
+    ])
+    issues.add(
+      signal?.aborted
+        ? 'hyundai_request_cancelled'
+        : inspectionTimeout.signal.aborted
+          ? 'hyundai_request_timeout'
+          : error instanceof Error && safe.has(error.message)
+            ? error.message
+            : 'acquired_inspection_unavailable'
+    )
+    return result('unavailable')
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function pageCoverageVerified(page: HyundaiApiPage): boolean {
@@ -808,6 +1060,7 @@ export const collectHyundaiApi: CardApiCollector = async (tab, range, options = 
       rowCount: rows.length,
       complete: issues.size === 0 && more.length === 0,
       approvalComplete,
+      cancellationComplete: false,
       issues: [...new Set([...issues, ...more])],
       elapsedMs: Date.now() - started
     }

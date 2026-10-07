@@ -929,7 +929,10 @@ describe('Lotte verified all-option and Param pagination collector', () => {
       )
     const kept = await collectLotteApi(collectorFixture([envelope(1, 1, cancel)]).current, RANGE)
     expect(kept.receipt.approvalComplete).toBe(true)
-    expect(kept.rows[0].needsReview).toContain('cancellation_query_basis_unverified')
+    expect(kept.rows[0].needsReview).not.toContain('cancellation_query_basis_unverified')
+    expect(kept.rows[0].cancellationEvidence).toBe(true)
+    expect(kept.rows[0].cancellationAmountType).toBe('cumulative')
+    expect(kept.receipt.cancellationComplete).toBe(false)
   })
   it('does not send queries if the exact form or unique all-option semantics cannot be proven', async () => {
     for (const mutate of [

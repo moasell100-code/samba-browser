@@ -16,12 +16,20 @@ import { restoreCardSession, inspectLotteKeypadStatus } from './card-login-sessi
 import type { VaultService } from '../vault/service'
 import type { Settings } from '../../shared/settings'
 import { collectRecentCard, saveCardCollection } from './card-sync'
-import { collectSamsungApi } from './samsung-api-collector'
+import { collectSamsungApi, probeSamsungCancellationDetails } from './samsung-api-collector'
 import { collectLotteApi } from './lotte-api-collector'
-import { collectHyundaiApi, inspectHyundaiScope } from './hyundai-api-collector'
+import {
+  collectHyundaiApi,
+  inspectHyundaiScope,
+  inspectHyundaiAcquired
+} from './hyundai-api-collector'
 import { inspectSamsungIdLogin } from './samsung-login-preparation'
 import { classifyCardNavigationFailure } from './card-navigation-failure'
+import { dailyCardRanges, recentCardDateRange } from './card-date-range'
 import type { CardNavigationFailure } from '../../shared/card-navigation'
+import { pageBridge } from '../browser/page-bridge'
+import { reconcileKnownCards } from './card-reconciliation-sync'
+import { recoverHyundaiRegistration } from './hyundai-registration-recovery'
 
 const TTL_MS = 30 * 60 * 1000
 
@@ -217,13 +225,15 @@ export async function startCardDiagnosticsRuntime(options: {
       const keypad = issuer === 'lotte_card' ? await inspectLotteKeypadStatus(tab) : undefined
       const loginForm = issuer === 'samsung_card' ? await inspectSamsungIdLogin(tab) : undefined
       const scope = issuer === 'hyundai_card' ? await inspectHyundaiScope(tab) : undefined
+      const hyundaiAuth = issuer === 'hyundai_card' ? await pageBridge.hyundaiAuth(tab) : undefined
       assertTabContext(tab, initialUrl)
       return {
         tabId: id,
         ...result,
         ...(keypad ? { keypad } : {}),
         ...(loginForm ? { loginForm } : {}),
-        ...(scope ? { scope } : {})
+        ...(scope ? { scope } : {}),
+        ...(hyundaiAuth ? { hyundaiAuth: { state: hyundaiAuth.state } } : {})
       }
     },
     requests(id: string) {
@@ -269,11 +279,82 @@ export async function startCardDiagnosticsRuntime(options: {
       assertTabContext(tab, url)
       return { state: 'saved', receipt: result.receipt, saved }
     },
+    async collectRange(id: string, from: string, to: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      const range = { from, to }
+      if (from < '2026-07-01' || to > recentCardDateRange().to) return { state: 'invalid_range' }
+      dailyCardRanges(range)
+      const issuer = issuerForCardUrl(url)
+      const collect =
+        issuer === 'hyundai_card'
+          ? collectHyundaiApi
+          : issuer === 'samsung_card'
+            ? collectSamsungApi
+            : collectLotteApi
+      const result = await collectRecentCard({ tab, collect, range, signal: controller.signal })
+      assertTabContext(tab, url)
+      return {
+        state: 'preview',
+        receipt: result.receipt,
+        diagnostics: {
+          cancellationRows: result.rows.filter((row) => row.status !== 'approved').length,
+          verifiedCancellationRows: result.rows.filter((row) => row.cancellationEvidence === true)
+            .length,
+          originalsOutsideRange: result.rows.filter(
+            (row) => row.approvedAt.slice(0, 10) < from || row.approvedAt.slice(0, 10) > to
+          ).length,
+          cancellationDatesOutsideRange: result.rows.filter(
+            (row) => row.eventDate && (row.eventDate < from || row.eventDate > to)
+          ).length
+        }
+      }
+    },
+    async cancellationContract(id: string, from: string, to: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      const range = { from, to }
+      if (from < '2026-07-01' || to > recentCardDateRange().to) return { state: 'invalid_range' }
+      dailyCardRanges(range)
+      const issuer = issuerForCardUrl(url)
+      const result =
+        issuer === 'hyundai_card'
+          ? await inspectHyundaiAcquired(tab, range, controller.signal)
+          : issuer === 'samsung_card'
+            ? await probeSamsungCancellationDetails(tab, range)
+            : { state: 'diagnostic_unavailable' }
+      assertTabContext(tab, url)
+      return result
+    },
+    async reconcile(id: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      if (
+        options.collectorTransport !== 'server-ssh' &&
+        (options.collectorTransport !== 'local' || !options.collectorTokenFile)
+      )
+        return { state: 'finance_not_configured' }
+      const result = await reconcileKnownCards(tab, {
+        tokenFile: options.collectorTokenFile,
+        transport: options.collectorTransport,
+        signal: controller.signal
+      })
+      assertTabContext(tab, url)
+      return result
+    },
     async queryContract(id: string) {
       const tab = getTab(id)
       const url = tab.view.webContents.getURL()
       const result = await inspectCardQueryContract(tab)
       assertTabContext(tab, url)
+      return result
+    },
+    async recoverRegistration(id: string) {
+      const tab = getTab(id)
+      if (issuerForCardUrl(tab.view.webContents.getURL()) !== 'hyundai_card')
+        return { state: 'blocked', issue: 'unsupported_context' }
+      const result = await recoverHyundaiRegistration(tab, controller.signal)
+      assertLiveTab(tab)
       return result
     },
     async exportContract(id: string) {

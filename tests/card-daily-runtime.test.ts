@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   configure: vi.fn(),
   report: vi.fn(),
   reconcile: vi.fn(),
+  recover: vi.fn(async () => true),
   record: undefined as CardDailyFile | undefined
 }))
 vi.mock('../src/main/finance/card-agent-sync', () => ({ createCardAgentSync: mocks.configure }))
@@ -20,6 +21,7 @@ vi.mock('../src/main/finance/card-schedule-report', () => ({ reportCardSchedule:
 vi.mock('../src/main/finance/card-reconciliation-sync', () => ({
   reconcileKnownCards: mocks.reconcile
 }))
+vi.mock('../src/main/finance/card-coverage-sync', () => ({ recoverCardCoverage: mocks.recover }))
 vi.mock('../src/main/finance/card-page-diagnostics', () => ({
   CARD_HISTORY_URLS: {
     hyundai_card: 'https://www.hyundaicard.com/history',

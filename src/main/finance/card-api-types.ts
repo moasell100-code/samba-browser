@@ -27,6 +27,11 @@ export interface CardApiRow {
   currency: 'KRW'
   status: 'approved' | 'cancelled' | 'partially_cancelled' | 'unknown'
   cancellationAmount: number | null
+  /** Verified issuer refund semantics, independent of whole-query coverage. */
+  cancellationEvidence?: boolean
+  cancellationAmountType?: 'cumulative' | 'event'
+  /** Digest of an official unique refund identifier, never raw account data. */
+  cancellationEventId?: string
   netAmount: number | null
   needsReview: string[]
 }
@@ -39,6 +44,9 @@ export interface CardApiReceipt {
   complete: boolean
   /** Verified approval coverage only; cancellation reconciliation may still be incomplete. */
   approvalComplete?: boolean
+  cancellationComplete?: boolean
+  /** All original approvals in this date range have verified current status. */
+  statusComplete?: boolean
   issues: string[]
   elapsedMs: number
 }

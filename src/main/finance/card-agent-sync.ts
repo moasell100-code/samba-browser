@@ -36,6 +36,7 @@ export type CardAgentSyncResult =
       duplicateBatch: boolean
       complete: boolean
       approvalComplete: boolean
+      cancellationComplete: boolean
     }
   | {
       ok: false
@@ -164,7 +165,8 @@ export async function createCardAgentSync(options: {
           reviewRows: saved.review_rows,
           duplicateBatch: saved.duplicate_batch,
           complete: saved.complete,
-          approvalComplete: saved.approval_complete === true
+          approvalComplete: saved.approval_complete === true,
+          cancellationComplete: saved.cancellation_complete === true
         }
       } catch {
         return { ok: false, reason: signal.aborted ? 'interrupted' : 'sync_unavailable' }

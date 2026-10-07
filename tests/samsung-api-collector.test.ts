@@ -4,7 +4,10 @@ import { JSDOM } from 'jsdom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Tab } from '../src/main/browser/tab-manager'
 import { pageBridge } from '../src/main/browser/page-bridge'
-import { collectSamsungApi } from '../src/main/finance/samsung-api-collector'
+import {
+  collectSamsungApi,
+  probeSamsungCancellationDetails
+} from '../src/main/finance/samsung-api-collector'
 
 const URL = 'https://www.samsungcard.com/personal/card/activity/UHPPRP0801M0.jsp'
 const RANGE = { from: '2026-09-29', to: '2026-10-02' }
@@ -31,6 +34,7 @@ function row(index = 1, overrides: SourceRow = {}): SourceRow {
     aprAm: '12,300',
     mrcNm: '합성 가맹점',
     itgCdnoe: '0000000000004321',
+    cdnoId: '',
     canRcpdt: '',
     poCanDvC: '',
     canProcsStsC: '',
@@ -92,6 +96,7 @@ function fixture(handler?: (query: Query, index: number) => void): {
   Object.assign(dom.window, {
     ENV: { CONDITION: condition },
     scard: {
+      decodeXss: (value: string) => value,
       ajax(query: Query) {
         calls.push(query)
         if (handler) handler(query, calls.length)
@@ -131,6 +136,415 @@ function fixture(handler?: (query: Query, index: number) => void): {
 }
 
 describe('Samsung fixed private statement API collector', () => {
+  it('certifies original approval status after complete empty S12 coverage without certifying a cancellation feed', async () => {
+    const f = fixture()
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.receipt).toMatchObject({
+      approvalComplete: true,
+      statusComplete: true,
+      cancellationComplete: false,
+      complete: false
+    })
+    expect(result.receipt.issues).toEqual(['cancellation_query_basis_unverified'])
+  })
+
+  it('certifies a late full cancellation only after the S51 summary and S12 current status match', async () => {
+    const f = fixture((query) =>
+      query.success(
+        response(
+          query.service,
+          query.service.endsWith('S51')
+            ? [
+                row(1, { aprDt: '20260817' }),
+                row(1, { aprDt: '20260817', aprAm: -12300, canRcpdt: '20260906' })
+              ]
+            : [row(1, { aprDt: '20260817', canRcpdt: '20260906', canProcsStsC: '2', poCanDvC: '' })]
+        )
+      )
+    )
+    const result = await collectSamsungApi(f.tab, { from: '2026-08-17', to: '2026-08-17' })
+    expect(result.receipt).toMatchObject({
+      approvalComplete: true,
+      statusComplete: true,
+      cancellationComplete: false,
+      complete: false
+    })
+    expect(result.rows[1]).toMatchObject({
+      kind: 'status',
+      cancellationAmount: 12300,
+      needsReview: []
+    })
+    expect(result.rows[2]).toMatchObject({
+      eventDate: '2026-09-06',
+      cancellationEvidence: true,
+      needsReview: []
+    })
+  })
+
+  it.each([
+    'missing_s51_summary',
+    'missing_s12_status',
+    'wrong_event_day',
+    'wrong_original_amount',
+    'different_merchant',
+    'pending',
+    'unproved_partial',
+    'extra_s12_snapshot',
+    'cancelled_outside_original_range',
+    'duplicate_summary',
+    'positive_cancellation_marker'
+  ] as const)(
+    'does not certify original approval status when evidence is incomplete: %s',
+    async (fault) => {
+      const original = row()
+      const summary = row(1, { aprAm: -12300, canRcpdt: '20261002' })
+      const cancelled = row(1, { canProcsStsC: '1', canRcpdt: '20261002', poCanDvC: '' })
+      if (fault === 'wrong_event_day') cancelled.canRcpdt = '20261003'
+      if (fault === 'wrong_original_amount') original.aprAm = 15000
+      if (fault === 'different_merchant') cancelled.mrcNm = '다른 상점'
+      if (fault === 'pending') cancelled.canProcsStsC = '3'
+      if (fault === 'unproved_partial') cancelled.poCanDvC = '2'
+      if (fault === 'cancelled_outside_original_range') cancelled.aprDt = '20260901'
+      if (fault === 'positive_cancellation_marker') original.poCanDvC = '99'
+      const f = fixture((query) =>
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51')
+              ? fault === 'missing_s51_summary' || fault === 'positive_cancellation_marker'
+                ? [original]
+                : fault === 'duplicate_summary'
+                  ? [original, summary, summary]
+                  : [original, summary]
+              : fault === 'missing_s12_status' || fault === 'positive_cancellation_marker'
+                ? []
+                : fault === 'extra_s12_snapshot'
+                  ? [cancelled, row(1, { canProcsStsC: '2', canRcpdt: '20261003', poCanDvC: '' })]
+                  : [cancelled]
+          )
+        )
+      )
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.receipt).toMatchObject({
+        statusComplete: false,
+        cancellationComplete: false,
+        complete: false
+      })
+    }
+  )
+
+  it.each(['empty_count_mismatch', 's12_error', 's12_bad_schema', 's12_scope_change'] as const)(
+    'requires every verified S12 page before original status coverage: %s',
+    async (fault) => {
+      const f = fixture((query) => {
+        if (query.service.endsWith('S51')) return query.success(response(query.service, [row()]))
+        if (fault === 's12_error') return query.error()
+        if (fault === 's12_scope_change') f.condition.isCstMngtNo = 'OTHER_SCOPE'
+        if (fault === 's12_bad_schema')
+          return query.success({ totDlngCt: 'PRIVATE_INVALID_COUNT', hppRPDomCanIzSub01SVO: [] })
+        query.success(response(query.service, [], fault === 'empty_count_mismatch' ? 1 : 0))
+      })
+      if (fault === 's12_scope_change') {
+        const originalExecute = f.execute.getMockImplementation()!
+        f.execute.mockImplementation((script, userGesture) => {
+          if (script.includes('"mode":"cancellation"')) f.condition.isCstMngtNo = 'OTHER_SCOPE'
+          return originalExecute(script, userGesture)
+        })
+      }
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.receipt).toMatchObject({
+        statusComplete: false,
+        cancellationComplete: false,
+        complete: false
+      })
+    }
+  )
+
+  it.each(['1', '2'])(
+    'proves only explicit nonpartial completed S12 cancellation code %s as cumulative',
+    async (process) => {
+      const f = fixture((query) =>
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51')
+              ? [row()]
+              : [row(1, { canProcsStsC: process, canRcpdt: '20261002', poCanDvC: '' })]
+          )
+        )
+      )
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.rows[1]).toMatchObject({
+        status: 'cancelled',
+        amount: 12300,
+        cancellationAmount: 12300,
+        cancellationEvidence: true,
+        cancellationAmountType: 'cumulative',
+        netAmount: 0,
+        needsReview: []
+      })
+      expect(result.receipt).toMatchObject({
+        approvalComplete: true,
+        cancellationComplete: false,
+        statusComplete: false,
+        complete: false
+      })
+      expect(f.calls).toHaveLength(2)
+    }
+  )
+
+  it.each([null, undefined, '0', '99'])(
+    'does not promote a missing or unknown partial flag %s to full cancellation',
+    async (flag) => {
+      const cancellation = row(1, { canProcsStsC: '1', canRcpdt: '20261002' })
+      if (flag === undefined) delete cancellation.poCanDvC
+      else cancellation.poCanDvC = flag
+      const f = fixture((query) =>
+        query.success(response(query.service, query.service.endsWith('S51') ? [] : [cancellation]))
+      )
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.rows[0]).toMatchObject({
+        status: 'unknown',
+        cancellationAmount: null,
+        netAmount: null
+      })
+      expect(result.rows[0].cancellationEvidence).not.toBe(true)
+      expect(result.rows[0].needsReview).toContain(
+        flag == null
+          ? 'cancellation_partial_flag_unavailable'
+          : 'cancellation_partial_flag_unrecognized'
+      )
+    }
+  )
+
+  it('uses only the official single S41 event amount, never its untrusted total or S12 original amount', async () => {
+    const f = fixture((query) => {
+      if (query.service.endsWith('S41')) {
+        expect(query.data).toEqual({
+          aprDt: '20261002',
+          cdnoId: 'SYNTHETIC_OPAQUE_CARD_ID',
+          aprT: '091213',
+          aprno: '00000001'
+        })
+        query.success({
+          common: { procsRsDvC: '0' },
+          aprAm: '-12300',
+          hppRPPoCanIzSub01SVO: [
+            {
+              aprPoCanDtm: '20261002121544',
+              aprPoCanAm: '-4000',
+              privateEvent: 'PRIVATE_EVENT_VALUE'
+            }
+          ]
+        })
+      } else
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51')
+              ? [row(), row(1, { aprAm: -4000, poCanDvC: '1', canRcpdt: '20261002' })]
+              : [
+                  row(1, {
+                    cdnoId: 'SYNTHETIC_OPAQUE_CARD_ID',
+                    poCanDvC: '1',
+                    canProcsStsC: '1',
+                    canRcpdt: '20261002'
+                  })
+                ]
+          )
+        )
+    })
+    const before = JSON.stringify(f.condition)
+    const result = await collectSamsungApi(f.tab, RANGE)
+    expect(result.rows[2]).toMatchObject({
+      amount: 12300,
+      cancellationAmount: 4000,
+      netAmount: 8300,
+      status: 'partially_cancelled',
+      cancellationEvidence: true,
+      cancellationAmountType: 'cumulative',
+      needsReview: []
+    })
+    expect(result.rows[2].cancellationEventId).toMatch(/^[a-f0-9]{64}$/)
+    expect(result.rows[1]).toMatchObject({
+      kind: 'status',
+      amount: 12300,
+      cancellationAmount: 4000,
+      cancellationAmountType: 'cumulative',
+      netAmount: 8300,
+      needsReview: []
+    })
+    expect(result.receipt).toMatchObject({
+      statusComplete: true,
+      cancellationComplete: false,
+      complete: false
+    })
+    expect(f.calls.map((call) => call.service)).toEqual([
+      'SHPPRP0801S51',
+      'SHPPRP0801S12',
+      'SHPPRP0801S41'
+    ])
+    expect(JSON.stringify(f.condition)).toBe(before)
+    for (const secret of ['SYNTHETIC_OPAQUE_CARD_ID', 'PRIVATE_EVENT_VALUE', '20261002121544'])
+      expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it.each([
+    'multiple',
+    'duplicate_timestamp',
+    'paging',
+    'wrong_day',
+    'malformed_timestamp',
+    'full_original_amount',
+    'zero',
+    'missing_amount',
+    'service_error'
+  ] as const)(
+    'keeps partial cancellation under review for unsafe S41 evidence: %s',
+    async (fault) => {
+      const f = fixture((query) => {
+        if (query.service.endsWith('S41')) {
+          if (fault === 'service_error') return query.error()
+          const events: SourceRow[] = [
+            {
+              aprPoCanDtm:
+                fault === 'wrong_day'
+                  ? '20261001121544'
+                  : fault === 'malformed_timestamp'
+                    ? '20261002'
+                    : '20261002121544',
+              aprPoCanAm:
+                fault === 'full_original_amount'
+                  ? -12300
+                  : fault === 'zero'
+                    ? 0
+                    : fault === 'missing_amount'
+                      ? null
+                      : -4000
+            }
+          ]
+          if (fault === 'multiple' || fault === 'duplicate_timestamp')
+            events.push({
+              aprPoCanDtm: fault === 'duplicate_timestamp' ? '20261002121544' : '20261002131544',
+              aprPoCanAm: -2000
+            })
+          query.success({
+            hppRPPoCanIzSub01SVO: events,
+            ...(fault === 'paging' ? { no1NextKeyCn: 'NEXT_PRIVATE_CURSOR' } : {})
+          })
+        } else
+          query.success(
+            response(
+              query.service,
+              query.service.endsWith('S51')
+                ? []
+                : [
+                    row(1, {
+                      cdnoId: 'PRIVATE_CARD_ID',
+                      poCanDvC: '1',
+                      canProcsStsC: '2',
+                      canRcpdt: '20261002'
+                    })
+                  ]
+            )
+          )
+      })
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.rows[0]).toMatchObject({ cancellationAmount: null, netAmount: null })
+      expect(result.rows[0].cancellationEvidence).not.toBe(true)
+      expect(result.rows[0].needsReview).toContain('cancellation_amount_unverified')
+      expect(result.receipt).toMatchObject({
+        cancellationComplete: false,
+        statusComplete: false,
+        complete: false
+      })
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_CARD_ID')
+      expect(JSON.stringify(result)).not.toContain('NEXT_PRIVATE_CURSOR')
+    }
+  )
+
+  it('keeps a verified cancellation identity stable when its official amount changes', async () => {
+    let amount = -4000
+    const f = fixture((query) => {
+      if (query.service.endsWith('S41'))
+        query.success({
+          hppRPPoCanIzSub01SVO: [{ aprPoCanDtm: '20261002121544', aprPoCanAm: amount }]
+        })
+      else
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51')
+              ? []
+              : [
+                  row(1, {
+                    cdnoId: 'SYNTHETIC_CARD_ID',
+                    poCanDvC: '1',
+                    canProcsStsC: '1',
+                    canRcpdt: '20261002'
+                  })
+                ]
+          )
+        )
+    })
+    const first = await collectSamsungApi(f.tab, RANGE)
+    amount = -4500
+    const second = await collectSamsungApi(f.tab, RANGE)
+    expect(first.rows[0].sourceId).toBe(second.rows[0].sourceId)
+    expect(first.rows[0].cancellationEventId).toBe(second.rows[0].cancellationEventId)
+    expect(first.rows[0].cancellationAmount).toBe(4000)
+    expect(second.rows[0].cancellationAmount).toBe(4500)
+  })
+
+  it('returns fixed S41 shape diagnostics with no private fields and preserves duplicate uncertainty', async () => {
+    const f = fixture((query) => {
+      if (query.service.endsWith('S41'))
+        query.success({
+          hppRPPoCanIzSub01SVO: [
+            { aprPoCanDtm: '20261002121544', aprPoCanAm: -4000 },
+            { aprPoCanDtm: '20261002121544', aprPoCanAm: -2000 }
+          ]
+        })
+      else
+        query.success(
+          response(query.service, [
+            row(1, { cdnoId: 'PRIVATE_PROBE_CARD', poCanDvC: '1', canProcsStsC: '1' })
+          ])
+        )
+    })
+    const result = await probeSamsungCancellationDetails(f.tab, RANGE)
+    expect(result).toEqual({
+      ok: true,
+      detailRows: 2,
+      validTimestampRows: 2,
+      validAmountRows: 2,
+      duplicateTimestampRows: 1,
+      pagingFieldsPresent: false
+    })
+    for (const secret of ['PRIVATE_PROBE_CARD', '00000001', '20261002121544', '4000', '2000'])
+      expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it('rejects unsafe probe ranges and changed navigation before returning any detail evidence', async () => {
+    const f = fixture((query) => {
+      f.setUrl('https://www.samsungcard.com/personal/main.jsp')
+      query.success(
+        response(query.service, [
+          row(1, { cdnoId: 'PRIVATE_PROBE_CARD', poCanDvC: '1', canProcsStsC: '1' })
+        ])
+      )
+    })
+    expect(
+      await probeSamsungCancellationDetails(f.tab, { from: '2026-09-01', to: '2026-10-02' })
+    ).toEqual({ ok: false, issue: 'invalid_date_range' })
+    expect(f.execute).not.toHaveBeenCalled()
+    expect(await probeSamsungCancellationDetails(f.tab, RANGE)).toEqual({
+      ok: false,
+      issue: 'navigation_changed'
+    })
+    expect(f.calls).toHaveLength(1)
+  })
+
   it('uses only S51/S12 and exact four-day filters, without changing page state or exporting full card data', async () => {
     const f = fixture()
     const before = JSON.stringify(f.condition)

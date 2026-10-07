@@ -106,5 +106,35 @@ export async function inspectCardQueryContract(tab: Tab): Promise<unknown> {
   const url = wc.getURL()
   const result: unknown = await wc.executeJavaScript(SCRIPT, false)
   if (wc.isDestroyed() || wc.getURL() !== url) throw new Error('Card tab changed')
+  if (state.issuer === 'samsung_card') {
+    // Public, fixed JavaScript only. No session cookie, form, request body or
+    // customer data is sent. It explains the official cancellation renderer.
+    const response = await fetch(
+      'https://static12.samsungcard.com/js/personal/card/activity/UHPPRP0801D8.js',
+      { credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(10000) }
+    )
+    if (!response.ok) throw new Error('Card diagnostics unavailable')
+    const source = await response.text()
+    if (source.length > 250000) throw new Error('Card diagnostics unavailable')
+    const lines = source.split(/\r?\n/)
+    const indices = new Set<number>()
+    for (let index = 0; index < lines.length; index++) {
+      if (
+        /canRcpdt|aprAm|canProcsStsC|poCanDvC|inqrStrtdt|inqrEnddt|SHPPRP0801S12|취소일|취소금액/.test(
+          lines[index]
+        )
+      )
+        for (let n = Math.max(0, index - 2); n <= Math.min(lines.length - 1, index + 2); n++)
+          indices.add(n)
+    }
+    if (wc.isDestroyed() || wc.getURL() !== url) throw new Error('Card tab changed')
+    return {
+      ...(result && typeof result === 'object' ? result : {}),
+      publicCancellationSource: [...indices].slice(0, 100).map((index) => ({
+        line: index + 1,
+        source: lines[index].slice(0, 500)
+      }))
+    }
+  }
   return result
 }

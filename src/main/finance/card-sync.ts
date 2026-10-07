@@ -27,6 +27,7 @@ const saveReceipt = z.object({
   ]),
   complete: z.boolean(),
   approval_complete: z.boolean().optional(),
+  cancellation_complete: z.boolean().optional(),
   range: z.object({ from: z.string(), to: z.string() }),
   pages: z.number().int()
 })
@@ -128,6 +129,14 @@ export async function collectRecentCard(options: {
         !identityConflict &&
         parts.length === dailyCardRanges(range).length &&
         parts.every((part) => part.receipt.approvalComplete === true),
+      cancellationComplete:
+        !identityConflict &&
+        parts.length === dailyCardRanges(range).length &&
+        parts.every((part) => part.receipt.cancellationComplete === true),
+      statusComplete:
+        !identityConflict &&
+        parts.length === dailyCardRanges(range).length &&
+        parts.every((part) => part.receipt.statusComplete === true),
       issues,
       elapsedMs: Date.now() - started
     }

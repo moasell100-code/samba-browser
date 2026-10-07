@@ -423,6 +423,13 @@ function rowFromHtml(
     currency: 'KRW',
     status,
     cancellationAmount,
+    ...(status !== 'approved' &&
+    status !== 'unknown' &&
+    netAmount !== null &&
+    cancellationDate &&
+    needsReview.length === 0
+      ? { cancellationEvidence: true, cancellationAmountType: 'cumulative' as const }
+      : {}),
     netAmount,
     needsReview
   }
@@ -849,6 +856,8 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
       rowCount: rows.length,
       complete: false,
       approvalComplete,
+      cancellationComplete: false,
+      statusComplete: approvalComplete && rows.every((row) => row.needsReview.length === 0),
       issues: [...new Set([...issues, ...more])],
       elapsedMs: Date.now() - started
     }
@@ -1021,10 +1030,9 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
           valid = false
           row.needsReview.push('outside_requested_range')
         }
-        if (row.status !== 'approved')
-          row.needsReview = [
-            ...new Set([...row.needsReview, 'cancellation_query_basis_unverified'])
-          ]
+        // The history range is an original-approval range. An explicitly labelled
+        // refund can be applied to its unique original even though this query
+        // cannot certify all refunds whose cancellation date is in the range.
         const previous = seen.get(row.sourceId)
         if (previous) {
           valid = false

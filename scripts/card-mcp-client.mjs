@@ -39,9 +39,14 @@ async function main() {
       method: 'POST',
       redirect: 'error',
       signal: AbortSignal.timeout(
-        toolName === 'card_collect_recent'
+        ['card_collect_recent', 'card_reconcile_existing'].includes(toolName)
           ? 600_000
-          : ['card_restore_session', 'card_export_history'].includes(toolName)
+          : [
+                'card_restore_session',
+                'hyundai_restore_registration',
+                'card_export_history',
+                'card_cancellation_contract'
+              ].includes(toolName)
             ? 120_000
             : 45_000
       ),

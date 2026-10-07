@@ -48,6 +48,7 @@ export interface CardDailyResult {
     errorHint: 'then_not_callable' | 'undefined_property' | 'destroyed_object' | 'unknown'
   }
   approvalComplete?: boolean
+  cancellationComplete?: boolean
   complete?: boolean
   totalRows?: number
   insertedRows?: number
