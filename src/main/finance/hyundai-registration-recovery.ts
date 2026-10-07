@@ -14,6 +14,17 @@ const MAX_BACKUP_BYTES = 4 * 1024 * 1024
 const MAX_COOKIES = 100
 const attemptedSessions = new WeakSet<Session>()
 const SAME_SITE = ['unspecified', 'no_restriction', 'lax', 'strict'] as const
+const COOKIE_NAME_SEPARATORS = new Set('()<>@,;:\\"/[]?={}'.split(''))
+const invalidCookieName = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.charCodeAt(0)
+    return code <= 0x20 || code === 0x7f || COOKIE_NAME_SEPARATORS.has(character)
+  })
+const invalidCookieValue = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.charCodeAt(0)
+    return code <= 0x1f || code === 0x7f
+  })
 
 type Issue =
   | 'unsupported_context'
@@ -133,12 +144,12 @@ async function retainedCookies(home: string): Promise<Cookie[]> {
             !row.name ||
             row.name.length > 256 ||
             row.name_bytes !== Buffer.byteLength(row.name, 'utf8') ||
-            /[\u0000-\u0020\u007f()<>@,;:\\"/\[\]?={}]/.test(row.name) ||
+            invalidCookieName(row.name) ||
             typeof row.value !== 'string' ||
             !row.value ||
             row.value.length > 4096 ||
             row.value_bytes !== Buffer.byteLength(row.value, 'utf8') ||
-            /[\u0000-\u001f\u007f]/.test(row.value) ||
+            invalidCookieValue(row.value) ||
             row.path !== '/' ||
             row.is_persistent !== 1 ||
             ![0, 1].includes(Number(row.is_secure)) ||

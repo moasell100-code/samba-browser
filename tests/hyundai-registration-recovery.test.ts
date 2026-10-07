@@ -6,7 +6,10 @@ import { join } from 'node:path'
 import type { Tab } from '../src/main/browser/tab-manager'
 import { pageBridge } from '../src/main/browser/page-bridge'
 import { HYUNDAI_LOGIN_URL } from '../src/main/finance/hyundai-login'
-import { recoverHyundaiRegistration } from '../src/main/finance/hyundai-registration-recovery'
+import {
+  recoverHyundaiRegistration,
+  type HyundaiRegistrationRecoveryResult
+} from '../src/main/finance/hyundai-registration-recovery'
 
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof import('node:fs/promises')>()),
@@ -108,10 +111,38 @@ function candidate(row = sourceRow()): Cookie {
   }
 }
 
-function fixture(initial: Cookie[] = []) {
+interface RecoveryFixture {
+  tab: Tab
+  wc: {
+    session: RecoveryFixture['session']
+    loadURL: RecoveryFixture['loadURL']
+    getURL: () => string
+    isDestroyed: () => boolean
+  }
+  jar: Cookie[]
+  session: {
+    cookies: {
+      get: RecoveryFixture['get']
+      set: RecoveryFixture['set']
+      remove: RecoveryFixture['remove']
+      flushStore: RecoveryFixture['flushStore']
+    }
+    getStoragePath: () => string
+  }
+  get: ReturnType<typeof vi.fn<(filter: { url: string; name: string }) => Promise<Cookie[]>>>
+  set: ReturnType<typeof vi.fn<(details: CookiesSetDetails) => Promise<void>>>
+  commit: (details: CookiesSetDetails) => void
+  remove: ReturnType<typeof vi.fn<(url: string, name: string) => Promise<void>>>
+  flushStore: ReturnType<typeof vi.fn<() => Promise<void>>>
+  loadURL: ReturnType<typeof vi.fn<(target: string) => Promise<void>>>
+  auth: ReturnType<typeof vi.spyOn<typeof pageBridge, 'hyundaiAuth'>>
+  setUrl: (next: string) => void
+}
+
+function fixture(initial: Cookie[] = []): RecoveryFixture {
   let url = 'https://www.hyundaicard.com/cpa/ma/CPAMA0101_01.hc'
   const jar = initial.map((cookie) => ({ ...cookie }))
-  const identity = (cookie: Cookie) =>
+  const identity = (cookie: Cookie): string =>
     JSON.stringify([cookie.name, cookie.domain?.replace(/^\./, ''), cookie.hostOnly, cookie.path])
   const get = vi.fn(async ({ url, name }: { url: string; name: string }) => {
     const host = new URL(url).hostname
@@ -125,7 +156,7 @@ function fixture(initial: Cookie[] = []) {
       })
       .map((cookie) => ({ ...cookie }))
   })
-  const commit = (details: CookiesSetDetails) => {
+  const commit = (details: CookiesSetDetails): void => {
     const cookie: Cookie = {
       name: details.name!,
       value: details.value!,
@@ -179,7 +210,7 @@ function fixture(initial: Cookie[] = []) {
   }
 }
 
-async function unchanged(f: ReturnType<typeof fixture>) {
+async function unchanged(f: RecoveryFixture): Promise<HyundaiRegistrationRecoveryResult> {
   vi.useFakeTimers()
   f.auth.mockResolvedValue({ state: 'registration_required' })
   const result = recoverHyundaiRegistration(f.tab)
