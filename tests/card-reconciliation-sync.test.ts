@@ -125,38 +125,44 @@ afterEach(() => {
 })
 
 describe('backend-scoped known approval reconciliation', () => {
-  it('collects only backend-issued days and returns bounded metadata without raw rows', async () => {
-    const { tab, wc } = tabFixture()
-    const dates = [dayAgo(4), dayAgo(35), dayAgo(89)]
-    mocks.ssh
-      .mockReset()
-      .mockResolvedValueOnce(lease({ dates }))
-      .mockResolvedValueOnce(receipt({ dates, PRIVATE_ROWS: 'PRIVATE_REPLY' }))
-    await expect(reconcileKnownCards(tab, SSH)).resolves.toEqual({
-      state: 'checked',
-      checkedDays: 3,
-      reviewRows: 0,
-      updatedRows: 1
-    })
-    expect(mocks.lotte.mock.calls.map((call) => call[1])).toEqual(
-      dates.map((day) => ({ from: day, to: day }))
-    )
-    expect(mocks.samsung).not.toHaveBeenCalled()
-    expect(mocks.hyundai).not.toHaveBeenCalled()
-    expect(mocks.ssh.mock.calls.map((call) => call[2])).toEqual([
-      'reconcile-lease',
-      'reconcile-complete'
-    ])
-    expect(JSON.parse(mocks.ssh.mock.calls[0][0])).toEqual({ issuer: 'lotte_card', maxDays: 31 })
-    const input = JSON.parse(mocks.ssh.mock.calls[1][0])
-    expect(Object.keys(input).sort()).toEqual(['data', 'job_id'])
-    expect(Object.keys(input.data).sort()).toEqual(['collectedAt', 'days'])
-    expect(input.data.days).toHaveLength(3)
-    expect(fetch).not.toHaveBeenCalled()
-    expect(wc.listenerCount('did-start-navigation')).toBe(0)
-    expect(wc.listenerCount('destroyed')).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
-  })
+  it.each([3, 31])(
+    'collects only %s backend-issued days and returns bounded metadata without raw rows',
+    async (dayCount) => {
+      const { tab, wc } = tabFixture()
+      const dates =
+        dayCount === 3
+          ? [dayAgo(4), dayAgo(35), dayAgo(89)]
+          : Array.from({ length: dayCount }, (_, index) => dayAgo(4 + index))
+      mocks.ssh
+        .mockReset()
+        .mockResolvedValueOnce(lease({ dates }))
+        .mockResolvedValueOnce(receipt({ dates, PRIVATE_ROWS: 'PRIVATE_REPLY' }))
+      await expect(reconcileKnownCards(tab, SSH)).resolves.toEqual({
+        state: 'checked',
+        checkedDays: dayCount,
+        reviewRows: 0,
+        updatedRows: 1
+      })
+      expect(mocks.lotte.mock.calls.map((call) => call[1])).toEqual(
+        dates.map((day) => ({ from: day, to: day }))
+      )
+      expect(mocks.samsung).not.toHaveBeenCalled()
+      expect(mocks.hyundai).not.toHaveBeenCalled()
+      expect(mocks.ssh.mock.calls.map((call) => call[2])).toEqual([
+        'reconcile-lease',
+        'reconcile-complete'
+      ])
+      expect(JSON.parse(mocks.ssh.mock.calls[0][0])).toEqual({ issuer: 'lotte_card', maxDays: 31 })
+      const input = JSON.parse(mocks.ssh.mock.calls[1][0])
+      expect(Object.keys(input).sort()).toEqual(['data', 'job_id'])
+      expect(Object.keys(input.data).sort()).toEqual(['collectedAt', 'days'])
+      expect(input.data.days).toHaveLength(dayCount)
+      expect(fetch).not.toHaveBeenCalled()
+      expect(wc.listenerCount('did-start-navigation')).toBe(0)
+      expect(wc.listenerCount('destroyed')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
 
   it.each([
     ['recent day', { dates: [dayAgo(3)] }],

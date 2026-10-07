@@ -1,4 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Tab, TabManager } from '../src/main/browser/tab-manager'
 import type { VaultService } from '../src/main/vault/service'
 import { parseSettings } from '../src/shared/settings'
@@ -13,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   report: vi.fn(),
   reconcile: vi.fn(),
   recover: vi.fn(async () => true),
+  realStore: false,
   record: undefined as CardDailyFile | undefined
 }))
 vi.mock('../src/main/finance/card-agent-sync', () => ({ createCardAgentSync: mocks.configure }))
@@ -38,20 +42,38 @@ vi.mock('../src/main/finance/card-page-diagnostics', () => ({
           : null,
   inspectCardPage: mocks.inspect
 }))
-vi.mock('../src/main/finance/card-daily-store', () => ({
-  FileCardDailyStore: class {
-    read(): CardDailyFile {
-      return structuredClone(mocks.record ?? { version: 1, gapDays: 0, lastCovered: {} })
-    }
-    write(record: CardDailyFile): void {
-      mocks.record = structuredClone(record)
+vi.mock('../src/main/finance/card-daily-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/main/finance/card-daily-store')>()
+  return {
+    ...actual,
+    FileCardDailyStore: class {
+      private readonly store: InstanceType<typeof actual.FileCardDailyStore> | undefined
+      constructor(file: string) {
+        if (mocks.realStore) this.store = new actual.FileCardDailyStore(file)
+      }
+      read(): CardDailyFile {
+        return (
+          this.store?.read() ??
+          actual.cardDailyFileSchema.parse(
+            structuredClone(mocks.record ?? { version: 1, gapDays: 0, lastCovered: {} })
+          )
+        )
+      }
+      write(record: CardDailyFile): void {
+        const safe = actual.cardDailyFileSchema.parse(record)
+        this.store?.write(safe)
+        mocks.record = structuredClone(safe)
+      }
     }
   }
-}))
+})
 import { createCardDailyRuntime } from '../src/main/finance/card-daily-runtime'
+import { FileCardDailyStore } from '../src/main/finance/card-daily-store'
 import { issuerForCardUrl } from '../src/main/finance/card-page-diagnostics'
 
-function setup(options: { initialNavigationRace?: boolean; failBlank?: boolean } = {}): {
+function setup(
+  options: { initialNavigationRace?: boolean; failBlank?: boolean; stateFile?: string } = {}
+): {
   runtime: ReturnType<typeof createCardDailyRuntime>
   settings: ReturnType<typeof parseSettings>
   tabs: {
@@ -136,7 +158,7 @@ function setup(options: { initialNavigationRace?: boolean; failBlank?: boolean }
     vault: vault as unknown as VaultService,
     agent: { tryAcquireCardAutomation: () => release, isRunning: () => false },
     settings: () => settings,
-    stateFile: 'not-used',
+    stateFile: options.stateFile ?? 'not-used',
     onChanged: (status) => statuses.push(status)
   })
   return {
@@ -156,6 +178,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(new Date('2026-10-05T00:00:00Z'))
   mocks.record = undefined
+  mocks.realStore = false
   mocks.configure.mockResolvedValue(mocks.sync)
   mocks.inspect.mockImplementation(async (tab: Tab) => ({
     issuer: issuerForCardUrl(tab.view.webContents.getURL()),
@@ -185,6 +208,73 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('deterministic daily card runtime', () => {
+  it('persists all issuer receipts and 31-day checks to disk and restores them without repeating a run', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'card-daily-runtime-'))
+    const stateFile = join(directory, 'runs.json')
+    mocks.realStore = true
+    mocks.recover.mockResolvedValue(false)
+    mocks.sync.mockImplementation(async (tab: Tab) => ({
+      ok: true,
+      issuer: issuerForCardUrl(tab.view.webContents.getURL()),
+      approvalComplete: true,
+      cancellationComplete: issuerForCardUrl(tab.view.webContents.getURL()) === 'samsung_card',
+      complete: issuerForCardUrl(tab.view.webContents.getURL()) === 'samsung_card',
+      totalRows: 3,
+      insertedRows: 1,
+      updatedRows: 0,
+      reviewRows: 0
+    }))
+    mocks.reconcile.mockResolvedValue({
+      state: 'checked',
+      checkedDays: 31,
+      reviewRows: 0,
+      updatedRows: 2
+    })
+    const first = setup({ stateFile })
+    let restarted: ReturnType<typeof setup> | undefined
+    try {
+      await first.runtime.tick()
+      expect(mocks.sync).toHaveBeenCalledTimes(3)
+      expect(mocks.reconcile).toHaveBeenCalledTimes(3)
+      expect(mocks.recover).toHaveBeenCalledTimes(3)
+      expect(first.runtime.status().reason).toBeUndefined()
+      const store = new FileCardDailyStore(stateFile)
+      const persisted = store.read()
+      expect(persisted.run?.finishedAt).toBeDefined()
+      expect(persisted.run?.results.map((row) => row.cancellationComplete)).toEqual([
+        false,
+        true,
+        false
+      ])
+      expect(
+        persisted.run?.results.every(
+          (row) => row.state === 'saved' && row.reconciliation?.checkedDays === 31
+        )
+      ).toBe(true)
+      expect(
+        first.statuses
+          .filter((status) => status.phase === 'running')
+          .some((status) => status.results.filter((row) => row.state === 'saved').length === 2)
+      ).toBe(true)
+      const savedFile = readFileSync(stateFile, 'utf8')
+      const invalid = structuredClone(persisted)
+      invalid.run!.results[0].reconciliation!.checkedDays = 32
+      expect(() => store.write(invalid)).toThrow()
+      expect(readFileSync(stateFile, 'utf8')).toBe(savedFile)
+      first.runtime.dispose()
+      mocks.record = undefined
+      restarted = setup({ stateFile })
+      expect(restarted.runtime.status().results).toEqual(persisted.run?.results)
+      await restarted.runtime.tick()
+      expect(mocks.sync).toHaveBeenCalledTimes(3)
+      expect(mocks.reconcile).toHaveBeenCalledTimes(3)
+      expect(restarted.runtime.status().reason).toBeUndefined()
+    } finally {
+      first.runtime.dispose()
+      restarted?.runtime.dispose()
+      rmSync(directory, { recursive: true })
+    }
+  })
   it('waits for the committed history document after an earlier blank load resolves its promise', async () => {
     const f = setup()
     const create = f.tabs.create.getMockImplementation()!

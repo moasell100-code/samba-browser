@@ -35,6 +35,7 @@ const result = z
       .strict()
       .optional(),
     approvalComplete: z.boolean().optional(),
+    cancellationComplete: z.boolean().optional(),
     complete: z.boolean().optional(),
     totalRows: count.optional(),
     insertedRows: count.optional(),
@@ -43,7 +44,7 @@ const result = z
     reconciliation: z
       .object({
         state: z.enum(['no_work', 'checked', 'needs_review', 'failed']),
-        checkedDays: z.number().int().min(0).max(3),
+        checkedDays: z.number().int().min(0).max(31),
         reviewRows: count,
         updatedRows: count
       })
