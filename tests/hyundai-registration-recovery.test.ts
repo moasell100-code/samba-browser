@@ -305,7 +305,6 @@ describe('fixed Hyundai registration cookie recovery', () => {
     { samesite: 8 },
     { name: 'BAD NAME' },
     { value: 'BAD\u0000VALUE' },
-    { value: '' },
     { encrypted_value: new Uint8Array([1]) }
   ])('rejects unsupported retained source attributes %j before writing', async (override) => {
     backup([sourceRow(override)])
@@ -328,6 +327,20 @@ describe('fixed Hyundai registration cookie recovery', () => {
     const f = fixture()
     expect((await recoverHyundaiRegistration(f.tab)).restoredCookies).toBe(1)
     expect(f.jar).toEqual([candidate(row)])
+  })
+
+  it('preserves an unexpired empty value as a valid cookie without inventing a value', async () => {
+    const row = sourceRow({ value: '' })
+    backup([row])
+    const f = fixture()
+    expect(await recoverHyundaiRegistration(f.tab)).toEqual({
+      state: 'restored',
+      auth: 'pin_ready',
+      restoredCookies: 1
+    })
+    expect(f.jar).toEqual([candidate(row)])
+    expect(f.set.mock.calls[0][0].value).toBe('')
+    expect(f.set.mock.calls[0][0].expirationDate).toBe(candidate(row).expirationDate)
   })
 
   it.each(['schema', 'empty', 'duplicate', 'excessive', 'unavailable'])(

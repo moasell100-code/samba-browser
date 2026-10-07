@@ -146,7 +146,6 @@ async function retainedCookies(home: string): Promise<Cookie[]> {
             row.name_bytes !== Buffer.byteLength(row.name, 'utf8') ||
             invalidCookieName(row.name) ||
             typeof row.value !== 'string' ||
-            !row.value ||
             row.value.length > 4096 ||
             row.value_bytes !== Buffer.byteLength(row.value, 'utf8') ||
             invalidCookieValue(row.value) ||
