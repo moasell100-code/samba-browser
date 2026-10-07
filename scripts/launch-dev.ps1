@@ -4,11 +4,11 @@
 # 로그: %TEMP%\samba-dev-<시각>.log — 실행마다 새 파일을 쓴다. 죽은 앱의 자식 프로세스가
 # 예전 로그 핸들을 쥐고 있어도 새 실행이 막히지 않게(같은 이름 덮어쓰기는 '사용 중' 오류로 실패했다).
 # 7일 지난 로그는 지운다.
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'profile-path.ps1')
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 # 일반 개발 실행도 바로가기와 같은 기존 프로필을 쓴다. 검증/명시 프로필은 유지한다.
-if ($env:JAJA_VALIDATION -ne '1' -and !$env:SAMBA_USER_DATA) {
-  $env:SAMBA_USER_DATA = Join-Path $env:LOCALAPPDATA 'JAJA-Samba-Browser'
-}
+$env:SAMBA_USER_DATA = Get-JajaBrowserProfilePath -Override $env:SAMBA_USER_DATA -Validation:($env:JAJA_VALIDATION -eq '1')
 Get-ChildItem -Path $env:TEMP -Filter 'samba-dev-*.log' -ErrorAction SilentlyContinue |
   Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } |
   Remove-Item -Force -ErrorAction SilentlyContinue

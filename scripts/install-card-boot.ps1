@@ -2,6 +2,7 @@
 param([switch]$ValidateOnly)
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'profile-path.ps1')
 $script:CardTaskName = 'JAJA-CardCollector-Startup'
 $script:CardBootRestoreFailed = $false
 $script:CardBootPolicyBlocked = $false
@@ -18,11 +19,7 @@ function Assert-CardInstallPolicy {
 }
 
 function Get-CardBootProfilePath {
-    $profileBase = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    if ([string]::IsNullOrWhiteSpace($profileBase) -or ![IO.Path]::IsPathRooted($profileBase)) {
-        throw 'The Windows user profile is unavailable.'
-    }
-    return Join-Path $profileBase 'JAJA-Samba-Browser'
+    return Get-JajaBrowserProfilePath
 }
 
 function Test-CardBrowserRunning {

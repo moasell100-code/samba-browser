@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
+import { browserUserDataPath } from '../src/main/user-data'
 
 // Run the actual bootstrap/window modules without Electron or a real user profile.
 const sources = Object.fromEntries(
@@ -24,13 +25,22 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function bootstrap(options: { validation?: boolean; devUrl?: string; packaged?: boolean } = {}) {
+function bootstrap(
+  options: {
+    validation?: boolean
+    devUrl?: string
+    packaged?: boolean
+    localAppData?: string
+  } = {}
+) {
   const events: string[] = []
   const database = deferred<{ bookmarks: string[] }>()
   const firstReads: string[][] = []
   let readBookmarks: (() => string[]) | undefined
   let startup!: Promise<void>
   const quit = vi.fn()
+  const setPath = vi.fn()
+  const selectProfile = vi.fn(browserUserDataPath)
   const loads: Array<{ kind: 'file' | 'url'; target: string }> = []
   const windows: Array<{ webPreferences: { preload: string; contextIsolation: boolean } }> = []
   const load = async (kind: 'file' | 'url', target: string) => {
@@ -45,7 +55,7 @@ function bootstrap(options: { validation?: boolean; devUrl?: string; packaged?: 
     electron: {
       app: {
         isPackaged: !!options.packaged,
-        setPath: vi.fn(),
+        setPath,
         getPath: () => 'synthetic-profile',
         getAppPath: () => 'synthetic-app',
         setName: vi.fn(),
@@ -123,7 +133,7 @@ function bootstrap(options: { validation?: boolean; devUrl?: string; packaged?: 
     './finance/profile-process-lock': {
       acquireProfileProcessLock: async () => ({ release: vi.fn() })
     },
-    './user-data': { browserUserDataPath: () => undefined },
+    './user-data': { browserUserDataPath: selectProfile },
     './jaja/validation': {
       isJajaValidation: () => !!options.validation,
       configureValidationProfile: vi.fn(),
@@ -134,7 +144,11 @@ function bootstrap(options: { validation?: boolean; devUrl?: string; packaged?: 
     platform: 'win32',
     execPath: 'synthetic-electron.exe',
     argv: [],
-    env: { ELECTRON_RENDERER_URL: options.devUrl },
+    env: {
+      ELECTRON_RENDERER_URL: options.devUrl,
+      USERPROFILE: 'C:\\Users\\Synthetic User',
+      LOCALAPPDATA: options.localAppData
+    },
     stdout: { on: vi.fn() },
     stderr: { on: vi.fn() },
     on: vi.fn()
@@ -155,7 +169,7 @@ function bootstrap(options: { validation?: boolean; devUrl?: string; packaged?: 
   }
   modules['./window'] = execute('window')
   execute('index')
-  return { events, database, firstReads, loads, windows, quit, startup }
+  return { events, database, firstReads, loads, windows, quit, startup, setPath, selectProfile }
 }
 
 describe('main renderer startup readiness', () => {
@@ -191,6 +205,7 @@ describe('main renderer startup readiness', () => {
     expect(boot.events).toEqual(['window', 'validation-ipc', 'jaja', 'tab', 'renderer'])
     expect(boot.firstReads).toEqual([['validation bookmark']])
     expect(boot.loads[0].kind).toBe('file')
+    expect(boot.selectProfile).not.toHaveBeenCalled()
   })
 
   it.each([false, true])('preserves renderer selection when packaged=%s', async (packaged) => {
@@ -201,5 +216,21 @@ describe('main renderer startup readiness', () => {
       kind: packaged ? 'file' : 'url',
       target: packaged ? resolve(__dirname, '../src/renderer/index.html') : 'http://localhost:5173'
     })
+  })
+
+  it.each([
+    undefined,
+    'C:\\Users\\Synthetic User\\AppData\\Local',
+    'C:\\Users\\Synthetic User\\AppData\\Local\\Packages\\Sandbox\\LocalCache\\Local'
+  ])('selects the same physical profile regardless of AppData: %s', async (localAppData) => {
+    for (const packaged of [false, true]) {
+      const boot = bootstrap({ localAppData, packaged })
+      expect(boot.setPath).toHaveBeenCalledWith(
+        'userData',
+        'C:\\Users\\Synthetic User\\.jaja-browser'
+      )
+      boot.database.resolve({ bookmarks: ['saved bookmark'] })
+      await boot.startup
+    }
   })
 })

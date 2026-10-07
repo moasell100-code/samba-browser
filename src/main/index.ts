@@ -33,7 +33,7 @@ for (const stream of [process.stdout, process.stderr]) {
   })
 }
 
-// 실행 경로가 달라도 일반 Windows 개발판은 기존 로컬 프로필을 쓴다.
+// Windows 실행은 AppData 가상화와 무관한 사용자 홈의 공통 프로필을 쓴다.
 // 검증 프로필과 명시적인 E2E/개발 override 는 먼저 보존한다(app.whenReady 이전).
 const cardCollectorOnly = process.argv.includes('--card-collector-only')
 if (isJajaValidation()) configureValidationProfile(app)
@@ -42,7 +42,7 @@ else {
     platform: process.platform,
     isPackaged: app.isPackaged,
     override: process.env.SAMBA_USER_DATA,
-    localAppData: process.env.LOCALAPPDATA
+    userProfile: process.env.USERPROFILE
   })
   if (userData) app.setPath('userData', userData)
 }

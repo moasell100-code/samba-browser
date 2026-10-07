@@ -2,13 +2,10 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'profile-path.ps1')
 
 function Get-CardCollectorProfilePath {
-    $profileBase = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    if ([string]::IsNullOrWhiteSpace($profileBase) -or ![IO.Path]::IsPathRooted($profileBase)) {
-        throw 'The Windows user profile is unavailable.'
-    }
-    return Join-Path $profileBase 'JAJA-Samba-Browser'
+    return Get-JajaBrowserProfilePath
 }
 
 function New-CardCollectorStartInfo {
