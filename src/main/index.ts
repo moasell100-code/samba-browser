@@ -18,6 +18,7 @@ import { registerValidationFixtures } from './jaja/validation-fixtures'
 import { registerValidationIpc } from './jaja/validation-ipc'
 import { startCardDiagnosticsRuntime } from './finance/card-diagnostics-runtime'
 import { acquireProfileProcessLock } from './finance/profile-process-lock'
+import { browserUserDataPath } from './user-data'
 import {
   configureValidationProfile,
   isJajaValidation,
@@ -32,12 +33,19 @@ for (const stream of [process.stdout, process.stderr]) {
   })
 }
 
-// E2E 하네스용 userData 분리 — 실행 중인 사용자 앱의 DB 를 건드리지 않기 위해 복사본을 쓴다.
-// app.whenReady() 이전에 지정해야 하므로 모듈 최상단에서 처리한다
-const userDataOverride = process.env.SAMBA_USER_DATA
+// 실행 경로가 달라도 일반 Windows 개발판은 기존 로컬 프로필을 쓴다.
+// 검증 프로필과 명시적인 E2E/개발 override 는 먼저 보존한다(app.whenReady 이전).
 const cardCollectorOnly = process.argv.includes('--card-collector-only')
 if (isJajaValidation()) configureValidationProfile(app)
-else if (userDataOverride) app.setPath('userData', userDataOverride)
+else {
+  const userData = browserUserDataPath({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    override: process.env.SAMBA_USER_DATA,
+    localAppData: process.env.LOCALAPPDATA
+  })
+  if (userData) app.setPath('userData', userData)
+}
 // 프로필을 정한 뒤 시작해야 검증 크래시 자료도 기존 프로필에 남지 않는다.
 if (!cardCollectorOnly) crashReporter.start({ uploadToServer: false, compress: false })
 registerValidationNetwork(app)
