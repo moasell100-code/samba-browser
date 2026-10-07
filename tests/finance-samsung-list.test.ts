@@ -50,6 +50,46 @@ function receiptOf(frame: FinanceFrameCapture): FinanceCaptureReceipt {
 }
 
 describe('Samsung visible history list adapter', () => {
+  it.each(['업종', '분야'])(
+    'preserves the displayed %s detail without changing approval identity',
+    (label) => {
+      const html = row().replace(
+        '<ul class="row">',
+        `<ul class="row"><li><span class="fl_l">${label}</span><span class="fl_r">일반음식점<input value="input-secret"><script>script-secret</script><b hidden>hidden-secret</b></span></li>`
+      )
+      const frame = capture(`<ul id="inquire_append">${html}</ul>`)
+      expect(frame.lists![0].rows[0]).toMatchObject({
+        merchantIndustry: '일반음식점',
+        sourceRowId: '00123456'
+      })
+      expect(financeFrameCaptureSchema.safeParse(frame).success).toBe(true)
+      expect(JSON.stringify(receiptOf(frame))).not.toContain('일반음식점')
+    }
+  )
+  it('does not infer industry from merchant names, hidden details, unrelated labels or conflicts', () => {
+    for (const details of [
+      '<li hidden><span class="fl_l">업종</span><span class="fl_r">일반음식점</span></li>',
+      '<li><span class="fl_l">분류</span><span class="fl_r">일반음식점</span></li>',
+      '<li><span class="fl_l">업종</span><span class="fl_r"> </span></li>',
+      `<li><span class="fl_l">업종</span><span class="fl_r">${'가'.repeat(201)}</span></li>`,
+      '<li><span class="fl_l">업종</span><span class="fl_r">일반음식점</span></li><li><span class="fl_l">분야</span><span class="fl_r">소매업</span></li>'
+    ]) {
+      const html = row()
+        .replace('합성상점', '일반음식점')
+        .replace('<ul class="row">', `<ul class="row">${details}`)
+      expect(
+        capture(`<ul id="inquire_append">${html}</ul>`).lists![0].rows[0].merchantIndustry
+      ).toBeUndefined()
+    }
+  })
+  it('rejects unsupported industry metadata at the capture boundary', () => {
+    const frame = capture(`<ul id="inquire_append">${row()}</ul>`)
+    frame.lists![0].rows[0].merchantIndustry = '추정 업종'
+    expect(financeFrameCaptureSchema.safeParse(frame).success).toBe(false)
+    frame.lists![0].rows[0].details.push({ label: '업종', value: '가'.repeat(201) })
+    frame.lists![0].rows[0].merchantIndustry = '가'.repeat(201)
+    expect(financeFrameCaptureSchema.safeParse(frame).success).toBe(false)
+  })
   it('preserves head columns, detail label/value boundaries and the visible approval number', () => {
     const frame = capture(`<ul id="inquire_append">${row()}</ul>`)
     expect(frame.tables).toEqual([])

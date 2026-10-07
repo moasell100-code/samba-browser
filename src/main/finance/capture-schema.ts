@@ -62,6 +62,7 @@ const listRow = z
       )
       .max(17),
     detailsVisible: z.boolean(),
+    merchantIndustry: z.string().trim().min(1).max(200).optional(),
     sourceRowId: z
       .string()
       .regex(/^[A-Za-z0-9-]{1,80}$/)
@@ -75,6 +76,16 @@ const listRow = z
         row.details.filter(({ label, value }) => label === '승인번호' && value === row.sourceRowId)
           .length === 1)
   )
+  .refine((row) => {
+    if (!row.merchantIndustry) return true
+    const industries = new Set(
+      row.details
+        .filter(({ label }) => label === '업종' || label === '분야')
+        .map(({ value }) => value.trim())
+        .filter(Boolean)
+    )
+    return row.detailsVisible && industries.size === 1 && industries.has(row.merchantIndustry)
+  })
 
 const list = z
   .object({

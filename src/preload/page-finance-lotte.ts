@@ -73,16 +73,18 @@ export function captureLotteHistoryLists(
   }
   const readDetails = (
     row: Element
-  ): Pick<FinanceListRow, 'details' | 'detailsVisible' | 'sourceRowId'> => {
+  ): Pick<FinanceListRow, 'details' | 'detailsVisible' | 'sourceRowId' | 'merchantIndustry'> => {
     const incomplete = { details: [], detailsVisible: false }
     const containers = visibleMatches(row, ':scope > .useList')
     if (containers.length !== 1) return incomplete
     const lists = visibleMatches(containers[0], ':scope > ul')
     if (lists.length !== 1) return incomplete
     const pairs = visibleMatches(lists[0], ':scope > li')
-    if (pairs.length !== DETAIL_LABELS.length) return incomplete
+    if (pairs.length < DETAIL_LABELS.length || pairs.length > DETAIL_LABELS.length + 2)
+      return incomplete
     const details: FinanceListRow['details'] = []
-    for (const [index, pair] of pairs.entries()) {
+    let requiredIndex = 0
+    for (const pair of pairs) {
       const values = visibleMatches(pair, ':scope > span')
       if (values.length !== 1) return incomplete
       // The verified label is direct text outside the value span. Copy only
@@ -92,16 +94,30 @@ export function captureLotteHistoryLists(
         if (node.nodeType === 3) labelNode.appendChild(doc.createTextNode(node.textContent ?? ''))
       }
       const label = readers.readCell(labelNode)
-      if (label !== DETAIL_LABELS[index]) return incomplete
+      if (label !== '업종' && label !== '분야') {
+        if (label !== DETAIL_LABELS[requiredIndex]) return incomplete
+        requiredIndex += 1
+      }
       details.push({ label, value: readers.readCell(values[0]) })
     }
+    if (requiredIndex !== DETAIL_LABELS.length) return incomplete
     const approval = details.find(({ label }) => label === '승인번호')!.value
     const sourceRowId =
       /^[A-Za-z0-9-]{1,80}$/.test(approval) && !/^-+$/.test(approval) ? approval : undefined
+    const industries = new Set(
+      details
+        .filter(({ label }) => label === '업종' || label === '분야')
+        .map(({ value }) => value.trim())
+        .filter(Boolean)
+    )
+    const industry = industries.values().next().value
     return {
       details,
       detailsVisible: true,
-      ...(sourceRowId ? { sourceRowId } : {})
+      ...(sourceRowId ? { sourceRowId } : {}),
+      ...(industries.size === 1 && industry && industry.length <= 200
+        ? { merchantIndustry: industry }
+        : {})
     }
   }
   // Only a displayed, exactly labelled control in this list's local container

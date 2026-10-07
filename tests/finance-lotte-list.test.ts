@@ -91,6 +91,46 @@ function readers(): {
 }
 
 describe('Lotte observed visible history list adapter', () => {
+  it.each(['업종', '분야'])(
+    'allows an optional displayed %s detail and preserves the approval ID',
+    (label) => {
+      const detail = details().replace(
+        '<ul>',
+        `<ul><li>${label}<span>일반음식점<input value="input-secret"><script>script-secret</script><b hidden>hidden-secret</b></span></li>`
+      )
+      const frame = captureFinanceTables(docAt(root(withDetails(row(), detail))))
+      expect(frame.lists![0].rows[0]).toMatchObject({
+        merchantIndustry: '일반음식점',
+        sourceRowId: 'SYNTH-98765',
+        detailsVisible: true
+      })
+      const store = new FinanceCaptureStore()
+      try {
+        const receipt = store.save({ frames: [frame], failedFrames: 0, skippedFrames: 0 })
+        expect(
+          store.readForReview(receipt.captureId)!.page.frames[0].lists![0].rows[0].merchantIndustry
+        ).toBe('일반음식점')
+        expect(JSON.stringify(receipt)).not.toContain('일반음식점')
+      } finally {
+        store.clear()
+      }
+    }
+  )
+  it('omits missing, blank, overlong, conflicting and hidden industry values without guessing', () => {
+    for (const industry of [
+      '',
+      '<li>업종<span> </span></li>',
+      `<li>업종<span>${'가'.repeat(201)}</span></li>`,
+      '<li>업종<span>일반음식점</span></li><li>분야<span>소매업</span></li>',
+      '<li>업종<span>일반음식점</span></li><li>업종<span>소매업</span></li>',
+      '<li hidden>업종<span>일반음식점</span></li>'
+    ]) {
+      const detail = details().replace('<ul>', `<ul>${industry}`)
+      const frame = captureFinanceTables(docAt(root(withDetails(row(), detail))))
+      expect(frame.lists![0].rows[0].merchantIndustry).toBeUndefined()
+      expect(frame.lists![0].rows[0].sourceRowId).toBe('SYNTH-98765')
+    }
+  })
   it('preserves five visible field boundaries without interpreting names or inventing IDs', () => {
     const read = readers()
     const result = captureLotteHistoryLists(docAt(root(row())), read)

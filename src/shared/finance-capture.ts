@@ -34,6 +34,8 @@ export interface FinanceListRow {
   details: Array<{ label: string; value: string }>
   detailsVisible: boolean
   sourceRowId?: string
+  /** Explicit displayed 업종/분야 detail only; never part of transaction identity. */
+  merchantIndustry?: string
 }
 
 export interface FinanceListCapture {

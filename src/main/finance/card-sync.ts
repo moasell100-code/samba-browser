@@ -71,13 +71,16 @@ export async function collectRecentCard(options: {
   if (!parts.length) throw new Error('Card collection unavailable')
   const rows: CardApiResult['rows'] = []
   const identities = new Map<string, Map<string, CardApiResult['rows'][number]>>()
+  const industriesByRow = new Map<CardApiResult['rows'][number], Set<string>>()
   let identityConflict = false
   for (const row of parts.flatMap((part) => part.rows)) {
+    const industryText = row.merchantIndustry?.trim()
+    const industry = industryText && industryText.length <= 200 ? industryText : undefined
     const identity = JSON.stringify([row.issuer, row.sourceId])
     const payload = JSON.stringify(
       Object.fromEntries(
         Object.entries(row)
-          .filter(([key]) => key !== 'needsReview')
+          .filter(([key]) => key !== 'needsReview' && key !== 'merchantIndustry')
           .sort(([a], [b]) => a.localeCompare(b))
       )
     )
@@ -86,9 +89,18 @@ export async function collectRecentCard(options: {
     const same = versions.get(payload)
     if (same) {
       same.needsReview = [...new Set([...same.needsReview, ...row.needsReview])]
+      const industries = industriesByRow.get(same)!
+      if (industry) industries.add(industry)
+      // Conflicting descriptions remain absent; neither label establishes a new
+      // financial identity, and a later missing value must not erase known text.
+      if (industries.size === 1) same.merchantIndustry = industries.values().next().value
+      else delete same.merchantIndustry
       continue
     }
     const copy = { ...row, needsReview: [...row.needsReview] }
+    delete copy.merchantIndustry
+    if (industry) copy.merchantIndustry = industry
+    industriesByRow.set(copy, new Set(industry ? [industry] : []))
     if (versions.size) {
       identityConflict = true
       for (const version of [...versions.values(), copy])

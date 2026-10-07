@@ -231,10 +231,15 @@ function detailFields(row: HTMLElement): Map<string, string> | null {
 }
 function detailListFields(list: HTMLElement): Map<string, string> | null {
   const pairs = elements(list)
-  if (pairs.length !== DETAIL_LABELS.length || pairs.some((node) => node.tagName !== 'LI'))
+  if (
+    pairs.length < DETAIL_LABELS.length ||
+    pairs.length > DETAIL_LABELS.length + 2 ||
+    pairs.some((node) => node.tagName !== 'LI')
+  )
     return null
   const result = new Map<string, string>()
-  for (const [index, pair] of pairs.entries()) {
+  let requiredIndex = 0
+  for (const pair of pairs) {
     const label = pair.childNodes
       .filter((node) => node.nodeType === 3)
       .map((node) => node.text)
@@ -242,11 +247,17 @@ function detailListFields(list: HTMLElement): Map<string, string> | null {
       .replace(/\s+/g, '')
       .trim()
     const values = elements(pair).filter((node) => node.tagName === 'SPAN')
-    if (label !== DETAIL_LABELS[index] || values.length !== 1) return null
+    if (values.length !== 1) return null
+    if (label !== '업종' && label !== '분야') {
+      if (label !== DETAIL_LABELS[requiredIndex]) return null
+      requiredIndex += 1
+    }
     const value = text(values[0])
     if (value === null) return null
-    result.set(label, value)
+    const previous = result.get(label)
+    result.set(label, previous && value && previous !== value ? '' : previous || value)
   }
+  if (requiredIndex !== DETAIL_LABELS.length) return null
   return result
 }
 function rowFromHtml(
@@ -390,6 +401,10 @@ function rowFromHtml(
     approvalNumber && cardLast4
       ? ['lotte_card', verifiedCard?.cardKey ?? cardLast4, approvedAt.slice(0, 10), approvalNumber]
       : ['lotte_card', 'unverified', cardLabel, approvedAt, merchant, amount]
+  const industries = new Set(
+    [details?.get('업종'), details?.get('분야')].map((value) => value?.trim()).filter(Boolean)
+  )
+  const industry = industries.values().next().value
   return {
     issuer: 'lotte_card',
     sourceId: `lotte:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
@@ -401,6 +416,9 @@ function rowFromHtml(
     ...(verifiedCard ? { cardKey: verifiedCard.cardKey } : {}),
     cardLabel,
     merchant,
+    ...(industries.size === 1 && industry && industry.length <= 200
+      ? { merchantIndustry: industry }
+      : {}),
     amount,
     currency: 'KRW',
     status,

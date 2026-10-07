@@ -96,6 +96,45 @@ function tab(url = URL): Tab {
 }
 
 describe('Lotte private API normalization', () => {
+  it.each(['업종', '분야'])(
+    'preserves explicit %s text without changing source identity',
+    (label) => {
+      const base = parseLotteApiResponse(response()).rows[0]
+      const html = content().replace(
+        '<ul>',
+        `<ul><li>${label}<span>일반음식점<input value="input-secret"><script>script-secret</script></span></li>`
+      )
+      const result = parseLotteApiResponse(response(html)).rows[0]
+      expect(result).toMatchObject({
+        merchantIndustry: '일반음식점',
+        sourceId: base.sourceId,
+        needsReview: []
+      })
+      expect(result.approvalNumber).toBe(base.approvalNumber)
+      expect(JSON.stringify(result)).not.toContain('secret')
+    }
+  )
+  it('keeps optional industry bounded and does not invent it from absent or ambiguous details', () => {
+    const base = parseLotteApiResponse(response()).rows[0]
+    for (const industry of [
+      '',
+      '<li>업종<span> </span></li>',
+      `<li>업종<span>${'가'.repeat(201)}</span></li>`,
+      '<li>업종<span>일반음식점</span></li><li>분야<span>소매업</span></li>',
+      '<li>업종<span>일반음식점</span></li><li>업종<span>소매업</span></li>'
+    ]) {
+      const result = parseLotteApiResponse(response(content().replace('<ul>', `<ul>${industry}`)))
+        .rows[0]
+      expect(result.merchantIndustry).toBeUndefined()
+      expect(result.sourceId).toBe(base.sourceId)
+      expect(result.needsReview).toEqual([])
+    }
+    const boundary = parseLotteApiResponse(
+      response(content().replace('<ul>', `<ul><li>업종<span>${'가'.repeat(200)}</span></li>`))
+    ).rows[0]
+    expect(boundary.merchantIndustry).toHaveLength(200)
+    expect(boundary.sourceId).toBe(base.sourceId)
+  })
   it('accepts the public credit approval instrument label independently of the payment method', () => {
     const html = content().replace(
       '거래유형<input value="not-a-business-value"><span>일시불</span>',

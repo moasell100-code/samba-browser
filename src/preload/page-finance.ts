@@ -283,6 +283,15 @@ function samsungHistoryLists(doc: Document, url: URL, budget: CaptureBudget): Fi
         !/^-+$/.test(approval[0].value)
       )
         row.sourceRowId = approval[0].value
+      const industries = new Set(
+        details
+          .filter(({ label }) => label === '업종' || label === '분야')
+          .map(({ value }) => value.trim())
+          .filter(Boolean)
+      )
+      const industry = industries.values().next().value
+      if (detailsVisible && industries.size === 1 && industry && industry.length <= 200)
+        row.merchantIndustry = industry
       result.rows.push(row)
     }
     lists.push(result)

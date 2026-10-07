@@ -80,6 +80,51 @@ afterEach(() => {
 })
 
 describe('recent private card collection', () => {
+  it.each([
+    [undefined, '일반음식점', undefined, '일반음식점'],
+    ['일반음식점', undefined, '일반음식점', undefined],
+    ['일반음식점', '일반음식점', '일반음식점', '일반음식점']
+  ])(
+    'merges optional industry observations without creating an approval conflict',
+    async (...industries) => {
+      let index = 0
+      const collect = vi.fn(async (_tab: Tab, range: CardDateRange) => {
+        const merchantIndustry = industries[index++]
+        return result(range, [{ ...row(), ...(merchantIndustry ? { merchantIndustry } : {}) }], {
+          approvalComplete: true
+        })
+      })
+      const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+      expect(output.rows).toHaveLength(1)
+      expect(output.rows[0]).toMatchObject({
+        sourceId: 'synthetic-approval',
+        merchantIndustry: '일반음식점',
+        needsReview: []
+      })
+      expect(output.receipt).toMatchObject({ complete: true, approvalComplete: true, issues: [] })
+      expect(JSON.stringify(output.receipt)).not.toContain('일반음식점')
+    }
+  )
+  it('omits conflicting industry descriptions without changing approval identity or amount', async () => {
+    const industries = ['일반음식점', '소매업', undefined, '일반음식점']
+    let index = 0
+    const collect = vi.fn(async (_tab: Tab, range: CardDateRange) => {
+      const merchantIndustry = industries[index++]
+      return result(range, [{ ...row(), ...(merchantIndustry ? { merchantIndustry } : {}) }], {
+        approvalComplete: true
+      })
+    })
+    const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+    expect(output.rows).toHaveLength(1)
+    expect(output.rows[0].merchantIndustry).toBeUndefined()
+    expect(output.rows[0]).toMatchObject({
+      sourceId: 'synthetic-approval',
+      amount: 10000,
+      netAmount: 10000,
+      needsReview: []
+    })
+    expect(output.receipt).toMatchObject({ complete: true, approvalComplete: true, issues: [] })
+  })
   it('queries today-inclusive four Korean dates in order across the UTC date boundary', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-30T15:01:00Z'))

@@ -20,6 +20,8 @@ export interface CardApiRow {
   cardLast4?: string
   cardLabel?: string
   merchant: string
+  /** Explicit issuer-provided industry text only, at most 200 characters. */
+  merchantIndustry?: string
   /** Original approval amount; a cancellation screen may repeat this rather than its refund. */
   amount: number
   currency: 'KRW'
