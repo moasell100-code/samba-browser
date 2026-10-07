@@ -148,38 +148,53 @@ describe('Samsung fixed private statement API collector', () => {
     expect(result.receipt.issues).toEqual(['cancellation_query_basis_unverified'])
   })
 
-  it('certifies a late full cancellation only after the S51 summary and S12 current status match', async () => {
-    const f = fixture((query) =>
-      query.success(
-        response(
-          query.service,
-          query.service.endsWith('S51')
-            ? [
-                row(1, { aprDt: '20260817' }),
-                row(1, { aprDt: '20260817', aprAm: -12300, canRcpdt: '20260906' })
-              ]
-            : [row(1, { aprDt: '20260817', canRcpdt: '20260906', canProcsStsC: '2', poCanDvC: '' })]
+  it.each(['', ' ', '\t \r\n'])(
+    'certifies a late full cancellation with explicit blank flag %j only after the S51 summary and S12 current status match',
+    async (flag) => {
+      const f = fixture((query) =>
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51')
+              ? [
+                  row(1, { aprDt: '20260817' }),
+                  row(1, {
+                    aprDt: '20260817',
+                    aprAm: -12300,
+                    canRcpdt: '20260906',
+                    poCanDvC: flag
+                  })
+                ]
+              : [
+                  row(1, {
+                    aprDt: '20260817',
+                    canRcpdt: '20260906',
+                    canProcsStsC: '2',
+                    poCanDvC: flag
+                  })
+                ]
+          )
         )
       )
-    )
-    const result = await collectSamsungApi(f.tab, { from: '2026-08-17', to: '2026-08-17' })
-    expect(result.receipt).toMatchObject({
-      approvalComplete: true,
-      statusComplete: true,
-      cancellationComplete: false,
-      complete: false
-    })
-    expect(result.rows[1]).toMatchObject({
-      kind: 'status',
-      cancellationAmount: 12300,
-      needsReview: []
-    })
-    expect(result.rows[2]).toMatchObject({
-      eventDate: '2026-09-06',
-      cancellationEvidence: true,
-      needsReview: []
-    })
-  })
+      const result = await collectSamsungApi(f.tab, { from: '2026-08-17', to: '2026-08-17' })
+      expect(result.receipt).toMatchObject({
+        approvalComplete: true,
+        statusComplete: true,
+        cancellationComplete: false,
+        complete: false
+      })
+      expect(result.rows[1]).toMatchObject({
+        kind: 'status',
+        cancellationAmount: 12300,
+        needsReview: []
+      })
+      expect(result.rows[2]).toMatchObject({
+        eventDate: '2026-09-06',
+        cancellationEvidence: true,
+        needsReview: []
+      })
+    }
+  )
 
   it.each([
     'missing_s51_summary',
@@ -293,7 +308,7 @@ describe('Samsung fixed private statement API collector', () => {
     }
   )
 
-  it.each([null, undefined, '0', '99'])(
+  it.each([null, undefined, 0, '0', 'N', 'Y', '99'])(
     'does not promote a missing or unknown partial flag %s to full cancellation',
     async (flag) => {
       const cancellation = row(1, { canProcsStsC: '1', canRcpdt: '20261002' })
@@ -309,6 +324,11 @@ describe('Samsung fixed private statement API collector', () => {
         netAmount: null
       })
       expect(result.rows[0].cancellationEvidence).not.toBe(true)
+      expect(result.receipt).toMatchObject({
+        statusComplete: false,
+        cancellationComplete: false,
+        complete: false
+      })
       expect(result.rows[0].needsReview).toContain(
         flag == null
           ? 'cancellation_partial_flag_unavailable'
@@ -872,39 +892,42 @@ describe('Samsung fixed private statement API collector', () => {
     expect(result.receipt.issues).toContain('signed_out')
   })
 
-  it('never treats partial or pending cancellation original amounts as actual refunds', async () => {
-    const f = fixture((query) => {
-      query.success(
-        response(
-          query.service,
-          query.service.endsWith('S51')
-            ? [row(1, { aprAm: -500, poCanDvC: '1', canRcpdt: '20261002' })]
-            : [
-                row(1, {
-                  aprAm: 12300,
-                  canRcpdt: '20261002',
-                  canProcsStsC: '2',
-                  poCanDvC: '2'
-                }),
-                row(2, { canProcsStsC: '3', canRcpdt: '20261002' })
-              ]
+  it.each(['1', '2'])(
+    'never treats partial flag %s or pending padded blank cancellation original amounts as actual refunds',
+    async (flag) => {
+      const f = fixture((query) => {
+        query.success(
+          response(
+            query.service,
+            query.service.endsWith('S51')
+              ? [row(1, { aprAm: -500, poCanDvC: '1', canRcpdt: '20261002' })]
+              : [
+                  row(1, {
+                    aprAm: 12300,
+                    canRcpdt: '20261002',
+                    canProcsStsC: '2',
+                    poCanDvC: flag
+                  }),
+                  row(2, { canProcsStsC: '3', canRcpdt: '20261002', poCanDvC: ' ' })
+                ]
+          )
         )
-      )
-    })
-    const result = await collectSamsungApi(f.tab, RANGE)
-    expect(result.rows.map((item) => item.status)).toEqual([
-      'partially_cancelled',
-      'partially_cancelled',
-      'unknown'
-    ])
-    expect(result.rows.map((item) => item.amount)).toEqual([500, 12300, 12300])
-    expect(
-      result.rows.every((item) => item.cancellationAmount === null && item.netAmount === null)
-    ).toBe(true)
-    expect(result.rows[0].needsReview).toContain('amount_basis_unverified')
-    expect(result.rows[2].needsReview).toContain('cancellation_pending')
-    expect(result.rows[0].sourceId).not.toBe(result.rows[1].sourceId)
-  })
+      })
+      const result = await collectSamsungApi(f.tab, RANGE)
+      expect(result.rows.map((item) => item.status)).toEqual([
+        'partially_cancelled',
+        'partially_cancelled',
+        'unknown'
+      ])
+      expect(result.rows.map((item) => item.amount)).toEqual([500, 12300, 12300])
+      expect(
+        result.rows.every((item) => item.cancellationAmount === null && item.netAmount === null)
+      ).toBe(true)
+      expect(result.rows[0].needsReview).toContain('amount_basis_unverified')
+      expect(result.rows[2].needsReview).toContain('cancellation_pending')
+      expect(result.rows[0].sourceId).not.toBe(result.rows[1].sourceId)
+    }
+  )
 
   it('keeps approval IDs stable when amounts or merchant labels change', async () => {
     let revised = false

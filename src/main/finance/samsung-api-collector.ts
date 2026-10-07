@@ -196,7 +196,10 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
       review.push(process === '3' ? 'cancellation_pending' : 'cancellation_status_unrecognized')
     } else if (['1', '2'].includes(text(raw.poCanDvC))) {
       status = 'partially_cancelled'
-    } else if (mode === 'cancellation' && raw.poCanDvC !== '') {
+    } else if (
+      mode === 'cancellation' &&
+      (typeof raw.poCanDvC !== 'string' || raw.poCanDvC.trim() !== '')
+    ) {
       status = 'unknown'
       review.push(
         raw.poCanDvC === null
@@ -206,7 +209,8 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
     } else {
       status = 'cancelled'
       // D8 repeats the whole approval amount. Only a completed, explicitly
-      // nonpartial cancellation can prove that the whole amount was refunded.
+      // nonpartial cancellation with an explicit blank string (possibly padded)
+      // can prove that the whole amount was refunded. Missing flags stay unproved.
       verifiedFullCancellation =
         mode === 'cancellation' && signedAmount !== 0 && !!eventDate && eventDate >= date
     }
