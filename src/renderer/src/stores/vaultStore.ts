@@ -101,6 +101,7 @@ interface VaultStoreState {
   setCapturePw: (v: string) => void
   setCaptureErr: (v: string | null) => void
   refreshState: () => Promise<void>
+  reloadWorkspace: () => Promise<void>
   setup: (master: string, remember: boolean) => Promise<boolean>
   unlock: (master: string, remember: boolean) => Promise<boolean>
   // CapturePrompt 인라인 잠금 해제 전용. settings.set(vaultRememberDevice) 를 호출하지 않는다 —
@@ -144,6 +145,14 @@ const RECENT_LIMIT = 5
 function itemsKey(accountId: number | null): string {
   return accountId === null ? 'global' : String(accountId)
 }
+
+// Lists belong to the workspace that requested them; late IPC responses must not restore it.
+let workspaceVersion = 0
+let stateRequest = 0
+let accountsRequest = 0
+let recentRequest = 0
+let itemRequest = 0
+const itemRequests = new Map<string, number>()
 
 export const useVaultStore = create<VaultStoreState>((set, get) => ({
   state: 'uninitialized',
@@ -222,13 +231,58 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 
   refreshState: async () => {
+    const workspace = workspaceVersion
+    const request = ++stateRequest
     const r = await window.samba.vault.state()
-    if (!r.ok) return
+    if (workspace !== workspaceVersion || request !== stateRequest || !r.ok) return
     set({ state: r.data })
     if (r.data === 'unlocked') {
       await get().loadAccounts()
     } else {
-      set({ sites: [], accounts: [], itemsByAccount: {}, selectedAccountId: null })
+      accountsRequest += 1
+      recentRequest += 1
+      itemRequests.clear()
+      set({
+        sites: [],
+        accounts: [],
+        itemsByAccount: {},
+        selectedAccountId: null,
+        selectedGlobalItemId: null,
+        recentAccountIds: []
+      })
+    }
+  },
+
+  reloadWorkspace: async () => {
+    const workspace = ++workspaceVersion
+    itemRequests.clear()
+    set({
+      sites: [],
+      accounts: [],
+      itemsByAccount: {},
+      selectedAccountId: null,
+      selectedGlobalItemId: null,
+      recentAccountIds: [],
+      expandedGroups: new Set(),
+      query: '',
+      typeFilter: 'all',
+      tagFilter: [],
+      pendingUndo: null,
+      capture: null,
+      captureUnlocking: false,
+      capturePw: '',
+      captureErr: null,
+      passwordUpdated: null,
+      error: null,
+      loading: true
+    })
+    try {
+      await get().refreshState()
+      if (workspace === workspaceVersion && get().state === 'unlocked') {
+        await Promise.all([get().loadItems(null), get().loadRecent()])
+      }
+    } finally {
+      if (workspace === workspaceVersion) set({ loading: false })
     }
   },
 
@@ -290,13 +344,19 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 
   loadAccounts: async () => {
+    const workspace = workspaceVersion
+    const request = ++accountsRequest
     const [sitesR, accountsR] = await Promise.all([
       window.samba.vault.sites(),
       window.samba.vault.accounts()
     ])
+    if (workspace !== workspaceVersion || request !== accountsRequest) return
+    if (!sitesR.ok) return set({ error: sitesR.error })
+    if (!accountsR.ok) return set({ error: accountsR.error })
     set({
-      sites: sitesR.ok ? sitesR.data : [],
-      accounts: accountsR.ok ? accountsR.data : []
+      sites: sitesR.data,
+      accounts: accountsR.data,
+      error: null
     })
   },
 
@@ -310,9 +370,13 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 
   loadItems: async (accountId) => {
+    const workspace = workspaceVersion
+    const key = itemsKey(accountId)
+    const request = ++itemRequest
+    itemRequests.set(key, request)
     const r = await window.samba.vault.items(accountId)
-    if (!r.ok) return
-    set((s) => ({ itemsByAccount: { ...s.itemsByAccount, [itemsKey(accountId)]: r.data } }))
+    if (workspace !== workspaceVersion || itemRequests.get(key) !== request || !r.ok) return
+    set((s) => ({ itemsByAccount: { ...s.itemsByAccount, [key]: r.data } }))
   },
 
   putItem: async (input) => {
@@ -421,8 +485,10 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
 
   // 최근 사용 계정 — 감사 로그의 fill/reveal 기록에서 계정 id 를 최신순으로 뽑는다
   loadRecent: async () => {
+    const workspace = workspaceVersion
+    const request = ++recentRequest
     const r = await window.samba.vault.audit()
-    if (!r.ok) return
+    if (workspace !== workspaceVersion || request !== recentRequest || !r.ok) return
     const ids: number[] = []
     for (const log of r.data as AuditLogDto[]) {
       if (log.action !== 'fill' && log.action !== 'reveal') continue

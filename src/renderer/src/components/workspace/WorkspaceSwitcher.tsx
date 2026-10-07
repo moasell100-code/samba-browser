@@ -16,19 +16,13 @@ function chipColor(w: WorkspaceDto, index: number): string {
 /** 사이드바 상단의 작업공간 전환기 — 칩 목록 + 새로 만들기 + 우클릭 메뉴 */
 export function WorkspaceSwitcher(): React.JSX.Element | null {
   const { t } = useTranslation()
-  const { items, switchedNotice, load, create, switchTo, rename, remove, dismissNotice } =
+  const { items, switchedNotice, create, switchTo, rename, remove, dismissNotice } =
     useWorkspaceStore()
   // 'create' 면 새 작업공간 이름 입력, 숫자면 그 작업공간 이름 변경 중
   const [editing, setEditing] = useState<'create' | number | null>(null)
   const [draft, setDraft] = useState('')
   const [menuFor, setMenuFor] = useState<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    void load()
-    // 단축키(Ctrl+Alt+1~9)로 바뀐 경우에도 메인이 밀어 주는 이벤트로 따라간다
-    return window.samba.workspace.onChanged((w) => useWorkspaceStore.getState().applyChanged(w))
-  }, [load])
 
   useEffect(() => {
     if (editing !== null) inputRef.current?.focus()

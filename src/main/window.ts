@@ -50,10 +50,14 @@ export function createMainWindow(): BrowserWindow {
     else console.warn(`외부 열기 차단: ${url}`)
     return { action: 'deny' }
   })
-  if (!isJajaValidation() && is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
-  }
   return win
+}
+
+// DB 와 IPC 등록이 끝난 뒤 호출한다. 첫 렌더에서 보내는 조회도 반드시 처리할 수 있어야 한다.
+export async function loadMainWindowRenderer(win: BrowserWindow): Promise<void> {
+  if (!isJajaValidation() && is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    await win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    await win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
 }

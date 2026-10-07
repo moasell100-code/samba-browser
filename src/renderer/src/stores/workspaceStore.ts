@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type { WorkspaceDto } from '@shared/sync'
 import i18n from '@renderer/i18n'
+import { useBookmarkStore } from './bookmarkStore'
+import { useVaultStore } from './vaultStore'
 
 // 작업공간(브라우저 프로필) 목록과 활성 작업공간. 진실 원천은 메인이고,
 // 여기 값은 IPC 응답과 workspace:changed 이벤트를 그대로 비춘다.
@@ -19,6 +21,8 @@ interface WorkspaceState {
   // 메인이 밀어 준 변경(단축키 전환 포함)을 반영한다
   applyChanged: (w: WorkspaceDto) => void
 }
+
+let listRequest = 0
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
   // IPC 호출 공통 처리 — 실패하면 error 에 메시지를 남기고 목록은 건드리지 않는다
@@ -39,8 +43,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     switchedNotice: false,
 
     load: async () => {
+      const request = ++listRequest
       set({ loading: true })
       const r = await window.samba.workspace.list()
+      if (request !== listRequest) return
       if (r.ok) set({ items: r.data, loading: false, error: null })
       else set({ loading: false, error: r.error })
     },
@@ -68,11 +74,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     dismissNotice: () => set({ switchedNotice: false }),
 
     applyChanged: (w) => {
+      const changed = get().items.find((item) => item.isActive)?.id !== w.id
       set((s) => ({
         items: s.items.map((item) => ({ ...item, isActive: item.id === w.id })),
         switchedNotice: true
       }))
+      if (changed) {
+        void useBookmarkStore.getState().reloadWorkspace()
+        void useVaultStore.getState().reloadWorkspace()
+      }
       void get().load()
     }
   }
 })
+
+/** Keep this subscription at App level, including when the sidebar is collapsed. */
+export function subscribeWorkspaceChanges(): () => void {
+  const unsubscribe = window.samba.workspace.onChanged((w) =>
+    useWorkspaceStore.getState().applyChanged(w)
+  )
+  void useWorkspaceStore.getState().load()
+  return unsubscribe
+}

@@ -25,8 +25,11 @@ import { canResizeSidebar, sidebarWidthOf } from '@renderer/components/layout/si
 import { useVaultStore } from '@renderer/stores/vaultStore'
 import { useAuthStore } from '@renderer/stores/authStore'
 import { LoginGate } from '@renderer/components/layout/LoginGate'
+import { subscribeWorkspaceChanges } from '@renderer/stores/workspaceStore'
 
 export default function App(): React.JSX.Element {
+  // Subscribe outside the sidebar: collapsed sidebars still receive workspace shortcuts.
+  useEffect(() => subscribeWorkspaceChanges(), [])
   // 진행 띠에 보여 줄 도구 호출 상한(설정값). 읽기 전까지는 기본값
   const [toolCap, setToolCap] = useState(DEFAULT_SETTINGS.maxToolCalls)
   const [validation, setValidation] = useState(false)

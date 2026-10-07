@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, crashReporter, dialog, powerMonitor, session } from 'electron'
 import { is, optimizer } from '@electron-toolkit/utils'
-import { createMainWindow } from './window'
+import { createMainWindow, loadMainWindowRenderer } from './window'
 import { TabManager } from './browser/tab-manager'
 import { installSessionRequestHooks } from './browser/request-hooks'
 import { markQuitting } from './browser/popups'
@@ -186,6 +186,7 @@ app
       registerValidationIpc(win, tabs)
       jaja = registerJaja(win, tabs)
       tabs.create()
+      await loadMainWindowRenderer(win)
       return
     }
     db = await openDatabase(join(app.getPath('userData'), 'data.db'))
@@ -200,6 +201,7 @@ app
     vault = ipc.vault
     sync = ipc.sync
     jaja = registerJaja(win, tabs)
+    await loadMainWindowRenderer(win)
     // 하네스 모드: 저장된 사이트를 순회하며 자동 로그인을 검증하고 끝나면 앱을 종료한다.
     // 환경변수 스위치는 개발 빌드에서만 인정한다 — 패키징된 앱에서는 무시한다
     const e2eTarget = app.isPackaged ? undefined : process.env.SAMBA_E2E_LOGIN

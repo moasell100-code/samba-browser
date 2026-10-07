@@ -7,6 +7,7 @@ interface BookmarkState {
   expanded: Set<number>
   loading: boolean
   load: () => Promise<void>
+  reloadWorkspace: () => Promise<void>
   remove: (id: number) => Promise<void>
   toggle: (id: number) => void
   // --- 북마크 관리자 페이지용(전부 성공 시 load() 로 트리를 새로고침한다) ---
@@ -19,14 +20,18 @@ interface BookmarkState {
   exportBookmarks: () => Promise<string | undefined>
 }
 
+let loadRequest = 0
+
 export const useBookmarkStore = create<BookmarkState>((set, get) => ({
   tree: null,
   expanded: new Set(),
   loading: false,
 
   load: async () => {
+    const request = ++loadRequest
     set({ loading: true })
     const r = await window.samba.bookmarks.tree()
+    if (request !== loadRequest) return
     if (r.ok) {
       set((s) => {
         // 이미 펼친 적 있는 폴더 상태는 유지하고, 첫 로드 시 툴바 폴더만 기본으로 펼친다
@@ -39,6 +44,11 @@ export const useBookmarkStore = create<BookmarkState>((set, get) => ({
     } else {
       set({ loading: false })
     }
+  },
+
+  reloadWorkspace: async () => {
+    set({ tree: null, expanded: new Set() })
+    await get().load()
   },
 
   remove: async (id) => {
