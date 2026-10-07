@@ -17,7 +17,14 @@ vi.mock('electron', () => ({
 }))
 const win = {
   isDestroyed: vi.fn(() => false),
-  webContents: { id: 10, isDestroyed: vi.fn(() => false), send: vi.fn() }
+  once: vi.fn(),
+  webContents: {
+    id: 10,
+    isDestroyed: vi.fn(() => false),
+    send: vi.fn(),
+    focus: vi.fn(),
+    on: vi.fn()
+  }
 } as unknown as BrowserWindow
 const renderer = { sender: { id: 10 } } as IpcMainInvokeEvent
 const page = { sender: { id: 20 } } as IpcMainInvokeEvent
@@ -32,6 +39,9 @@ function register(): {
   const tabs = {
     setDefaultUrl: vi.fn(),
     setGestureConfig: vi.fn(),
+    onActivated: vi.fn(),
+    setInputHandler: vi.fn(),
+    active: () => null,
     listAll: () => [{ id: 'synthetic-tab' }],
     onChange,
     navigate
@@ -95,6 +105,30 @@ describe('minimal validation IPC bootstrap', () => {
       ok: false
     })
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('keeps page search controls renderer-only even in the isolated validation browser', async () => {
+    register()
+    const request = {
+      tabId: 'synthetic-tab',
+      sessionId: 1,
+      query: 'needle',
+      forward: true,
+      next: false
+    }
+    for (const [channel, args] of [
+      [IPC.pageFindSearch, [request]],
+      [IPC.pageFindClose, ['synthetic-tab', 1, false]]
+    ] as const) {
+      expect(await state.handlers.get(channel)!(page, ...args)).toEqual({
+        ok: false,
+        error: 'forbidden: renderer-only channel'
+      })
+    }
+    expect(await state.handlers.get(IPC.pageFindSearch)!(renderer, request)).toMatchObject({
+      ok: false,
+      error: 'Page search is no longer active'
+    })
   })
 
   it('publishes newly opened account tabs and subsequent selection changes to the UI', () => {

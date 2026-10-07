@@ -7,7 +7,7 @@ import { isJajaValidation } from './jaja/validation'
 // 메인 창 생성. 렌더러(React UI)가 전체를 덮고, 웹뷰는 그 위에 겹쳐 배치
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    title: isJajaValidation() ? '자자브라우저 · 검증 전용' : '자자브라우저',
+    title: isJajaValidation() ? 'JAJA browser · 검증 전용' : 'JAJA browser',
     // 작업표시줄·알트탭에서도 공식 자자 마크를 사용한다.
     icon: join(__dirname, '../../resources/jaja-icon.ico'),
     width: 1440,
@@ -35,7 +35,7 @@ export function createMainWindow(): BrowserWindow {
       appId: 'com.samba.browser',
       appIconPath: join(__dirname, '../../resources/jaja-icon.ico'),
       appIconIndex: 0,
-      relaunchDisplayName: '자자브라우저',
+      relaunchDisplayName: 'JAJA browser',
       // The launcher restores the shared user-home profile, including KeyMaster.
       relaunchCommand: app.isPackaged
         ? `"${process.execPath}"`

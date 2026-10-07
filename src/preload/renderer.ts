@@ -66,6 +66,7 @@ import {
   type NotifySendResult
 } from '../shared/ipc'
 import type { AgentImage } from '../shared/agent-image'
+import type { PageFindEvent, PageFindRequest } from '../shared/page-find'
 import type { JajaStatus } from '../shared/jaja'
 import type { CardDailyStatus } from '../shared/card-daily'
 import type { AiUsage } from '../shared/ai'
@@ -176,6 +177,17 @@ const api = {
       const h = (_: unknown, tabs: TabInfo[]): void => cb(tabs)
       ipcRenderer.on(IPC.tabUpdated, h)
       return () => ipcRenderer.off(IPC.tabUpdated, h)
+    }
+  },
+  pageFind: {
+    search: (request: PageFindRequest): Promise<IpcResult<void>> =>
+      invoke(IPC.pageFindSearch, request),
+    close: (tabId: string, sessionId: number, focusPage = true): Promise<IpcResult<void>> =>
+      invoke(IPC.pageFindClose, tabId, sessionId, focusPage),
+    onChanged: (cb: (event: PageFindEvent) => void): (() => void) => {
+      const listener = (_: unknown, event: PageFindEvent): void => cb(event)
+      ipcRenderer.on(IPC.pageFindChanged, listener)
+      return () => ipcRenderer.off(IPC.pageFindChanged, listener)
     }
   },
   layout: {

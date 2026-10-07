@@ -1,5 +1,5 @@
 appId: com.samba.browser
-productName: 자자브라우저
+productName: JAJA browser
 directories:
   buildResources: build
 files:
@@ -16,7 +16,7 @@ asarUnpack:
   - resources/**
   - node_modules/onnxruntime-node/**
 win:
-  executableName: 자자브라우저
+  executableName: JAJA browser
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -37,7 +37,7 @@ linux:
     - AppImage
     - snap
     - deb
-  maintainer: 자자브라우저
+  maintainer: JAJA browser
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}

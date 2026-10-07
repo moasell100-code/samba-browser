@@ -1,6 +1,14 @@
 {
   "app": {
-    "name": "JAJA Browser"
+    "name": "JAJA browser"
+  },
+  "pageFind": {
+    "label": "Find in page",
+    "result": "Page search results",
+    "previous": "Previous match (Shift+Enter)",
+    "next": "Next match (Enter)",
+    "close": "Close find (Esc)",
+    "error": "Search failed"
   },
   "sidebar": {
     "browser": "Browser",

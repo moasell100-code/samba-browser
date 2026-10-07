@@ -128,6 +128,34 @@ function open(wc: WebContents, disposition: string): OpenResult {
 describe('account session tab routing', () => {
   beforeEach(() => mock.sessions.clear())
 
+  it('attaches window keyboard routing once for both existing and future tabs', () => {
+    const tabs = new TabManager(new BrowserWindow())
+    const first = tabs.createInSession({
+      url: 'about:blank',
+      profile: 'test',
+      partition: 'persist:keys'
+    })
+    const handler = vi.fn(() => true)
+    tabs.setInputHandler(handler)
+    tabs.setInputHandler(handler)
+    const second = tabs.createInSession({
+      url: 'about:blank',
+      profile: 'test',
+      partition: 'persist:keys'
+    })
+    for (const tab of [first, second]) {
+      const contents = tabs.get(tab.id)!.view.webContents as unknown as {
+        listenerCount(event: string): number
+        emit(event: string, ...args: unknown[]): void
+      }
+      expect(contents.listenerCount('before-input-event')).toBe(1)
+      const preventDefault = vi.fn()
+      contents.emit('before-input-event', { preventDefault }, { type: 'keyDown', key: 'F5' })
+      expect(preventDefault).toHaveBeenCalledOnce()
+    }
+    expect(handler).toHaveBeenCalledTimes(2)
+  })
+
   it('명시적 계정 세션은 작업공간 변경과 같은 표시 이름에 영향받지 않는다', () => {
     const tabs = new TabManager(new BrowserWindow())
     tabs.setPartitionPrefix('persist:ws-first-')

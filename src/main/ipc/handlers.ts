@@ -17,6 +17,8 @@ import * as os from 'node:os'
 import { IPC, type IpcResult, type Layout, type Settings } from '../../shared/ipc'
 import { defaultTabUrl } from '../../shared/settings'
 import type { TabManager } from '../browser/tab-manager'
+import { createPageFindController } from '../browser/page-find-wiring'
+import type { PageFindRequest } from '../../shared/page-find'
 import { ClosedTabStack, newProfileName, runGesture, type GestureDeps } from '../browser/gestures'
 import { SettingsStore } from '../settings/store'
 import { setOcrEnabled } from '../agent/tools-ocr'
@@ -1089,12 +1091,22 @@ export function registerIpc(
   }
   // 캡처 단축키(Alt+1~6)도 같은 창 안 입력 경로를 쓴다. 캡처 배선은 아래에서 붙는다
   let handleCaptureShortcut: (input: CaptureShortcutInput) => boolean = () => false
-  const handleWindowShortcut = (input: CaptureShortcutInput): boolean =>
-    handleWorkspaceShortcut(input) || handleCaptureShortcut(input)
+  const pageFind = createPageFindController(win, tabs)
+  handleFromRenderer(IPC.pageFindSearch, (input: PageFindRequest) => pageFind.search(input))
+  handleFromRenderer(IPC.pageFindClose, (tabId: string, sessionId: number, focusPage: boolean) =>
+    pageFind.closeFor(tabId, sessionId, focusPage)
+  )
+  const handleWindowShortcut = (
+    input: CaptureShortcutInput,
+    source: 'page' | 'renderer'
+  ): boolean =>
+    handleWorkspaceShortcut(input) ||
+    handleCaptureShortcut(input) ||
+    pageFind.handleShortcut(input, source)
   win.webContents.on('before-input-event', (e, input) => {
-    if (handleWindowShortcut(input)) e.preventDefault()
+    if (handleWindowShortcut(input, 'renderer')) e.preventDefault()
   })
-  tabs.setInputHandler(handleWindowShortcut)
+  tabs.setInputHandler((input) => handleWindowShortcut(input, 'page'))
 
   handleFromRenderer(IPC.workspaceList, () => workspace.list())
   handleFromRenderer(IPC.workspaceCreate, (o: { name: string; color?: string }) =>

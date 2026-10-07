@@ -6,6 +6,8 @@ import { Sidebar } from '@renderer/components/layout/Sidebar'
 import { RightPanel, CollapsedPanelStrip } from '@renderer/components/layout/RightPanel'
 import { TabBar } from '@renderer/components/browser/TabBar'
 import { AddressBar } from '@renderer/components/browser/AddressBar'
+import { FindBar } from '@renderer/components/browser/FindBar'
+import { subscribePageFind, usePageFindStore } from '@renderer/stores/pageFindStore'
 import { ProgressBar } from '@renderer/components/browser/ProgressBar'
 import { WebArea } from '@renderer/components/browser/WebArea'
 import { PersonalInfoPage } from '@renderer/pages/PersonalInfoPage'
@@ -30,6 +32,7 @@ import { subscribeWorkspaceChanges } from '@renderer/stores/workspaceStore'
 export default function App(): React.JSX.Element {
   // Subscribe outside the sidebar: collapsed sidebars still receive workspace shortcuts.
   useEffect(() => subscribeWorkspaceChanges(), [])
+  useEffect(() => subscribePageFind(), [])
   // 진행 띠에 보여 줄 도구 호출 상한(설정값). 읽기 전까지는 기본값
   const [toolCap, setToolCap] = useState(DEFAULT_SETTINGS.maxToolCalls)
   const [validation, setValidation] = useState(false)
@@ -73,7 +76,7 @@ export default function App(): React.JSX.Element {
   // 창 제목 = 활성 탭 제목. 작업표시줄·알트탭에서 "네이버 - 자자브라우저"처럼 보인다.
   const activeTitle = useBrowserStore((s) => s.activeTab?.title ?? '')
   useEffect(() => {
-    const name = validation ? '자자브라우저 · 검증 전용' : t('app.name')
+    const name = validation ? 'JAJA browser · 검증 전용' : t('app.name')
     document.title = activeTitle && view === 'browser' ? `${activeTitle} - ${name}` : name
   }, [activeTitle, view, t, validation])
   // 저장된 패널 폭·사이드바 접힘 상태 복원(기기별 설정)
@@ -112,7 +115,8 @@ export default function App(): React.JSX.Element {
   // useLayoutEffect 로 페인트 전에 접어서, 뷰 전환 시 네이티브 뷰가 새 렌더러 콘텐츠 위에
   // 한 프레임 겹쳐 보이는 현상을 없앤다
   useLayoutEffect(() => {
-    if (view !== 'browser')
+    if (view !== 'browser') {
+      void usePageFindStore.getState().close(false)
       void window.samba.layout.set({
         x: 0,
         y: 0,
@@ -121,6 +125,7 @@ export default function App(): React.JSX.Element {
         viewportWidth: window.innerWidth,
         viewportHeight: window.innerHeight
       })
+    }
   }, [view])
   // 인증 상태를 아직 못 읽었으면 빈 화면(잠깐) — 로그인 전 화면이 스쳐 보이지 않게
   if (authState === null) return <div className="h-full bg-[var(--bg)]" />
@@ -150,6 +155,7 @@ export default function App(): React.JSX.Element {
             <>
               <TabBar />
               <AddressBar />
+              <FindBar />
               <ProgressBar
                 running={chat.status === 'running'}
                 label={

@@ -23,6 +23,9 @@ export const IPC = {
   tabBack: 'tab:back',
   tabForward: 'tab:forward',
   tabReload: 'tab:reload',
+  pageFindSearch: 'pageFind:search',
+  pageFindClose: 'pageFind:close',
+  pageFindChanged: 'pageFind:changed', // main → renderer, terms and counts only
   tabSetMobile: 'tab:setMobile',
   tabUpdated: 'tab:updated', // main → renderer 이벤트
   layoutSet: 'layout:set',

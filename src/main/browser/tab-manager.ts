@@ -206,6 +206,7 @@ export class TabManager {
   private contextMenuHook: ((wc: WebContents) => void) | null = null
   // 창 안에서만 듣는 키 입력 처리기(작업공간 Ctrl+Alt+1~9). true 를 돌려주면 페이지로 넘기지 않는다
   private inputHandler: ((input: Input) => boolean) | null = null
+  private inputHandlerContents = new WeakSet<WebContents>()
   // === 신규 추가분 끝 ========================================================
   // AI 작업이 실행 중인지 알려 주는 판정기(handlers 가 AgentRunner 를 연결한다).
   // 페이지 JS 대화상자는 작업 실행 중에만 자동 처리한다
@@ -312,6 +313,9 @@ export class TabManager {
   }
 
   private attachInputHandler(wc: WebContents): void {
+    // create() attaches before setInputHandler(); repeated configuration must not dispatch twice.
+    if (this.inputHandlerContents.has(wc)) return
+    this.inputHandlerContents.add(wc)
     wc.on('before-input-event', (e, input) => {
       if (this.inputHandler?.(input)) e.preventDefault()
     })

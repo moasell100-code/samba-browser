@@ -26,7 +26,7 @@ app
       target: powershell,
       args: `-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "${launcher}"`,
       cwd: browserRoot,
-      description: '자자브라우저',
+      description: 'JAJA browser',
       icon,
       iconIndex: 0,
       appUserModelId: 'com.samba.browser'

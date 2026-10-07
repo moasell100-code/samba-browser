@@ -12,6 +12,8 @@ import type { NewTabInitDto } from '../../shared/newtab'
 import { parseSettings, type Settings } from '../../shared/settings'
 import type { AuthState, WorkspaceDto } from '../../shared/sync'
 import type { TabManager } from '../browser/tab-manager'
+import { createPageFindController } from '../browser/page-find-wiring'
+import type { PageFindRequest } from '../../shared/page-find'
 import { assertFromRenderer, settingsForSender } from '../ipc/sender'
 import { isJajaValidation } from './validation'
 
@@ -60,6 +62,15 @@ export function registerValidationIpc(win: BrowserWindow, tabs: TabManager): voi
   handle(IPC.tabForward, (id: string) => tabs.forward(id))
   handle(IPC.tabReload, (id: string) => tabs.reload(id))
   handle(IPC.tabSetMobile, (id: string, mobile: boolean) => tabs.setMobile(id, mobile))
+  const pageFind = createPageFindController(win, tabs)
+  handle(IPC.pageFindSearch, (input: PageFindRequest) => pageFind.search(input))
+  handle(IPC.pageFindClose, (tabId: string, sessionId: number, focusPage: boolean) =>
+    pageFind.closeFor(tabId, sessionId, focusPage)
+  )
+  win.webContents.on('before-input-event', (event, input) => {
+    if (pageFind.handleShortcut(input, 'renderer')) event.preventDefault()
+  })
+  tabs.setInputHandler((input) => pageFind.handleShortcut(input))
   handle(IPC.layoutSet, (layout: Layout) => tabs.setLayout(layout))
   handle(IPC.authState, (): AuthState => ({
     signedIn: false,

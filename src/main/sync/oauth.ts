@@ -71,7 +71,7 @@ export function callbackHtml(ok: boolean): string {
   const lang = getMainLanguage()
   const other = syncMessages[lang === 'ko' ? 'en' : 'ko']
   const title = tr(ok ? 'auth.callbackTitleOk' : 'auth.callbackTitleFail')
-  const brand = lang === 'ko' ? '자자브라우저' : 'JAJA Browser'
+  const brand = 'JAJA browser'
   const body = tr(ok ? 'auth.callbackBodyOk' : 'auth.callbackBodyFail')
   const titleOther = other[ok ? 'auth.callbackTitleOk' : 'auth.callbackTitleFail']
   const bodyOther = other[ok ? 'auth.callbackBodyOk' : 'auth.callbackBodyFail']

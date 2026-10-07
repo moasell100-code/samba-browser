@@ -1,6 +1,14 @@
 {
   "app": {
-    "name": "자자브라우저"
+    "name": "JAJA browser"
+  },
+  "pageFind": {
+    "label": "페이지에서 찾기",
+    "result": "페이지 찾기 결과",
+    "previous": "이전 결과 (Shift+Enter)",
+    "next": "다음 결과 (Enter)",
+    "close": "찾기 닫기 (Esc)",
+    "error": "찾기 실패"
   },
   "sidebar": {
     "browser": "브라우저",
