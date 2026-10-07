@@ -468,6 +468,29 @@ export async function probeSamsungCancellationDetails(
   validAmountRows?: number
   duplicateTimestampRows?: number
   pagingFieldsPresent?: boolean
+  firstPageRows?: number
+  reportedTotal?: number
+  partialFlags?: {
+    missing: number
+    emptyString: number
+    whitespace: number
+    code0: number
+    code1: number
+    code2: number
+    flagN: number
+    flagY: number
+    other: number
+  }
+  processingStates?: {
+    missing: number
+    empty: number
+    completedApproval: number
+    completedPayment: number
+    pending: number
+    other: number
+  }
+  partialCandidates?: number
+  detailIdentityCandidates?: number
 }> {
   const range = validRange(suppliedRange)
   if (!range) return { ok: false, issue: 'invalid_date_range' }
@@ -495,19 +518,73 @@ export async function probeSamsungCancellationDetails(
     await guard()
     if (!page.success) return { ok: false, issue: 'invalid_response' }
     if (!page.data.ok) return { ok: false, issue: page.data.issue }
-    const candidate = page.data.rows.find(
-      (row) =>
-        text(row.poCanDvC) === '1' &&
-        ['1', '2'].includes(text(row.canProcsStsC)) &&
-        detailIdentityAvailable(row)
+    // Fixed enum buckets only. Unknown values, card/approval IDs and even
+    // arbitrary schema values are never used as histogram keys or returned.
+    const partialFlags = {
+      missing: 0,
+      emptyString: 0,
+      whitespace: 0,
+      code0: 0,
+      code1: 0,
+      code2: 0,
+      flagN: 0,
+      flagY: 0,
+      other: 0
+    }
+    const processingStates = {
+      missing: 0,
+      empty: 0,
+      completedApproval: 0,
+      completedPayment: 0,
+      pending: 0,
+      other: 0
+    }
+    for (const row of page.data.rows) {
+      const partial = text(row.poCanDvC)
+      if (row.poCanDvC === null) partialFlags.missing++
+      else if (row.poCanDvC === '') partialFlags.emptyString++
+      else if (typeof row.poCanDvC === 'string' && !partial) partialFlags.whitespace++
+      else if (partial === '0') partialFlags.code0++
+      else if (partial === '1') partialFlags.code1++
+      else if (partial === '2') partialFlags.code2++
+      else if (partial === 'N') partialFlags.flagN++
+      else if (partial === 'Y') partialFlags.flagY++
+      else partialFlags.other++
+      const process = text(row.canProcsStsC)
+      if (row.canProcsStsC === null) processingStates.missing++
+      else if (!process) processingStates.empty++
+      else if (process === '1') processingStates.completedApproval++
+      else if (process === '2') processingStates.completedPayment++
+      else if (process === '3') processingStates.pending++
+      else processingStates.other++
+    }
+    const candidates = page.data.rows.filter(
+      (row) => text(row.poCanDvC) === '1' && ['1', '2'].includes(text(row.canProcsStsC))
     )
-    if (!candidate) return { ok: false, issue: 'no_partial_cancellation_row' }
+    const eligible = candidates.filter(detailIdentityAvailable)
+    const rawShape = {
+      firstPageRows: page.data.rows.length,
+      reportedTotal: page.data.total,
+      partialFlags,
+      processingStates,
+      partialCandidates: candidates.length,
+      detailIdentityCandidates: eligible.length
+    }
+    const candidate = eligible[0]
+    if (!candidate)
+      return {
+        ok: false,
+        issue: candidates.length
+          ? 'partial_detail_identity_unavailable'
+          : 'no_partial_cancellation_row',
+        ...rawShape
+      }
     const detail = detailSchema.safeParse(
       await bounded(wc.executeJavaScript(detailScript(candidate), false))
     )
     await guard()
-    if (!detail.success) return { ok: false, issue: 'invalid_response' }
-    if (!detail.data.ok) return { ok: false, issue: detail.data.issue }
+    if (!detail.success) return { ok: false, issue: 'invalid_response', ...rawShape }
+    if (!detail.data.ok) return { ok: false, issue: detail.data.issue, ...rawShape }
     const stamps = new Set<string>()
     let duplicateTimestampRows = 0
     for (const event of detail.data.rows) {
@@ -517,6 +594,7 @@ export async function probeSamsungCancellationDetails(
     }
     return {
       ok: true,
+      ...rawShape,
       detailRows: detail.data.rows.length,
       validTimestampRows: detail.data.rows.filter((row) => detailEventDate(row.aprPoCanDtm)).length,
       validAmountRows: detail.data.rows.filter((row) => won(row.aprPoCanAm) !== null).length,

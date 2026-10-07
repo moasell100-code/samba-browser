@@ -515,6 +515,29 @@ describe('Samsung fixed private statement API collector', () => {
     const result = await probeSamsungCancellationDetails(f.tab, RANGE)
     expect(result).toEqual({
       ok: true,
+      firstPageRows: 1,
+      reportedTotal: 1,
+      partialFlags: {
+        missing: 0,
+        emptyString: 0,
+        whitespace: 0,
+        code0: 0,
+        code1: 1,
+        code2: 0,
+        flagN: 0,
+        flagY: 0,
+        other: 0
+      },
+      processingStates: {
+        missing: 0,
+        empty: 0,
+        completedApproval: 1,
+        completedPayment: 0,
+        pending: 0,
+        other: 0
+      },
+      partialCandidates: 1,
+      detailIdentityCandidates: 1,
       detailRows: 2,
       validTimestampRows: 2,
       validAmountRows: 2,
@@ -523,6 +546,73 @@ describe('Samsung fixed private statement API collector', () => {
     })
     for (const secret of ['PRIVATE_PROBE_CARD', '00000001', '20261002121544', '4000', '2000'])
       expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it('returns fixed raw flag histogram even when no public S41 popup candidate exists', async () => {
+    const flags = ['', null, ' ', '0', '2', 'N', 'Y', 'PRIVATE_ARBITRARY_FLAG']
+    const processes = [null, '', '1', '2', '3', 'PRIVATE_PROCESS_VALUE', '1', '2']
+    const f = fixture((query) =>
+      query.success(
+        response(
+          query.service,
+          flags.map((flag, index) =>
+            row(index + 1, { poCanDvC: flag, canProcsStsC: processes[index] })
+          )
+        )
+      )
+    )
+    const result = await probeSamsungCancellationDetails(f.tab, RANGE)
+    expect(result).toEqual({
+      ok: false,
+      issue: 'no_partial_cancellation_row',
+      firstPageRows: 8,
+      reportedTotal: 8,
+      partialFlags: {
+        missing: 1,
+        emptyString: 1,
+        whitespace: 1,
+        code0: 1,
+        code1: 0,
+        code2: 1,
+        flagN: 1,
+        flagY: 1,
+        other: 1
+      },
+      processingStates: {
+        missing: 1,
+        empty: 1,
+        completedApproval: 2,
+        completedPayment: 2,
+        pending: 1,
+        other: 1
+      },
+      partialCandidates: 0,
+      detailIdentityCandidates: 0
+    })
+    expect(f.calls.map((call) => call.service)).toEqual(['SHPPRP0801S12'])
+    for (const secret of [
+      'PRIVATE_ARBITRARY_FLAG',
+      'PRIVATE_PROCESS_VALUE',
+      '00000001',
+      '4321',
+      '12300'
+    ])
+      expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it('distinguishes a public partial popup flag from missing private identity without querying S41', async () => {
+    const f = fixture((query) =>
+      query.success(response(query.service, [row(1, { poCanDvC: '1', canProcsStsC: '2' })]))
+    )
+    const result = await probeSamsungCancellationDetails(f.tab, RANGE)
+    expect(result).toMatchObject({
+      ok: false,
+      issue: 'partial_detail_identity_unavailable',
+      partialCandidates: 1,
+      detailIdentityCandidates: 0,
+      partialFlags: { code1: 1 }
+    })
+    expect(f.calls).toHaveLength(1)
   })
 
   it('rejects unsafe probe ranges and changed navigation before returning any detail evidence', async () => {
