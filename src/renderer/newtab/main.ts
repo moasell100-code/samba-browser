@@ -87,6 +87,8 @@ function start(): void {
     ?.init()
     .then((data) => {
       const messages = MESSAGES[data.language] ?? MESSAGES.ko
+      const brand = document.getElementById('brand')
+      if (brand) brand.textContent = data.language === 'en' ? en.app.name : ko.app.name
       document.title = messages.title
       input.placeholder = messages.placeholder
       links.setAttribute('aria-label', messages.bookmarks)

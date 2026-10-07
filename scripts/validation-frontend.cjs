@@ -1,7 +1,7 @@
 // Standalone loopback pairing page. No real JAJA account, token, or service.
 const http = require('node:http')
 const port = 18301
-const html = `<!doctype html><html lang="ko"><meta charset="utf-8"><title>자자 브라우저 검증 연결</title>
+const html = `<!doctype html><html lang="ko"><meta charset="utf-8"><title>자자브라우저 검증 연결</title>
 <style>body{font:17px system-ui;background:#f4f6fb;color:#17243a;max-width:720px;margin:80px auto;padding:24px}main{background:white;padding:40px;border-radius:20px}b{color:#6747d7}h1{font-size:28px}p{line-height:1.8}#status{padding:16px;background:#edf3fd;border-radius:12px}</style>
 <main><b>검증 전용 · 운영 미연결</b><h1>별도 검증 서버에 연결</h1><p>가상 소싱 계정 8개와 이 컴퓨터의 검증 DB만 사용합니다.<br>기존 자동발주와 확장앱, 운영 계정은 연결하지 않습니다.</p><p id="status">검증 브라우저의 연결 요청을 기다리고 있습니다.</p></main>
 <script>

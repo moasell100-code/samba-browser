@@ -71,11 +71,12 @@ export function callbackHtml(ok: boolean): string {
   const lang = getMainLanguage()
   const other = syncMessages[lang === 'ko' ? 'en' : 'ko']
   const title = tr(ok ? 'auth.callbackTitleOk' : 'auth.callbackTitleFail')
+  const brand = lang === 'ko' ? '자자브라우저' : 'JAJA Browser'
   const body = tr(ok ? 'auth.callbackBodyOk' : 'auth.callbackBodyFail')
   const titleOther = other[ok ? 'auth.callbackTitleOk' : 'auth.callbackTitleFail']
   const bodyOther = other[ok ? 'auth.callbackBodyOk' : 'auth.callbackBodyFail']
   return `<!doctype html>
-<html lang="${lang}"><head><meta charset="utf-8"><title>SAMBA Browser — ${title}</title></head>
+<html lang="${lang}"><head><meta charset="utf-8"><title>${brand} — ${title}</title></head>
 <body style="font-family:system-ui,sans-serif;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#111">
 <main style="text-align:center;max-width:32rem;padding:2rem">
 <h1 style="font-size:1.25rem;margin:0 0 .5rem">${title}</h1>

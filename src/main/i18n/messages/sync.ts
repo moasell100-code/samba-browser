@@ -19,7 +19,7 @@ export const syncMessages = defineMessages({
     'auth.userMissing': '사용자 정보를 받지 못했습니다',
     'auth.callbackTitleOk': '로그인 완료',
     'auth.callbackTitleFail': '로그인 실패',
-    'auth.callbackBodyOk': '이 창을 닫아도 됩니다. SAMBA Browser 로 돌아가세요.',
+    'auth.callbackBodyOk': '이 창을 닫아도 됩니다. 자자브라우저로 돌아가세요.',
     'auth.callbackBodyFail': '로그인을 마치지 못했습니다. 이 창을 닫고 앱에서 다시 시도하세요.',
     'sync.deviceLoggedOutRemotely': '이 기기는 다른 기기에서 로그아웃되었습니다',
     'sync.deviceRevoked': '이 기기는 다른 기기에서 로그아웃됐어요',
@@ -44,7 +44,7 @@ export const syncMessages = defineMessages({
     'auth.userMissing': 'Did not receive user information',
     'auth.callbackTitleOk': 'Signed in',
     'auth.callbackTitleFail': 'Sign-in failed',
-    'auth.callbackBodyOk': 'You can close this window and return to SAMBA Browser.',
+    'auth.callbackBodyOk': 'You can close this window and return to JAJA Browser.',
     'auth.callbackBodyFail':
       'Sign-in did not complete. You can close this window and try again in the app.',
     'sync.deviceLoggedOutRemotely': 'This device was signed out from another device',

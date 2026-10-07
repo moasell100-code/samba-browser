@@ -7,9 +7,9 @@ import { isJajaValidation } from './jaja/validation'
 // 메인 창 생성. 렌더러(React UI)가 전체를 덮고, 웹뷰는 그 위에 겹쳐 배치
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    title: isJajaValidation() ? 'JAJA Browser · 검증 전용' : 'SAMBA Browser',
-    // 작업표시줄·알트탭에 삼바 로고가 보이게(개발 모드에서도 electron 기본 아이콘 대신)
-    icon: join(__dirname, '../../resources/icon.ico'),
+    title: isJajaValidation() ? '자자브라우저 · 검증 전용' : '자자브라우저',
+    // 작업표시줄·알트탭에서도 공식 자자 마크를 사용한다.
+    icon: join(__dirname, '../../resources/jaja-icon.ico'),
     width: 1440,
     height: 900,
     minWidth: 1000,
@@ -33,10 +33,10 @@ export function createMainWindow(): BrowserWindow {
     const launcher = join(app.getAppPath(), 'scripts/launch-local.ps1')
     win.setAppDetails({
       appId: 'com.samba.browser',
-      appIconPath: join(__dirname, '../../resources/icon.ico'),
+      appIconPath: join(__dirname, '../../resources/jaja-icon.ico'),
       appIconIndex: 0,
-      relaunchDisplayName: '자자 브라우저',
-      // The launcher restores the existing LocalAppData profile, including KeyMaster.
+      relaunchDisplayName: '자자브라우저',
+      // The launcher restores the shared user-home profile, including KeyMaster.
       relaunchCommand: app.isPackaged
         ? `"${process.execPath}"`
         : `"${powershell}" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "${launcher}"`

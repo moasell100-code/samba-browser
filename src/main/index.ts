@@ -52,7 +52,7 @@ registerValidationNetwork(app)
 registerValidationFixtures(app)
 
 // 개발 모드(electron.exe 직접 실행)에서도 앱 이름이 'Electron' 대신 제품명으로 보이게 한다
-app.setName('SAMBA Browser')
+app.setName('자자브라우저')
 
 // 같은 userData 로 두 번째 인스턴스가 뜨면 data.db 저장이 서로 충돌한다(rename EPERM).
 // 락은 userData 경로별이라 SAMBA_USER_DATA 를 나눈 E2E·검증 인스턴스는 나란히 뜰 수 있다
@@ -136,7 +136,7 @@ app
       if (!cardCollectorOnly) {
         await dialog.showMessageBox({
           type: 'info',
-          message: '카드 수집 또는 다른 자자 브라우저가 실행 중입니다. 잠시 후 다시 열어 주세요.'
+          message: '카드 수집 또는 다른 자자브라우저가 실행 중입니다. 잠시 후 다시 열어 주세요.'
         })
       }
       app.exit(0)

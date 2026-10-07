@@ -19,14 +19,14 @@ app
       'System32/WindowsPowerShell/v1.0/powershell.exe'
     )
     const launcher = join(browserRoot, 'scripts/launch-local.ps1')
-    const icon = join(browserRoot, 'resources/icon.ico')
+    const icon = join(browserRoot, 'resources/jaja-icon.ico')
     if (![powershell, launcher, icon, join(browserRoot, 'out/main/index.js')].every(existsSync))
       throw new Error('Local browser build is required')
     const options = {
       target: powershell,
       args: `-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "${launcher}"`,
       cwd: browserRoot,
-      description: '자자 브라우저',
+      description: '자자브라우저',
       icon,
       iconIndex: 0,
       appUserModelId: 'com.samba.browser'

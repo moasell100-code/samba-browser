@@ -70,10 +70,10 @@ export default function App(): React.JSX.Element {
     void refresh()
     return window.samba.tabs.onUpdated(setTabs)
   }, [refresh, setTabs])
-  // 창 제목 = 활성 탭 제목. 작업표시줄·알트탭에서 "네이버 - SAMBA Browser" 처럼 보인다
+  // 창 제목 = 활성 탭 제목. 작업표시줄·알트탭에서 "네이버 - 자자브라우저"처럼 보인다.
   const activeTitle = useBrowserStore((s) => s.activeTab?.title ?? '')
   useEffect(() => {
-    const name = validation ? 'JAJA Browser · 검증 전용' : t('app.name')
+    const name = validation ? '자자브라우저 · 검증 전용' : t('app.name')
     document.title = activeTitle && view === 'browser' ? `${activeTitle} - ${name}` : name
   }, [activeTitle, view, t, validation])
   // 저장된 패널 폭·사이드바 접힘 상태 복원(기기별 설정)

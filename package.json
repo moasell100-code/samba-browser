@@ -1,6 +1,6 @@
 {
   "name": "samba-browser",
-  "productName": "SAMBA Browser",
+  "productName": "자자브라우저",
   "version": "1.0.0",
   "description": "사람이 하는 웹 작업(로그인·인증·결제 포함)을 AI 가 대신 끝내주는 Chromium 기반 데스크톱 브라우저",
   "main": "./out/main/index.js",
