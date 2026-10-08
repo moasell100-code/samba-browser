@@ -256,6 +256,48 @@ describe('recent private card collection', () => {
     expect(output.receipt.issues).toContain('source_identity_conflict')
   })
 
+  it.each([true, false])(
+    'separates complete cancellation pagination from financial identity conflicts (%s)',
+    async (queryComplete) => {
+      const original: CardApiRow = {
+        ...row(),
+        kind: 'status',
+        status: 'partial_cancelled',
+        eventDate: '2026-10-01',
+        cancellationAmount: null,
+        netAmount: null,
+        needsReview: ['cancellation_amount_unverified']
+      }
+      const changed = { ...original, eventDate: '2026-10-02' }
+      let count = 0
+      const collect = vi.fn(async (_tab: Tab, range: CardDateRange) =>
+        result(range, count++ === 0 ? [original, changed] : [], {
+          complete: false,
+          approvalComplete: false,
+          cancellationComplete: false,
+          statusComplete: false,
+          cancellationQueryComplete: queryComplete || range.from !== RANGE.from,
+          cancellationQueryBasis: 'original_approval_date'
+        })
+      )
+      const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+      expect(output.rows).toHaveLength(2)
+      expect(
+        output.rows.every((item) => item.needsReview.includes('source_identity_conflict'))
+      ).toBe(true)
+      expect(output.rows.every((item) => item.cancellationAmount === null)).toBe(true)
+      expect(output.receipt).toMatchObject({
+        complete: false,
+        approvalComplete: false,
+        cancellationComplete: false,
+        statusComplete: false,
+        cancellationQueryComplete: queryComplete,
+        cancellationQueryBasis: 'original_approval_date'
+      })
+      expect(output.receipt.issues).toContain('source_identity_conflict')
+    }
+  )
+
   it('merges identical cross-day rows and unions review flags without mutating collectors', async () => {
     const original = row()
     let calls = 0

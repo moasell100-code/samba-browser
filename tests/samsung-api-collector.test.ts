@@ -466,6 +466,92 @@ describe('Samsung original-date cancellation-only collector', () => {
     }
   )
 
+  it('certifies a fully read first-page list while keeping two ambiguous partial observations held', async () => {
+    const f = fixture((query) =>
+      query.success(
+        response(
+          query.service,
+          query.service.endsWith('S51')
+            ? []
+            : [
+                row(1, { canRcpdt: '20261002', canProcsStsC: '2', poCanDvC: '2', aprAm: 12300 }),
+                row(1, { canRcpdt: '20261002', canProcsStsC: '2', poCanDvC: '2', aprAm: 15000 })
+              ]
+        )
+      )
+    )
+    const result = await collectSamsungCancellationApi(f.tab, RANGE)
+    expect(result.receipt).toMatchObject({
+      cancellationQueryComplete: true,
+      complete: false,
+      statusComplete: false,
+      cancellationComplete: false
+    })
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows[0].sourceId).toBe(result.rows[1].sourceId)
+    for (const item of result.rows) {
+      expect(item.cancellationEvidence).not.toBe(true)
+      expect(item.cancellationAmount).toBeNull()
+      expect(item.needsReview).toContain('duplicate_source_identity')
+      expect(item.needsReview).toContain('cancellation_detail_identity_unavailable')
+    }
+    expect(result.receipt.issues).not.toContain('repeated_cancellation_page_row')
+  })
+
+  it('keeps distinct raw partial observations listed across pages without inventing unique refund IDs', async () => {
+    const f = fixture((query) =>
+      query.success(
+        query.service.endsWith('S51')
+          ? response(query.service)
+          : response(
+              query.service,
+              query.data.pgeNo
+                ? [row(1, { canRcpdt: '20261002', canProcsStsC: '2', poCanDvC: '2', aprAm: 15000 })]
+                : Array.from({ length: 10 }, (_, i) =>
+                    row(i + 1, { canRcpdt: '20261002', canProcsStsC: '2', poCanDvC: '2' })
+                  ),
+              query.data.pgeNo ? 0 : 11,
+              query.data.pgeNo ? '' : 'NEXT'
+            )
+      )
+    )
+    const result = await collectSamsungCancellationApi(f.tab, RANGE)
+    expect(result.receipt.cancellationQueryComplete).toBe(true)
+    expect(result.rows).toHaveLength(11)
+    expect(result.rows[0].sourceId).toBe(result.rows[10].sourceId)
+    expect(result.rows[0].needsReview).toContain('duplicate_source_identity')
+    expect(result.rows[10].needsReview).toContain('duplicate_source_identity')
+    expect(result.rows.every((item) => item.cancellationEvidence !== true)).toBe(true)
+  })
+
+  it('rejects repeated canonical rows with reversed property order on another page despite changed cursor and matching total', async () => {
+    const repeated = Array.from({ length: 10 }, (_, i) =>
+      row(i + 1, { canRcpdt: '20261002', canProcsStsC: '2' })
+    )
+    const f = fixture((query) =>
+      query.success(
+        query.service.endsWith('S51')
+          ? response(query.service)
+          : response(
+              query.service,
+              query.data.pgeNo
+                ? repeated.map((item) => Object.fromEntries(Object.entries(item).reverse()))
+                : repeated,
+              query.data.pgeNo ? 0 : 20,
+              query.data.pgeNo ? '' : 'NEXT'
+            )
+      )
+    )
+    const result = await collectSamsungCancellationApi(f.tab, RANGE)
+    expect(result.receipt.cancellationQueryComplete).toBe(false)
+    expect(result.receipt.issues).toContain('repeated_cancellation_page_row')
+    expect(
+      result.rows.every(
+        (item) => item.cancellationEvidence !== true && item.cancellationAmount === null
+      )
+    ).toBe(true)
+  })
+
   it('rejects a three-month direct call so only orchestration can chunk the wider period', async () => {
     const f = fixture()
     const result = await collectSamsungCancellationApi(f.tab, {

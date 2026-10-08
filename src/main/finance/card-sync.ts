@@ -136,7 +136,6 @@ export async function collectRecentCard(options: {
       ...(parts.some((part) => part.receipt.cancellationQueryComplete !== undefined)
         ? {
             cancellationQueryComplete:
-              !identityConflict &&
               parts.length === dailyCardRanges(range).length &&
               parts.every((part) => part.receipt.cancellationQueryComplete === true),
             ...(parts[0].receipt.cancellationQueryBasis &&

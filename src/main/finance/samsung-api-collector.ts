@@ -797,6 +797,7 @@ const collectSamsungWithMode = async (
   let pages = 0
   let approvalComplete = false
   let cancellationStreamComplete = false
+  let cancellationListComplete = false
   let overseasEmptyVerified = false
   let statusComplete = false
   let cancellationQueryComplete = false
@@ -915,11 +916,13 @@ const collectSamsungWithMode = async (
       : ['approval', 'cancellation']
     for (const mode of modes) {
       let streamVerified = true
+      let listVerified = true
       let total: number | undefined
       let observed = 0
       let cursors: string[] = []
       const cursorHistory = new Set<string>()
       const sourceIds = new Map<string, CardApiRow>()
+      const rawCancellationPages = new Map<string, number>()
       for (let page = 1; ; page++) {
         await guard()
         if (pages >= maxPages) throw new QueryStopped('page_limit')
@@ -982,6 +985,7 @@ const collectSamsungWithMode = async (
           if (!row) {
             issues.add('invalid_transaction_row')
             streamVerified = false
+            listVerified = false
             continue
           }
           const day = row.approvedAt.slice(0, 10)
@@ -993,6 +997,25 @@ const collectSamsungWithMode = async (
           if (mode === 'cancellation' && (day < range.from || day > range.to)) {
             row.needsReview.push('cancellation_approval_outside_requested_range')
             streamVerified = false
+            listVerified = false
+          }
+          if (mode === 'cancellation') {
+            // Financial IDs may identify an original rather than a unique
+            // partial refund. Only a repeated canonical raw row on a different
+            // page establishes a pagination repetition, not that ambiguity.
+            const signature = digest(
+              Object.entries(item)
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([key, value]) =>
+                  JSON.stringify([key, key === 'aprAm' ? String(won(value)) : text(value)])
+                )
+            )
+            const priorPage = rawCancellationPages.get(signature)
+            if (priorPage !== undefined && priorPage !== page) {
+              issues.add('repeated_cancellation_page_row')
+              listVerified = false
+            }
+            rawCancellationPages.set(signature, page)
           }
           if (
             mode === 'cancellation' &&
@@ -1024,6 +1047,15 @@ const collectSamsungWithMode = async (
             if (!prior.needsReview.includes('duplicate_source_identity'))
               prior.needsReview.push('duplicate_source_identity')
             row.needsReview.push('duplicate_source_identity')
+            if (mode === 'cancellation') {
+              for (const ambiguous of [prior, row]) {
+                ambiguous.cancellationAmount = null
+                ambiguous.netAmount = null
+                delete ambiguous.cancellationEvidence
+                delete ambiguous.cancellationAmountType
+                delete ambiguous.cancellationEventId
+              }
+            }
           }
           sourceIds.set(row.sourceId, row)
           for (const review of row.needsReview) issues.add(review)
@@ -1040,7 +1072,10 @@ const collectSamsungWithMode = async (
         if (observed === total) {
           if (data.cursors.some(Boolean)) throw new QueryStopped('terminal_cursor_remaining')
           if (mode === 'approval') approvalComplete = streamVerified
-          else cancellationStreamComplete = streamVerified
+          else {
+            cancellationStreamComplete = streamVerified
+            cancellationListComplete = listVerified
+          }
           break
         }
         if (data.rows.length !== PAGE_SIZE) throw new QueryStopped('total_count_mismatch')
@@ -1192,7 +1227,7 @@ const collectSamsungWithMode = async (
     'cancellation_partial_flag_unrecognized'
   ])
   cancellationQueryComplete =
-    cancellationStreamComplete &&
+    cancellationListComplete &&
     overseasEmptyVerified &&
     cancellationObservations.every(
       (row) =>
