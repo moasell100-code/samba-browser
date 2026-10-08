@@ -80,6 +80,28 @@ afterEach(() => {
 })
 
 describe('recent private card collection', () => {
+  it('preserves each private Samsung workbook through daily result merging without leaking it into receipts', async () => {
+    const collect = vi.fn(async (_tab: Tab, range: CardDateRange) => ({
+      ...result(range, [{ ...row(range.from), issuer: 'samsung_card' as const }], {
+        issuer: 'samsung_card',
+        complete: false,
+        approvalComplete: false,
+        cancellationQueryComplete: true,
+        cancellationQueryBasis: 'original_approval_date'
+      }),
+      cancellationWorkbooks: [{ range, expectedRows: 2, contentBase64: 'PRIVATE_SYNTHETIC_BYTES' }]
+    }))
+    const output = await collectRecentCard({ tab: TAB, collect, range: RANGE })
+    expect(output.cancellationWorkbooks?.map((proof) => proof.range)).toEqual([
+      { from: '2026-09-29', to: '2026-09-29' },
+      { from: '2026-09-30', to: '2026-09-30' },
+      { from: '2026-10-01', to: '2026-10-01' },
+      { from: '2026-10-02', to: '2026-10-02' }
+    ])
+    expect(output.receipt.cancellationQueryComplete).toBe(true)
+    expect(JSON.stringify(output.receipt)).not.toMatch(/PRIVATE_SYNTHETIC_BYTES|contentBase64/)
+  })
+
   it.each([
     [undefined, '일반음식점', undefined, '일반음식점'],
     ['일반음식점', undefined, '일반음식점', undefined],

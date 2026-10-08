@@ -119,6 +119,9 @@ export async function collectRecentCard(options: {
   if (parts.length !== dailyCardRanges(range).length) issues.push('date_range_incomplete')
   return {
     rows,
+    ...(parts.some((part) => part.cancellationWorkbooks?.length)
+      ? { cancellationWorkbooks: parts.flatMap((part) => part.cancellationWorkbooks ?? []) }
+      : {}),
     receipt: {
       issuer: parts[0].receipt.issuer,
       range,

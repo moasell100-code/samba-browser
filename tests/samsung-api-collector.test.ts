@@ -1,9 +1,11 @@
 import { webcrypto } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { JSDOM } from 'jsdom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Tab } from '../src/main/browser/tab-manager'
 import { pageBridge } from '../src/main/browser/page-bridge'
+import { collectRecentCard } from '../src/main/finance/card-sync'
+import * as samsungExport from '../src/main/finance/samsung-excel-export'
 import {
   collectSamsungApi,
   collectSamsungCancellationApi,
@@ -13,6 +15,7 @@ import {
 const URL = 'https://www.samsungcard.com/personal/card/activity/UHPPRP0801M0.jsp'
 const RANGE = { from: '2026-09-29', to: '2026-10-02' }
 const windows: JSDOM[] = []
+const officialCancellationRows = new WeakMap<Tab, SourceRow[]>()
 type Query = {
   service: string
   data: Record<string, unknown>
@@ -20,6 +23,26 @@ type Query = {
   error: () => void
 }
 type SourceRow = Record<string, string | number | null>
+
+beforeEach(() => {
+  vi.spyOn(samsungExport, 'exportSamsungWorkbook').mockImplementation(async (tab, range) => {
+    const from = range.from.replaceAll('-', '')
+    const to = range.to.replaceAll('-', '')
+    const expectedRows = (officialCancellationRows.get(tab) ?? []).filter((row) => {
+      const day = String(row.aprDt).replaceAll('-', '')
+      return from <= day && day <= to
+    }).length
+    return {
+      issuer: 'samsung_card',
+      range,
+      scope: 'domestic_cancellation',
+      service: 'SHPPRP0801S32',
+      extension: 'xlsx',
+      expectedRows,
+      bytes: expectedRows ? Buffer.from('PRIVATE_SYNTHETIC_WORKBOOK') : Buffer.alloc(0)
+    }
+  })
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -107,6 +130,17 @@ function fixture(
       decodeXss: (value: string) => value,
       ajax(query: Query) {
         calls.push(query)
+        const success = query.success
+        query.success = (value) => {
+          if (query.service.endsWith('S12') && value && typeof value === 'object') {
+            const items = (value as Record<string, unknown>).hppRPDomCanIzSub01SVO
+            if (Array.isArray(items)) {
+              const existing = query.data.pgeNo ? (officialCancellationRows.get(tab) ?? []) : []
+              officialCancellationRows.set(tab, [...existing, ...items])
+            }
+          }
+          success(value)
+        }
         if (query.service.endsWith('S13')) {
           if (overseasHandler) overseasHandler(query, calls.length)
           else query.success(response(query.service))
@@ -147,6 +181,228 @@ function fixture(
 }
 
 describe('Samsung original-date cancellation-only collector', () => {
+  function paymentPartialFixture(
+    amounts = [4000, 8300],
+    original = 12300
+  ): ReturnType<typeof fixture> {
+    return fixture((query) =>
+      query.success(
+        response(
+          query.service,
+          query.service.endsWith('S51')
+            ? [row(1, { aprAm: original })]
+            : amounts.map((amount) =>
+                row(1, {
+                  aprAm: amount,
+                  canRcpdt: '20261002',
+                  canProcsStsC: '2',
+                  poCanDvC: '2'
+                })
+              )
+        )
+      )
+    )
+  }
+
+  function proofExport(
+    expectedRows = 2
+  ): ReturnType<typeof vi.spyOn<typeof samsungExport, 'exportSamsungWorkbook'>> {
+    return vi.spyOn(samsungExport, 'exportSamsungWorkbook').mockResolvedValue({
+      issuer: 'samsung_card',
+      range: RANGE,
+      scope: 'domestic_cancellation',
+      service: 'SHPPRP0801S32',
+      extension: 'xlsx',
+      expectedRows,
+      bytes: Buffer.from('SYNTHETIC_WORKBOOK_PRIVATE_BYTES')
+    })
+  }
+
+  it('aggregates completed payment refunds without inventing events and leaves proof verification to the backend', async () => {
+    const exported = proofExport()
+    exported.mockResolvedValueOnce({
+      issuer: 'samsung_card',
+      range: { from: '2026-09-29', to: '2026-09-30' },
+      scope: 'domestic_cancellation',
+      service: 'SHPPRP0801S32',
+      extension: 'xls',
+      expectedRows: 0,
+      bytes: Buffer.alloc(0)
+    })
+    const f = paymentPartialFixture()
+    const result = await collectSamsungCancellationApi(f.tab, RANGE)
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]).toMatchObject({
+      amount: 12300,
+      cancellationAmount: 12300,
+      status: 'cancelled',
+      netAmount: 0,
+      cancellationAmountType: 'cumulative',
+      cancellationEvidence: false,
+      needsReview: ['cancellation_workbook_proof_required']
+    })
+    expect(result.rows[0].cancellationEventId).toBeUndefined()
+    expect(result.receipt.cancellationQueryComplete).toBe(true)
+    expect(result.receipt.issues).not.toContain('duplicate_source_identity')
+    expect(result.receipt.rowCount).toBe(1)
+    expect(exported).toHaveBeenCalledTimes(2) // The standalone four-date range spans two months.
+    expect(exported.mock.calls.map(([, range]) => range)).toEqual([
+      { from: '2026-09-29', to: '2026-09-30' },
+      { from: '2026-10-01', to: '2026-10-02' }
+    ])
+    expect(result.cancellationWorkbooks).toHaveLength(2)
+    expect(result.cancellationWorkbooks?.[0]).toEqual({
+      range: { from: '2026-09-29', to: '2026-09-30' },
+      expectedRows: 0,
+      contentBase64: ''
+    })
+    expect(JSON.stringify(result.receipt)).not.toMatch(/PRIVATE_BYTES|contentBase64|4321|가맹점/)
+  })
+
+  it('attaches official same-range workbook bytes privately and keeps repeated equal partial amounts as a cumulative total', async () => {
+    const exported = proofExport()
+    const f = paymentPartialFixture([4000, 4000])
+    const range = { from: '2026-10-02', to: '2026-10-02' }
+    const result = await collectSamsungCancellationApi(f.tab, range)
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]).toMatchObject({
+      status: 'partially_cancelled',
+      amount: 12300,
+      cancellationAmount: 8000,
+      netAmount: 4300,
+      cancellationEvidence: false
+    })
+    expect(result.rows[0].cancellationEventId).toBeUndefined()
+    expect(result.cancellationWorkbooks).toEqual([
+      {
+        range,
+        expectedRows: 2,
+        contentBase64: Buffer.from('SYNTHETIC_WORKBOOK_PRIVATE_BYTES').toString('base64')
+      }
+    ])
+    expect(exported).toHaveBeenCalledWith(f.tab, range, {
+      scope: 'domestic_cancellation',
+      signal: undefined
+    })
+    expect(result.receipt.issues).toEqual(['cancellation_workbook_proof_required'])
+  })
+
+  it.each([false, true])(
+    'covers all four daily scopes when only the middle day has partial refunds (other full cancellation=%s)',
+    async (fullCancellation) => {
+      const range = { from: '2026-10-01', to: '2026-10-04' }
+      const f = fixture((query) => {
+        const day = String(query.data.inqrStrtdt)
+        let values: SourceRow[] = []
+        if (day === '20261002')
+          values = query.service.endsWith('S51')
+            ? [row()]
+            : [4000, 8300].map((amount) =>
+                row(1, {
+                  aprAm: amount,
+                  canRcpdt: '20261002',
+                  canProcsStsC: '2',
+                  poCanDvC: '2'
+                })
+              )
+        else if (day === '20261003' && fullCancellation)
+          values = [
+            row(2, {
+              aprDt: day,
+              aprAm: 1000,
+              ...(query.service.endsWith('S51') ? {} : { canRcpdt: day, canProcsStsC: '2' })
+            })
+          ]
+        query.success(response(query.service, values))
+      })
+      const result = await collectRecentCard({
+        tab: f.tab,
+        range,
+        collect: collectSamsungCancellationApi
+      })
+      expect(result.cancellationWorkbooks?.map((proof) => proof.range)).toEqual([
+        { from: '2026-10-01', to: '2026-10-01' },
+        { from: '2026-10-02', to: '2026-10-02' },
+        { from: '2026-10-03', to: '2026-10-03' },
+        { from: '2026-10-04', to: '2026-10-04' }
+      ])
+      expect(result.cancellationWorkbooks?.map((proof) => proof.expectedRows)).toEqual([
+        0,
+        2,
+        fullCancellation ? 1 : 0,
+        0
+      ])
+      expect(result.cancellationWorkbooks?.[0].contentBase64).toBe('')
+      expect(result.cancellationWorkbooks?.[3].contentBase64).toBe('')
+      expect(result.receipt.cancellationQueryComplete).toBe(true)
+      expect(
+        result.rows.find((value) =>
+          value.needsReview.includes('cancellation_workbook_proof_required')
+        )
+      ).toMatchObject({ cancellationAmount: 12300, amount: 12300, cancellationEvidence: false })
+      expect(JSON.stringify(result.receipt)).not.toMatch(/contentBase64|PRIVATE|4321/)
+    }
+  )
+
+  it('keeps the cumulative identity stable when the refund total changes', async () => {
+    proofExport()
+    const range = { from: '2026-10-02', to: '2026-10-02' }
+    const first = await collectSamsungCancellationApi(
+      paymentPartialFixture([2000, 4000]).tab,
+      range
+    )
+    const second = await collectSamsungCancellationApi(
+      paymentPartialFixture([4000, 5000]).tab,
+      range
+    )
+    expect(first.rows[0].sourceId).toBe(second.rows[0].sourceId)
+    expect(first.rows[0].cancellationAmount).toBe(6000)
+    expect(second.rows[0].cancellationAmount).toBe(9000)
+    expect(first.rows[0].cancellationEventId).toBeUndefined()
+    expect(second.rows[0].cancellationEventId).toBeUndefined()
+  })
+
+  it.each(['export_failed', 'unsupported_format', 'count_conflict', 'oversized'])(
+    'never certifies a candidate without verified official export evidence: %s',
+    async (fault) => {
+      const exported = proofExport()
+      if (fault === 'export_failed')
+        exported.mockRejectedValue(new Error('PRIVATE_PROVIDER_DETAIL'))
+      else
+        exported.mockResolvedValue({
+          issuer: 'samsung_card',
+          range: RANGE,
+          scope: 'domestic_cancellation',
+          service: 'SHPPRP0801S32',
+          extension: fault === 'unsupported_format' ? 'xls' : 'xlsx',
+          expectedRows: fault === 'count_conflict' ? 3 : 2,
+          bytes:
+            fault === 'oversized' ? Buffer.alloc(2 * 1024 * 1024 + 1) : Buffer.from('PRIVATE_BYTES')
+        })
+      const result = await collectSamsungCancellationApi(paymentPartialFixture().tab, {
+        from: '2026-10-02',
+        to: '2026-10-02'
+      })
+      expect(result.rows[0].cancellationEvidence).toBe(false)
+      expect(result.rows[0].needsReview).toEqual(['cancellation_workbook_proof_required'])
+      expect(result.cancellationWorkbooks).toBeUndefined()
+      expect(JSON.stringify(result.receipt)).not.toMatch(/PRIVATE/)
+      expect(result.receipt.cancellationQueryComplete).toBe(true)
+    }
+  )
+
+  it('does not aggregate refunds exceeding the uniquely proved original amount', async () => {
+    const exported = proofExport()
+    const result = await collectSamsungCancellationApi(paymentPartialFixture([8000, 8000]).tab, {
+      from: '2026-10-02',
+      to: '2026-10-02'
+    })
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows.every((row) => row.cancellationAmount === null)).toBe(true)
+    expect(exported).toHaveBeenCalledOnce()
+    expect(result.cancellationWorkbooks).toHaveLength(1)
+  })
+
   it('keeps S51 private for verification and emits no new approval rows', async () => {
     const f = fixture()
     const result = await collectSamsungCancellationApi(f.tab, RANGE)
@@ -376,7 +632,11 @@ describe('Samsung original-date cancellation-only collector', () => {
         expect(result.rows[0].needsReview).toEqual([])
       } else {
         expect(result.rows[0].cancellationEvidence).not.toBe(true)
-        expect(result.rows[0].cancellationAmount).toBeNull()
+        if (fault === 'unsupported_partial') {
+          expect(result.rows[0].cancellationAmount).toBe(12300)
+          expect(result.rows[0].needsReview).toContain('cancellation_workbook_proof_required')
+          expect(result.cancellationWorkbooks).toHaveLength(2)
+        } else expect(result.rows[0].cancellationAmount).toBeNull()
         expect(result.rows[0].needsReview.length).toBeGreaterThan(0)
       }
       if (fault === 'wrong_original_amount')

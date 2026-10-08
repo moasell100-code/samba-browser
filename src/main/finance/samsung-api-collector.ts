@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { pageBridge } from '../browser/page-bridge'
 import type { CardApiCollector, CardApiResult, CardApiRow, CardDateRange } from './card-api-types'
+import { exportSamsungWorkbook } from './samsung-excel-export'
 
 const ISSUER = 'samsung_card' as const
 const HISTORY_PATH = '/personal/card/activity/UHPPRP0801M0.jsp'
@@ -803,12 +804,16 @@ const collectSamsungWithMode = async (
   let cancellationQueryComplete = false
   const approvalObservations: CardApiRow[] = []
   const cancellationObservations: CardApiRow[] = []
+  const completedPaymentPartials = new Set<CardApiRow>()
+  const paymentPartialSnapshots = new Set<CardApiRow>()
+  let cancellationWorkbooks: CardApiResult['cancellationWorkbooks']
   const summaryAmounts = new Map<CardApiRow, number>()
   const cancellationMarkedApprovals = new Set<CardApiRow>()
   const range = validRange(suppliedRange)
   const result = (): CardApiResult => ({
     // Keep S51 privately for cross-checks, but emit each S12 snapshot only once.
     rows: cancellationOnly ? cancellationObservations : rows,
+    ...(cancellationOnly && cancellationWorkbooks ? { cancellationWorkbooks } : {}),
     receipt: {
       issuer: ISSUER,
       range: range || suppliedRange,
@@ -1022,6 +1027,8 @@ const collectSamsungWithMode = async (
             row.status === 'partially_cancelled' &&
             ['1', '2'].includes(text(item.canProcsStsC))
           ) {
+            if (text(item.poCanDvC) === '2' && text(item.canProcsStsC) === '2')
+              completedPaymentPartials.add(row)
             // Only code 1 exposes the official partial-cancellation popup.
             if (text(item.poCanDvC) !== '1' || !detailIdentityAvailable(item)) {
               row.needsReview.push('cancellation_detail_identity_unavailable')
@@ -1101,6 +1108,136 @@ const collectSamsungWithMode = async (
     left.approvalNumber === right.approvalNumber &&
     left.approvedAt === right.approvedAt &&
     left.merchant === right.merchant
+  // S12 code 2 / processing code 2 lists completed payment refunds. Multiple rows
+  // may share the original approval identity; they are not unique event IDs.
+  // Only the complete original-date list and a unique S51 original can prove
+  // a cumulative candidate, never financial proof by themselves. The backend
+  // must also match the current S32 "취소금액(원)" export before booking it.
+  // Never deduplicate refunds by amount or row order.
+  const cancellationRawCount = cancellationObservations.length
+  if (cancellationOnly && approvalComplete && cancellationListComplete) {
+    const allowed = new Set([
+      'cancellation_amount_unverified',
+      'cross_source_cancellation_match_required',
+      'cancellation_query_basis_unverified',
+      'cancellation_detail_identity_unavailable',
+      'duplicate_source_identity'
+    ])
+    const processed = new Set<CardApiRow>()
+    for (const candidate of [...completedPaymentPartials]) {
+      if (processed.has(candidate)) continue
+      const group = cancellationObservations.filter((row) => sameApproval(candidate, row))
+      for (const row of group) processed.add(row)
+      if (
+        !group.length ||
+        group.some(
+          (row) =>
+            !completedPaymentPartials.has(row) ||
+            !row.cardLast4 ||
+            !row.eventDate ||
+            row.eventDate < row.approvedAt.slice(0, 10) ||
+            row.amount <= 0 ||
+            row.needsReview.some((issue) => !allowed.has(issue))
+        )
+      )
+        continue
+      const originals = approvalObservations.filter(
+        (row) => !summaryAmounts.has(row) && sameApproval(candidate, row)
+      )
+      if (originals.length !== 1 || originals[0].needsReview.length) continue
+      const gross = originals[0].amount
+      const refunded = group.reduce((total, row) => total + row.amount, 0)
+      if (!Number.isSafeInteger(refunded) || refunded <= 0 || refunded > gross) continue
+      const eventDate = group
+        .map((row) => row.eventDate!)
+        .sort()
+        .at(-1)!
+      const summaries = [...summaryAmounts].filter(([row]) => sameApproval(candidate, row))
+      if (
+        summaries.length > 0 &&
+        (summaries.reduce((total, [, amount]) => total + amount, 0) !== refunded ||
+          summaries.some(([row]) => !!row.eventDate && row.eventDate > eventDate))
+      )
+        continue
+      const snapshot: CardApiRow = {
+        ...candidate,
+        sourceId: `${ISSUER}:${digest([
+          ISSUER,
+          'payment_cancellation_cumulative',
+          candidate.cardKey!,
+          candidate.approvalNumber!,
+          candidate.approvedAt,
+          candidate.merchant
+        ])}`,
+        amount: gross,
+        eventDate,
+        status: refunded === gross ? 'cancelled' : 'partially_cancelled',
+        cancellationAmount: refunded,
+        cancellationEvidence: false,
+        cancellationAmountType: 'cumulative',
+        netAmount: gross - refunded,
+        needsReview: ['cancellation_workbook_proof_required']
+      }
+      delete snapshot.cancellationEventId
+      paymentPartialSnapshots.add(snapshot)
+      const members = new Set(group)
+      for (const list of [rows, cancellationObservations]) {
+        const first = list.findIndex((row) => members.has(row))
+        if (first === -1) continue
+        const remaining = list.filter((row) => !members.has(row))
+        remaining.splice(first, 0, snapshot)
+        list.splice(0, list.length, ...remaining)
+      }
+    }
+  }
+  if (paymentPartialSnapshots.size) issues.add('cancellation_workbook_proof_required')
+  // collectRecentCard combines four daily results. Keep verified S32 evidence
+  // for every daily scope, including its official zero-count result, so a
+  // partial refund on one day never leaves holes in the combined proof range.
+  if (cancellationOnly && cancellationListComplete && overseasEmptyVerified) {
+    try {
+      const exports: NonNullable<CardApiResult['cancellationWorkbooks']> = []
+      let from = range.from
+      for (;;) {
+        const first = new Date(`${from}T00:00:00Z`)
+        const monthEnd = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0))
+          .toISOString()
+          .slice(0, 10)
+        const to = monthEnd < range.to ? monthEnd : range.to
+        await guard()
+        const workbook = await exportSamsungWorkbook(
+          tab,
+          { from, to },
+          {
+            signal: options.signal,
+            scope: 'domestic_cancellation'
+          }
+        )
+        await guard()
+        // The finance parser verifies XLSX tables. Unsupported formats remain
+        // review-only; no speculative binary parser or refund arithmetic.
+        if (workbook.expectedRows && workbook.extension !== 'xlsx')
+          throw new QueryStopped('cancellation_workbook_format_unverified')
+        if (workbook.bytes.length > 2 * 1024 * 1024)
+          throw new QueryStopped('cancellation_workbook_size_limit')
+        exports.push({
+          range: { from, to },
+          expectedRows: workbook.expectedRows,
+          contentBase64: workbook.bytes.toString('base64')
+        })
+        if (to === range.to) break
+        from = new Date(Date.parse(to) + 86_400_000).toISOString().slice(0, 10)
+      }
+      if (
+        exports.reduce((total, workbook) => total + workbook.expectedRows, 0) !==
+        cancellationRawCount
+      )
+        throw new QueryStopped('cancellation_workbook_count_conflict')
+      cancellationWorkbooks = exports
+    } catch (error) {
+      issues.add(error instanceof QueryStopped ? error.issue : 'cancellation_workbook_unavailable')
+    }
+  }
   // A completed S12 snapshot can establish a refund independently of unrelated
   // S51 markers. A contradictory observation of that same original still
   // invalidates the row's financial proof; it never becomes a ledger update.
@@ -1172,8 +1309,12 @@ const collectSamsungWithMode = async (
   for (const issue of [
     'cancellation_amount_unverified',
     'cross_source_cancellation_match_required',
-    'amount_basis_unverified'
+    'amount_basis_unverified',
+    'duplicate_source_identity',
+    'cancellation_detail_identity_unavailable',
+    'cancellation_query_basis_unverified'
   ]) {
+    if (issue === 'cancellation_query_basis_unverified' && !cancellationOnly) continue
     if (!rows.some((row) => row.needsReview.includes(issue))) issues.delete(issue)
   }
   // Official M0 calls the fixed inputs "이용기간"; D8 sends the same inputs

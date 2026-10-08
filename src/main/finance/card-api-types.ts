@@ -61,6 +61,12 @@ export interface CardApiReceipt {
 export interface CardApiResult {
   rows: CardApiRow[]
   receipt: CardApiReceipt
+  /** Private official S32 export evidence, delivered only to the finance backend. */
+  cancellationWorkbooks?: {
+    range: CardDateRange
+    expectedRows: number
+    contentBase64: string
+  }[]
 }
 
 export interface CardApiOptions {
