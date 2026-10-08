@@ -45,7 +45,9 @@ async function main() {
                 'card_restore_session',
                 'hyundai_restore_registration',
                 'card_export_history',
-                'card_cancellation_contract'
+                'card_cancellation_contract',
+                'card_collect_cancellations_preview',
+                'hyundai_cancellation_evidence'
               ].includes(toolName)
             ? 120_000
             : 45_000

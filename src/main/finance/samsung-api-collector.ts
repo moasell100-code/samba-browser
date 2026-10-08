@@ -11,7 +11,7 @@ const RUN_MS = 120_000
 const INITIAL_SESSION_WAIT_MS = 10_000
 const SESSION_POLL_MS = 250
 const MAX_ROWS = 10_000
-type Mode = 'approval' | 'cancellation'
+type Mode = 'approval' | 'cancellation' | 'overseas_cancellation'
 
 const cell = z.union([z.string().max(2000), z.number().finite(), z.null()])
 const rawRowSchema = z
@@ -51,14 +51,35 @@ const detailSchema = z.discriminatedUnion('ok', [
     .strict()
 ])
 type CancellationDetail = Extract<z.infer<typeof detailSchema>, { ok: true }>
+const diagnosticSchema = z
+  .object({
+    totalType: z.enum(['missing', 'null', 'string', 'number', 'other']),
+    total: z.number().int().min(0).max(MAX_ROWS).nullable(),
+    sourceType: z.enum(['missing', 'null', 'array', 'object', 'other']),
+    rowCount: z.number().int().min(0).max(MAX_ROWS).nullable(),
+    cursors: z
+      .array(
+        z.enum(['missing', 'null', 'empty', 'whitespace', 'nonempty_string', 'number', 'other'])
+      )
+      .max(9)
+  })
+  .strict()
+type PageDiagnostic = z.infer<typeof diagnosticSchema>
+type StreamDiagnostic = {
+  pages: (PageDiagnostic & { page: number; observedRows: number })[]
+  decision: string
+}
 const pageSchema = z.discriminatedUnion('ok', [
   z
     .object({
       ok: z.literal(true),
       total: z.number().int().min(0).max(MAX_ROWS),
       rows: z.array(rawRowSchema).max(PAGE_SIZE),
+      /** S13 counts only; foreign refund semantics are not imported as domestic KRW. */
+      rowCount: z.number().int().min(0).max(PAGE_SIZE).optional(),
       cursors: z.array(z.string().max(4000)).max(9),
-      scope: z.string().regex(/^[a-f0-9]{64}$/)
+      scope: z.string().regex(/^[a-f0-9]{64}$/),
+      diagnostic: diagnosticSchema.optional()
     })
     .strict(),
   z
@@ -68,6 +89,7 @@ const pageSchema = z.discriminatedUnion('ok', [
         'not_history_page',
         'page_not_ready',
         'card_scope_not_all',
+        'card_scope_changed',
         'request_timeout',
         'service_error',
         'invalid_response'
@@ -79,7 +101,8 @@ const pageSchema = z.discriminatedUnion('ok', [
           'ajax_callback_error',
           'invocation_exception'
         ])
-        .optional()
+        .optional(),
+      diagnostic: diagnosticSchema.optional()
     })
     .strict()
 ])
@@ -153,7 +176,7 @@ function unavailableCardIdentityShape(raw: RawRow['itgCdnoe']): string[] {
   return issues
 }
 
-function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
+function normalize(raw: RawRow, mode: Exclude<Mode, 'overseas_cancellation'>): CardApiRow | null {
   const date = isoDate(text(raw.aprDt))
   const signedAmount = won(raw.aprAm)
   const merchant = text(raw.mrcNm)
@@ -264,17 +287,25 @@ function normalize(raw: RawRow, mode: Mode): CardApiRow | null {
  * ENV is read without changing page filters. scard.ajax supplies its own session/common envelope.
  * Only whitelisted response fields cross to private main-process memory, never to an agent response.
  */
-function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: string[]): string {
+function pageScript(
+  mode: Mode,
+  range: CardDateRange,
+  page: number,
+  cursors: string[],
+  diagnostics = false
+): string {
   const input = JSON.stringify({
     mode,
     from: range.from.replaceAll('-', ''),
     to: range.to.replaceAll('-', ''),
     page,
-    cursors
+    cursors,
+    diagnostics
   })
   return `(async () => {
     const input = ${input};
-    const fail = (issue, serviceFailure) => ({ ok: false, issue, ...(serviceFailure ? { serviceFailure } : {}) });
+    let diagnostic;
+    const fail = (issue, serviceFailure) => ({ ok: false, issue, ...(serviceFailure ? { serviceFailure } : {}), ...(diagnostic ? { diagnostic } : {}) });
     const url = new URL(location.href);
     if (url.origin !== 'https://www.samsungcard.com' || url.username || url.password || url.pathname !== '${HISTORY_PATH}') return fail('not_history_page');
     if (typeof scard !== 'object' || typeof scard.ajax !== 'function' || typeof ENV !== 'object' || !ENV.CONDITION || !crypto.subtle) return fail('page_not_ready');
@@ -287,15 +318,20 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
       data[key] = value;
     }
     if (String(data.cardCntrNo).trim() !== '0' || String(data.pssCstMngtNo).trim() !== '0') return fail('card_scope_not_all');
-    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(scopeKeys.map(key => String(data[key])))));
+    const scopeSnapshot = scopeKeys.map(key => String(data[key]));
+    const sameScope = () => typeof ENV === 'object' && ENV.CONDITION && scopeKeys.every((key,index) => String(ENV.CONDITION[key]) === scopeSnapshot[index]);
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(scopeSnapshot)));
     const scope = Array.from(new Uint8Array(bytes), value => value.toString(16).padStart(2, '0')).join('');
     if (location.href !== url.href) return fail('not_history_page');
+    if (!sameScope()) return fail('card_scope_changed');
     Object.assign(data, { inqrStrtdt: input.from, inqrEnddt: input.to, no1PgeSize: ${PAGE_SIZE} });
     const approval = input.mode === 'approval';
-    const cursorCount = approval ? 9 : 7;
+    const overseas = input.mode === 'overseas_cancellation';
+    const cursorCount = approval ? 9 : overseas ? 4 : 7;
     for (let n = 1; n <= cursorCount; n++) data['no' + n + 'NextKeyCn'] = input.cursors[n - 1] || '';
     if (input.page > 1) Object.assign(data, { pgeNo: input.page, prtgPrvwYn: '' });
     if (approval) Object.assign(data, { strtAm: -99999999999, endAm: 99999999999, dtAry: '', amAry: '', cardUIzInqrDvC: 'Z', fpyIstmIz: { cardUMthDvC: '00', fpyIstmDvC: ' ' } });
+    else if (overseas) Object.assign(data, { canDvC: '', cardUIzInqrDvC: '3' });
     else Object.assign(data, { canDvC: '', cardUIzInqrDvC: 'H', domCanIz: { cardUMthDvC: '00', canDvC: '' } });
     return await new Promise(resolve => {
       let settled = false;
@@ -303,22 +339,42 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
       const timer = setTimeout(() => finish(fail('request_timeout')), ${REQUEST_MS});
       try {
         scard.ajax({
-          service: approval ? 'SHPPRP0801S51' : 'SHPPRP0801S12',
+          service: approval ? 'SHPPRP0801S51' : overseas ? 'SHPPRP0801S13' : 'SHPPRP0801S12',
           data,
           timeout: ${REQUEST_MS},
           success: response => {
             try {
+              if (location.href !== url.href) return finish(fail('not_history_page'));
+              if (!sameScope()) return finish(fail('card_scope_changed'));
               if (!response || typeof response !== 'object') return finish(fail('service_error', 'response_missing'));
               if (response.common && String(response.common.procsRsDvC) !== '0') return finish(fail('service_error', 'common_response_rejected'));
+              const key = approval ? 'hppRPCardUIzSub01SVO' : overseas ? 'hppRPFrnCanIzSub01SVO' : 'hppRPDomCanIzSub01SVO';
+              if (input.diagnostics) {
+                const own = key => Object.prototype.hasOwnProperty.call(response, key);
+                const rawTotal = response.totDlngCt;
+                const numericTotal = /^(?:0|[1-9]\\d*)$/.test(String(rawTotal)) ? Number(rawTotal) : null;
+                const source = response[key];
+                diagnostic = {
+                  totalType: !own('totDlngCt') ? 'missing' : rawTotal === null ? 'null' : typeof rawTotal === 'string' ? 'string' : typeof rawTotal === 'number' ? 'number' : 'other',
+                  total: Number.isSafeInteger(numericTotal) && numericTotal >= 0 && numericTotal <= ${MAX_ROWS} ? numericTotal : null,
+                  sourceType: !own(key) ? 'missing' : source === null ? 'null' : Array.isArray(source) ? 'array' : typeof source === 'object' ? 'object' : 'other',
+                  rowCount: Array.isArray(source) && source.length <= ${MAX_ROWS} ? source.length : null,
+                  cursors: Array.from({ length: cursorCount }, (_, i) => {
+                    const key = 'no' + (i + 1) + 'NextKeyCn';
+                    const value = response[key];
+                    return !own(key) ? 'missing' : value === null ? 'null' : value === '' ? 'empty' : typeof value === 'string' ? value.trim() === '' ? 'whitespace' : 'nonempty_string' : typeof value === 'number' ? 'number' : 'other';
+                  })
+                };
+              }
               const totalText = String(response.totDlngCt ?? '');
               if (!/^\\d+$/.test(totalText)) return finish(fail('invalid_response'));
               const total = Number(totalText);
               if (!Number.isSafeInteger(total) || total > ${MAX_ROWS}) return finish(fail('invalid_response'));
-              const key = approval ? 'hppRPCardUIzSub01SVO' : 'hppRPDomCanIzSub01SVO';
+              if (overseas && !Object.prototype.hasOwnProperty.call(response, key)) return finish(fail('invalid_response'));
               const source = response[key] == null && total === 0 ? [] : response[key];
               if (!Array.isArray(source) || source.length > ${PAGE_SIZE}) return finish(fail('invalid_response'));
               const fields = ['aprDt','aprT','aprno','aprAm','mrcNm','itgCdnoe','cdnoId','canRcpdt','poCanDvC','canProcsStsC'];
-              const rows = source.map(row => {
+              const rows = overseas ? [] : source.map(row => {
                 if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error();
                 const result = {};
                 for (const field of fields) {
@@ -330,12 +386,15 @@ function pageScript(mode: Mode, range: CardDateRange, page: number, cursors: str
                 return result;
               });
               const next = [];
+              if (overseas && source.some(row => !row || typeof row !== 'object' || Array.isArray(row))) return finish(fail('invalid_response'));
               for (let n = 1; n <= cursorCount; n++) {
-                const value = response['no' + n + 'NextKeyCn'] ?? '';
+                const value = overseas ? response['no' + n + 'NextKeyCn'] : response['no' + n + 'NextKeyCn'] ?? '';
                 if (typeof value !== 'string' || value.length > 4000) return finish(fail('invalid_response'));
-                next.push(value);
+                // The provider returns fixed-width spaces for absent cursor
+                // slots. Preserve every meaningful cursor byte for replay.
+                next.push(value.trim() === '' ? '' : value);
               }
-              finish({ ok: true, total, rows, cursors: next, scope });
+              finish({ ok: true, total, rows, cursors: next, scope, ...(overseas ? { rowCount: source.length } : {}), ...(diagnostic ? { diagnostic } : {}) });
             } catch { finish(fail('invalid_response')); }
           },
           error: () => finish(fail('service_error', 'ajax_callback_error'))
@@ -495,6 +554,7 @@ export async function probeSamsungCancellationDetails(
   }
   partialCandidates?: number
   detailIdentityCandidates?: number
+  streams?: Partial<Record<Mode, StreamDiagnostic>>
 }> {
   const range = validRange(suppliedRange)
   if (!range) return { ok: false, issue: 'invalid_date_range' }
@@ -517,11 +577,85 @@ export async function probeSamsungCancellationDetails(
   try {
     await guard()
     const page = pageSchema.safeParse(
-      await bounded(wc.executeJavaScript(pageScript('cancellation', range, 1, []), false))
+      await bounded(wc.executeJavaScript(pageScript('cancellation', range, 1, [], true), false))
     )
     await guard()
     if (!page.success) return { ok: false, issue: 'invalid_response' }
     if (!page.data.ok) return { ok: false, issue: page.data.issue }
+    const streams: Partial<Record<Mode, StreamDiagnostic>> = {}
+    const inspect = async (mode: Mode, supplied?: z.infer<typeof pageSchema>): Promise<void> => {
+      const stream: StreamDiagnostic = { pages: [], decision: 'bounded_page_limit' }
+      streams[mode] = stream
+      let observed = 0
+      let previousTotal: number | undefined
+      let previousScope: string | undefined
+      let cursors: string[] = []
+      for (let number = 1; number <= 2; number++) {
+        await guard()
+        const parsed =
+          supplied && number === 1
+            ? { success: true as const, data: supplied }
+            : pageSchema.safeParse(
+                await bounded(
+                  wc.executeJavaScript(pageScript(mode, range, number, cursors, true), false)
+                )
+              )
+        await guard()
+        if (!parsed.success) {
+          stream.decision = 'invalid_response'
+          return
+        }
+        const data = parsed.data
+        if (data.diagnostic)
+          stream.pages.push({
+            ...data.diagnostic,
+            page: number,
+            observedRows: observed + (data.diagnostic.rowCount ?? 0)
+          })
+        if (!data.ok) {
+          stream.decision = data.issue
+          return
+        }
+        if (previousScope !== undefined && previousScope !== data.scope) {
+          stream.decision = 'card_scope_changed'
+          return
+        }
+        if (previousTotal !== undefined && data.total !== 0 && previousTotal !== data.total) {
+          stream.decision = 'total_changed'
+          return
+        }
+        previousScope = data.scope
+        previousTotal ??= data.total
+        const count = data.rowCount ?? data.rows.length
+        observed += count
+        if (observed > previousTotal) {
+          stream.decision = 'count_exceeds_total'
+          return
+        }
+        if (observed === previousTotal) {
+          stream.decision = data.cursors.some(Boolean)
+            ? 'terminal_cursor_remaining'
+            : 'count_and_cursor_terminal'
+          return
+        }
+        if (count !== PAGE_SIZE) {
+          stream.decision = 'short_page_before_total'
+          return
+        }
+        if (!data.cursors.some(Boolean)) {
+          stream.decision = 'cursor_missing_before_total'
+          return
+        }
+        if (number > 1 && data.cursors.every((value, i) => value === cursors[i])) {
+          stream.decision = 'cursor_stalled'
+          return
+        }
+        cursors = data.cursors
+      }
+    }
+    await inspect('cancellation', page.data)
+    await inspect('approval')
+    await inspect('overseas_cancellation')
     // Fixed enum buckets only. Unknown values, card/approval IDs and even
     // arbitrary schema values are never used as histogram keys or returned.
     const partialFlags = {
@@ -572,7 +706,8 @@ export async function probeSamsungCancellationDetails(
       partialFlags,
       processingStates,
       partialCandidates: candidates.length,
-      detailIdentityCandidates: eligible.length
+      detailIdentityCandidates: eligible.length,
+      streams
     }
     const candidate = eligible[0]
     if (!candidate)
@@ -650,31 +785,50 @@ async function sessionPause(signal: AbortSignal): Promise<void> {
   })
 }
 
-export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, options = {}) => {
+const collectSamsungWithMode = async (
+  tab: Parameters<CardApiCollector>[0],
+  suppliedRange: CardDateRange,
+  options: NonNullable<Parameters<CardApiCollector>[2]> = {},
+  cancellationOnly = false
+): Promise<CardApiResult> => {
   const started = Date.now()
   const rows: CardApiRow[] = []
   const issues = new Set<string>()
   let pages = 0
   let approvalComplete = false
   let cancellationStreamComplete = false
+  let overseasEmptyVerified = false
   let statusComplete = false
+  let cancellationQueryComplete = false
   const approvalObservations: CardApiRow[] = []
   const cancellationObservations: CardApiRow[] = []
   const summaryAmounts = new Map<CardApiRow, number>()
   const cancellationMarkedApprovals = new Set<CardApiRow>()
   const range = validRange(suppliedRange)
   const result = (): CardApiResult => ({
-    rows,
+    // Keep S51 privately for cross-checks, but emit each S12 snapshot only once.
+    rows: cancellationOnly ? cancellationObservations : rows,
     receipt: {
       issuer: ISSUER,
       range: range || suppliedRange,
       pages,
-      rowCount: rows.length,
+      rowCount: cancellationOnly ? cancellationObservations.length : rows.length,
       complete: false,
-      approvalComplete,
+      approvalComplete: cancellationOnly ? false : approvalComplete,
       cancellationComplete: false,
-      statusComplete,
-      issues: [...issues],
+      statusComplete: cancellationOnly ? false : statusComplete,
+      ...(cancellationOnly
+        ? {
+            cancellationQueryComplete,
+            cancellationQueryBasis: 'original_approval_date' as const
+          }
+        : {}),
+      issues: [
+        ...issues,
+        ...(cancellationOnly && !overseasEmptyVerified
+          ? ['overseas_cancellation_scope_unverified']
+          : [])
+      ],
       elapsedMs: Date.now() - started
     }
   })
@@ -756,7 +910,10 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
     if (wc.isDestroyed() || !isHistoryUrl(wc.getURL())) throw new QueryStopped('not_history_page')
     initialUrl = wc.getURL()
     let scope: string | undefined
-    for (const mode of ['approval', 'cancellation'] as const) {
+    const modes: Mode[] = cancellationOnly
+      ? ['approval', 'cancellation', 'overseas_cancellation']
+      : ['approval', 'cancellation']
+    for (const mode of modes) {
       let streamVerified = true
       let total: number | undefined
       let observed = 0
@@ -788,9 +945,38 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
         }
         if (scope && data.scope !== scope) throw new QueryStopped('card_scope_changed')
         scope = data.scope
-        if (total !== undefined && total !== data.total) throw new QueryStopped('total_changed')
-        total = data.total
-        if (mode === 'cancellation') issues.add('cancellation_query_basis_unverified')
+        // Official D0/D8/DB retain TOT_DLNG_CT only on PAGE_NO === 1,
+        // then use that saved count for every subsequent "more" decision.
+        // Later responses may carry zero instead of repeating the header.
+        // A different positive count is still a conflicting query snapshot.
+        if (total !== undefined && data.total !== 0 && total !== data.total)
+          throw new QueryStopped('total_changed')
+        total ??= data.total
+        if (mode === 'overseas_cancellation') {
+          if (data.rowCount === undefined || data.rows.length || data.cursors.length !== 4)
+            throw new QueryStopped('invalid_response')
+          if (data.rowCount > 0) issues.add('overseas_cancellation_rows_unverified')
+          observed += data.rowCount
+          if (observed > total) throw new QueryStopped('total_count_mismatch')
+          if (observed === total) {
+            if (data.cursors.some(Boolean))
+              throw new QueryStopped('overseas_terminal_cursor_remaining')
+            // Only a proved empty S13 scope can complete this path today. Its
+            // spotDlngDt and currency/refund arithmetic differ from domestic S12.
+            overseasEmptyVerified = total === 0
+            break
+          }
+          if (data.rowCount !== PAGE_SIZE) throw new QueryStopped('total_count_mismatch')
+          if (!data.cursors.some(Boolean)) throw new QueryStopped('missing_pagination_cursor')
+          const key = digest(data.cursors)
+          if (cursorHistory.has(key)) throw new QueryStopped('pagination_stalled')
+          cursorHistory.add(key)
+          cursors = data.cursors
+          continue
+        }
+        if (data.rowCount !== undefined) throw new QueryStopped('invalid_response')
+        if (mode === 'cancellation' && !cancellationOnly)
+          issues.add('cancellation_query_basis_unverified')
         for (const item of data.rows) {
           const row = normalize(item, mode)
           if (!row) {
@@ -852,6 +1038,7 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
         observed += data.rows.length
         if (observed > total) throw new QueryStopped('total_count_mismatch')
         if (observed === total) {
+          if (data.cursors.some(Boolean)) throw new QueryStopped('terminal_cursor_remaining')
           if (mode === 'approval') approvalComplete = streamVerified
           else cancellationStreamComplete = streamVerified
           break
@@ -871,6 +1058,39 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
     issues.add(issue)
     if (/signed_out|auth|session|navigation|abort|card_scope_changed/.test(issue))
       approvalComplete = false
+  }
+  const sameApproval = (left: CardApiRow, right: CardApiRow): boolean =>
+    !!left.cardKey &&
+    !!left.approvalNumber &&
+    left.cardKey === right.cardKey &&
+    left.approvalNumber === right.approvalNumber &&
+    left.approvedAt === right.approvedAt &&
+    left.merchant === right.merchant
+  // A completed S12 snapshot can establish a refund independently of unrelated
+  // S51 markers. A contradictory observation of that same original still
+  // invalidates the row's financial proof; it never becomes a ledger update.
+  for (const row of cancellationObservations) {
+    if (row.cancellationEvidence !== true) continue
+    const originals = approvalObservations.filter(
+      (approval) => !summaryAmounts.has(approval) && sameApproval(approval, row)
+    )
+    const summaries = [...summaryAmounts].filter(([summary]) => sameApproval(summary, row))
+    if (
+      originals.some((original) => original.amount !== row.amount) ||
+      summaries.some(
+        ([summary, amount]) =>
+          amount !== row.cancellationAmount ||
+          (!!summary.eventDate && summary.eventDate !== row.eventDate)
+      )
+    ) {
+      row.needsReview.push('cancellation_cross_source_conflict')
+      issues.add('cancellation_cross_source_conflict')
+      row.cancellationAmount = null
+      row.netAmount = null
+      delete row.cancellationEvidence
+      delete row.cancellationAmountType
+      delete row.cancellationEventId
+    }
   }
   // S51 negative rows are summaries, not extra refunds. A uniquely matched,
   // proved S12 snapshot can safely explain the summary without adding money.
@@ -925,13 +1145,6 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
   // to S12 and displays aprDt separately from canRcpdt. Original-date Excel
   // exports and a live late cancellation confirm that this is approval-scope
   // status coverage. It does not prove an event-date cancellation feed.
-  const sameApproval = (left: CardApiRow, right: CardApiRow): boolean =>
-    !!left.cardKey &&
-    !!left.approvalNumber &&
-    left.cardKey === right.cardKey &&
-    left.approvalNumber === right.approvalNumber &&
-    left.approvedAt === right.approvedAt &&
-    left.merchant === right.merchant
   statusComplete =
     approvalComplete &&
     cancellationStreamComplete &&
@@ -965,5 +1178,40 @@ export const collectSamsungApi: CardApiCollector = async (tab, suppliedRange, op
         (row) => sameApproval(approval, row) && row.cancellationEvidence === true
       )
     )
+  // This flag describes the canonical cancellation query's bounded coverage,
+  // not the status of every unrelated S51 approval or the refund amount proof.
+  // Pending/partial rows can be fully listed while their refunds remain held.
+  const queryMetadataIssues = new Set([
+    'stable_approval_identity_unavailable',
+    'approval_time_unavailable',
+    'card_last4_unavailable',
+    'cancellation_approval_outside_requested_range',
+    'cancellation_event_date_unavailable',
+    'cancellation_status_unrecognized',
+    'cancellation_partial_flag_unavailable',
+    'cancellation_partial_flag_unrecognized'
+  ])
+  cancellationQueryComplete =
+    cancellationStreamComplete &&
+    overseasEmptyVerified &&
+    cancellationObservations.every(
+      (row) =>
+        !!row.cardKey &&
+        !!row.cardLast4 &&
+        !!row.approvalNumber &&
+        !!row.eventDate &&
+        row.eventDate >= row.approvedAt.slice(0, 10) &&
+        row.amount > 0 &&
+        !row.needsReview.some((issue) => queryMetadataIssues.has(issue))
+    )
   return result()
 }
+
+export const collectSamsungApi: CardApiCollector = (tab, range, options) =>
+  collectSamsungWithMode(tab, range, options)
+
+/** Original-date domestic snapshots plus an independently proved empty overseas
+ * S13 scope. Foreign nonempty rows stay unproved and never use domestic arithmetic.
+ * S51 remains private until a narrower official approval lookup is proved. */
+export const collectSamsungCancellationApi: CardApiCollector = (tab, range, options) =>
+  collectSamsungWithMode(tab, range, options, true)

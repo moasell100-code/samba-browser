@@ -88,12 +88,7 @@ export async function recoverCardCoverage(
     }
     // A cancellation feed without proven date semantics can keep its cursor pending
     // indefinitely. Recover approval gaps independently before revisiting that cursor.
-    const recovery =
-      window.approvalRange.from < recent.from
-        ? window.approvalRange
-        : window.cancellationRange.from < recent.from
-          ? window.cancellationRange
-          : undefined
+    const recovery = window.approvalRange.from < recent.from ? window.approvalRange : undefined
     if (!recovery) return true
     const result = await collectRecentCard({
       tab,
@@ -115,7 +110,7 @@ export async function recoverCardCoverage(
     )
       return false
     await saveCardCollection(result, options)
-    return result.receipt.approvalComplete === true && result.receipt.cancellationComplete === true
+    return result.receipt.approvalComplete === true
   } catch {
     return false
   }

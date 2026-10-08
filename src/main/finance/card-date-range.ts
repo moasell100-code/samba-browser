@@ -25,6 +25,41 @@ export function recentCardDateRange(now: Date = new Date()): CardDateRange {
   return { from, to }
 }
 
+/** Rolling calendar months, clamped to the ledger start; never a monthly full-history sweep. */
+export function cancellationCardDateRange(now: Date = new Date()): CardDateRange {
+  const to = recentCardDateRange(now).to
+  if (to < '2026-07-01') throw new Error('Cancellation date precedes ledger start')
+  const today = new Date(`${to}T00:00:00Z`)
+  const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 3, 1))
+  const lastDay = new Date(
+    Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)
+  ).getUTCDate()
+  first.setUTCDate(Math.min(today.getUTCDate(), lastDay))
+  return {
+    from:
+      first.toISOString().slice(0, 10) < '2026-07-01'
+        ? '2026-07-01'
+        : first.toISOString().slice(0, 10),
+    to
+  }
+}
+
+export function cancellationCardRanges(range: CardDateRange): CardDateRange[] {
+  if (!isCardDate(range.from) || !isCardDate(range.to))
+    throw new Error('Invalid cancellation range')
+  const from = Date.parse(range.from)
+  const to = Date.parse(range.to)
+  if (to < from || to - from > 93 * DAY_MS)
+    throw new Error('Cancellation range exceeds three months')
+  const ranges: CardDateRange[] = []
+  for (let day = from; day <= to; day += 4 * DAY_MS)
+    ranges.push({
+      from: new Date(day).toISOString().slice(0, 10),
+      to: new Date(Math.min(day + 3 * DAY_MS, to)).toISOString().slice(0, 10)
+    })
+  return ranges
+}
+
 /** Bound collection to the approved four dates; daily queries avoid large aggregate responses. */
 export function dailyCardRanges(range: CardDateRange): CardDateRange[] {
   if (!isCardDate(range.from) || !isCardDate(range.to)) throw new Error('Invalid collection range')

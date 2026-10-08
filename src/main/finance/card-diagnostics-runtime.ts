@@ -28,8 +28,11 @@ import { classifyCardNavigationFailure } from './card-navigation-failure'
 import { dailyCardRanges, recentCardDateRange } from './card-date-range'
 import type { CardNavigationFailure } from '../../shared/card-navigation'
 import { pageBridge } from '../browser/page-bridge'
-import { reconcileKnownCards } from './card-reconciliation-sync'
+import { reconcileCardCancellations, cancellationCollectors } from './card-cancellation-sync'
+import { inspectHyundaiCancellationEvidence } from './hyundai-cancellation-evidence'
 import { recoverHyundaiRegistration } from './hyundai-registration-recovery'
+import { probeSamsungCancelDate } from './samsung-cancel-date-diagnostic'
+import { probeLotteCancellationDateBasis } from './lotte-cancel-date-diagnostic'
 
 const TTL_MS = 30 * 60 * 1000
 
@@ -326,6 +329,55 @@ export async function startCardDiagnosticsRuntime(options: {
       assertTabContext(tab, url)
       return result
     },
+    async cancelDateProbe(id: string, from: string, to: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      const range = { from, to }
+      try {
+        dailyCardRanges(range)
+        if (from < '2026-07-01' || to > recentCardDateRange().to) throw new Error()
+      } catch {
+        return { state: 'invalid_range' }
+      }
+      const issuer = issuerForCardUrl(url)
+      let result: unknown
+      if (issuer === 'samsung_card')
+        result = await probeSamsungCancelDate(tab, range, controller.signal)
+      else if (issuer === 'lotte_card') {
+        const metadata = await inspectCardQueryContract(tab)
+        assertTabContext(tab, url)
+        const status =
+          metadata && typeof metadata === 'object'
+            ? (metadata as { publicStatusOptions?: unknown }).publicStatusOptions
+            : undefined
+        const options = Array.isArray(status)
+          ? status.filter(
+              (option) =>
+                option &&
+                typeof option === 'object' &&
+                ['전체', '취소', '정상'].includes(option.label) &&
+                typeof option.code === 'string' &&
+                /^(?:[0-9]{1,2}|[A-Z])$/.test(option.code)
+            )
+          : []
+        const all = options.filter((option) => option.label === '전체')
+        const cancellation = options.filter((option) => option.label === '취소')
+        if (
+          all.length !== 1 ||
+          cancellation.length !== 1 ||
+          all[0].code === cancellation[0].code ||
+          options.filter((option) => option.code === all[0].code).length !== 1 ||
+          options.filter((option) => option.code === cancellation[0].code).length !== 1
+        )
+          return { state: 'filter_unverified' }
+        result = await probeLotteCancellationDateBasis(tab, range, {
+          signal: controller.signal,
+          filterContract: { all: all[0].code, cancellation: cancellation[0].code }
+        })
+      } else return { state: 'unsupported_issuer' }
+      assertTabContext(tab, url)
+      return result
+    },
     async reconcile(id: string) {
       const tab = getTab(id)
       const url = tab.view.webContents.getURL()
@@ -334,11 +386,49 @@ export async function startCardDiagnosticsRuntime(options: {
         (options.collectorTransport !== 'local' || !options.collectorTokenFile)
       )
         return { state: 'finance_not_configured' }
-      const result = await reconcileKnownCards(tab, {
+      const result = await reconcileCardCancellations(tab, {
         tokenFile: options.collectorTokenFile,
         transport: options.collectorTransport,
         signal: controller.signal
       })
+      assertTabContext(tab, url)
+      return result
+    },
+    async cancellationRange(id: string, from: string, to: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      dailyCardRanges({ from, to })
+      if (from < '2026-07-01' || to > recentCardDateRange().to) return { state: 'invalid_range' }
+      const issuer = issuerForCardUrl(url)
+      if (!issuer) return { state: 'unsupported_issuer' }
+      const result = await collectRecentCard({
+        tab,
+        collect: cancellationCollectors[issuer],
+        range: { from, to },
+        signal: controller.signal
+      })
+      assertTabContext(tab, url)
+      return {
+        receipt: result.receipt,
+        cancellationRows: result.rows.length,
+        verifiedCancellationRows: result.rows.filter((row) => row.cancellationEvidence === true)
+          .length,
+        reviewRows: result.rows.filter((row) => row.needsReview.length > 0).length,
+        reviewReasons: Object.fromEntries(
+          [...new Set(result.rows.flatMap((row) => row.needsReview))].map((code) => [
+            code,
+            result.rows.filter((row) => row.needsReview.includes(code)).length
+          ])
+        )
+      }
+    },
+    async hyundaiCancellationEvidence(id: string, from: string, to: string) {
+      const tab = getTab(id)
+      const url = tab.view.webContents.getURL()
+      if (issuerForCardUrl(url) !== 'hyundai_card') return { state: 'unsupported_issuer' }
+      dailyCardRanges({ from, to })
+      if (from < '2026-07-01' || to > recentCardDateRange().to) return { state: 'invalid_range' }
+      const result = await inspectHyundaiCancellationEvidence(tab, { from, to }, controller.signal)
       assertTabContext(tab, url)
       return result
     },

@@ -43,6 +43,55 @@ async function fixture(extra: Partial<CardDiagnosticsBackend> = {}): Promise<{
 }
 
 describe('read-only card MCP boundary', () => {
+  it('exposes a fixed read-only date probe and rejects date-policy violations before dispatch', async () => {
+    const probe = vi.fn(async () => ({ state: 'ready', dateBasis: 'unverified', scopes: [] }))
+    const { client } = await fixture({ cancelDateProbe: probe })
+    const tool = (await client.listTools()).tools.find(
+      (entry) => entry.name === 'card_cancel_date_probe'
+    )!
+    expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false })
+    const args = {
+      tabId: '00000000-0000-4000-8000-000000000001',
+      from: '2026-08-01',
+      to: '2026-08-04'
+    }
+    expect(await client.callTool({ name: tool.name, arguments: args })).toMatchObject({
+      content: [{ text: JSON.stringify({ state: 'ready', dateBasis: 'unverified', scopes: [] }) }]
+    })
+    expect(probe).toHaveBeenCalledExactlyOnceWith(args.tabId, args.from, args.to)
+    for (const [from, to] of [
+      ['2026-06-30', '2026-07-01'],
+      ['2026-08-01', '2026-08-05'],
+      ['2026-08-05', '2026-08-01'],
+      ['2026-09-31', '2026-09-31'],
+      ['9999-01-01', '9999-01-01']
+    ]) {
+      expect(
+        await client.callTool({ name: tool.name, arguments: { ...args, from, to } })
+      ).toMatchObject({ content: [{ text: JSON.stringify({ state: 'invalid_range' }) }] })
+    }
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(
+      (await client.callTool({ name: tool.name, arguments: { ...args, tabId: 'invalid' } })).isError
+    ).toBe(true)
+  })
+  it('suppresses private failures from the fixed date probe', async () => {
+    const { client } = await fixture({
+      cancelDateProbe: vi.fn(async () => {
+        throw new Error('PRIVATE_TOKEN PRIVATE_ACCOUNT 918273')
+      })
+    })
+    const result = await client.callTool({
+      name: 'card_cancel_date_probe',
+      arguments: {
+        tabId: '00000000-0000-4000-8000-000000000001',
+        from: '2026-08-01',
+        to: '2026-08-04'
+      }
+    })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|918273/)
+  })
   it('exposes bounded cancellation diagnostics without generic request or mutation capability', async () => {
     const probe = vi.fn(async () => ({ detailRows: 1, validAmountRows: 1 }))
     const { client } = await fixture({ cancellationContract: probe })

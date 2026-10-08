@@ -46,7 +46,7 @@ beforeEach(() => {
 })
 describe('independent recovery window', () => {
   it('queries only oldest bounded gap and retains unverified cancellation coverage', async () => {
-    expect(await recoverCardCoverage(tab, collect, { transport: 'server-ssh' })).toBe(false)
+    expect(await recoverCardCoverage(tab, collect, { transport: 'server-ssh' })).toBe(true)
     expect(mocks.ssh.mock.calls[0][2]).toBe('window')
     expect(mocks.collect.mock.calls[0][0].range).toEqual(old)
     expect(mocks.save).toHaveBeenCalledOnce()
@@ -56,16 +56,16 @@ describe('independent recovery window', () => {
     vi.setSystemTime(new Date('2026-10-07T03:00:00Z'))
     const cancellation = { from: '2026-08-01', to: '2026-08-04' }
     mocks.ssh.mockResolvedValue(window({ range: cancellation, cancellationRange: cancellation }))
-    expect(await recoverCardCoverage(tab, collect, { transport: 'server-ssh' })).toBe(false)
+    expect(await recoverCardCoverage(tab, collect, { transport: 'server-ssh' })).toBe(true)
     expect(mocks.collect.mock.calls[0][0].range).toEqual(old)
     expect(mocks.save).toHaveBeenCalledOnce()
   })
-  it('revisits the pending cancellation window after approval coverage catches up', async () => {
+  it('does not re-read old approvals for a pending cancellation cursor', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-07T03:00:00Z'))
     mocks.ssh.mockResolvedValue(window({ approvalRange: recent, cancellationRange: old }))
-    expect(await recoverCardCoverage(tab, collect, { transport: 'server-ssh' })).toBe(false)
-    expect(mocks.collect.mock.calls[0][0].range).toEqual(old)
+    expect(await recoverCardCoverage(tab, collect, { transport: 'server-ssh' })).toBe(true)
+    expect(mocks.collect).not.toHaveBeenCalled()
   })
   it('does not recollect recent dates when there is no older gap', async () => {
     const today = new Intl.DateTimeFormat('en-CA', {

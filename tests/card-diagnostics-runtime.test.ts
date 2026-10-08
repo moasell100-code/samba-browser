@@ -15,6 +15,9 @@ const fixtureState = vi.hoisted(() => ({
   inspectPause: undefined as Promise<void> | undefined,
   inspect: vi.fn(),
   cancellationProbe: vi.fn(),
+  cancelDateProbe: vi.fn(),
+  lotteCancelDateProbe: vi.fn(),
+  queryContract: vi.fn(),
   mkdir: vi.fn(),
   writeFile: vi.fn(),
   unlink: vi.fn(),
@@ -26,6 +29,15 @@ vi.mock('node:fs/promises', () => ({
   writeFile: fixtureState.writeFile,
   unlink: fixtureState.unlink,
   rmdir: fixtureState.rmdir
+}))
+vi.mock('../src/main/finance/samsung-cancel-date-diagnostic', () => ({
+  probeSamsungCancelDate: fixtureState.cancelDateProbe
+}))
+vi.mock('../src/main/finance/lotte-cancel-date-diagnostic', () => ({
+  probeLotteCancellationDateBasis: fixtureState.lotteCancelDateProbe
+}))
+vi.mock('../src/main/finance/card-query-contract', () => ({
+  inspectCardQueryContract: fixtureState.queryContract
 }))
 vi.mock('../src/main/browser/tab-manager', () => ({
   isTabAlive: (tab: Tab) => !!tab.view.webContents && !tab.view.webContents.isDestroyed()
@@ -96,6 +108,7 @@ vi.mock('../src/main/finance/card-diagnostics-mcp', () => ({
 }))
 vi.mock('../src/main/finance/samsung-api-collector', () => ({
   collectSamsungApi: vi.fn(),
+  collectSamsungCancellationApi: vi.fn(),
   probeSamsungCancellationDetails: fixtureState.cancellationProbe
 }))
 
@@ -181,6 +194,16 @@ beforeEach(() => {
   fixtureState.unlink.mockResolvedValue(undefined)
   fixtureState.rmdir.mockResolvedValue(undefined)
   fixtureState.cancellationProbe.mockResolvedValue({ detailRows: 1, validAmountRows: 1 })
+  fixtureState.cancelDateProbe.mockResolvedValue({
+    state: 'ready',
+    dateBasis: 'unverified',
+    scopes: []
+  })
+  fixtureState.queryContract.mockResolvedValue({ publicStatusOptions: [] })
+  fixtureState.lotteCancelDateProbe.mockResolvedValue({
+    issuer: 'lotte_card',
+    filterVerified: true
+  })
 })
 afterEach(async () => {
   for (const stop of stops.splice(0)) stop()
@@ -190,6 +213,109 @@ afterEach(async () => {
 })
 
 describe('card diagnostics runtime lifetime', () => {
+  it('dispatches Samsung cancel-date counts without creating observers or changing tabs', async () => {
+    const h = await fixture()
+    expect(await h.backend.cancelDateProbe!(h.tab.id, '2026-08-01', '2026-08-04')).toEqual({
+      state: 'filter_unverified'
+    })
+    expect(fixtureState.cancelDateProbe).not.toHaveBeenCalled()
+    h.setUrl(SAMSUNG)
+    expect(await h.backend.cancelDateProbe!(h.tab.id, '2026-08-01', '2026-08-04')).toMatchObject({
+      state: 'ready',
+      dateBasis: 'unverified'
+    })
+    expect(fixtureState.cancelDateProbe).toHaveBeenCalledExactlyOnceWith(
+      h.tab,
+      { from: '2026-08-01', to: '2026-08-04' },
+      expect.any(AbortSignal)
+    )
+    expect(h.wc.loadURL).not.toHaveBeenCalled()
+    expect(fixtureState.observers).toHaveLength(0)
+    expect(fixtureState.writeFile).toHaveBeenCalledTimes(1)
+  })
+  it('dispatches Lotte only with unique verified public status enum attributes', async () => {
+    const h = await fixture()
+    for (const options of [
+      [],
+      [{ label: '전체', code: '0' }],
+      [
+        { label: '전체', code: '0' },
+        { label: '취소', code: '0' }
+      ],
+      [
+        { label: '전체', code: '0' },
+        { label: '취소', code: '2' },
+        { label: '정상', code: '2' }
+      ],
+      [
+        { label: '전체', code: '0' },
+        { label: '취소', code: '2' },
+        { label: '취소', code: '3' }
+      ]
+    ]) {
+      fixtureState.queryContract.mockResolvedValue({ publicStatusOptions: options })
+      expect(await h.backend.cancelDateProbe!(h.tab.id, '2026-08-01', '2026-08-04')).toEqual({
+        state: 'filter_unverified'
+      })
+    }
+    expect(fixtureState.lotteCancelDateProbe).not.toHaveBeenCalled()
+    fixtureState.queryContract.mockResolvedValue({
+      publicStatusOptions: [
+        { label: '전체', code: '0' },
+        { label: '취소', code: '2' }
+      ]
+    })
+    expect(await h.backend.cancelDateProbe!(h.tab.id, '2026-08-01', '2026-08-04')).toEqual({
+      issuer: 'lotte_card',
+      filterVerified: true
+    })
+    expect(fixtureState.lotteCancelDateProbe).toHaveBeenCalledExactlyOnceWith(
+      h.tab,
+      { from: '2026-08-01', to: '2026-08-04' },
+      { signal: expect.any(AbortSignal), filterContract: { all: '0', cancellation: '2' } }
+    )
+    expect(h.wc.loadURL).not.toHaveBeenCalled()
+    expect(fixtureState.observers).toHaveLength(0)
+  })
+  it('rejects invalid cancel-date ranges before invoking the helper', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-08T05:00:00Z'))
+    const h = await fixture()
+    h.setUrl(SAMSUNG)
+    for (const [from, to] of [
+      ['2026-06-30', '2026-07-01'],
+      ['2026-08-01', '2026-08-05'],
+      ['2026-09-31', '2026-09-31'],
+      ['2026-10-08', '2026-10-09']
+    ]) {
+      expect(await h.backend.cancelDateProbe!(h.tab.id, from, to)).toEqual({
+        state: 'invalid_range'
+      })
+    }
+    expect(fixtureState.cancelDateProbe).not.toHaveBeenCalled()
+  })
+  it.each(['stop', 'navigate', 'busy'] as const)(
+    'rejects pending cancel-date results after %s',
+    async (change) => {
+      const h = await fixture()
+      h.setUrl(SAMSUNG)
+      const wait = deferred()
+      fixtureState.cancelDateProbe.mockImplementationOnce(
+        async (_tab, _range, signal: AbortSignal) => {
+          await wait.promise
+          if (change === 'stop') expect(signal.aborted).toBe(true)
+          return { state: 'ready', scopes: [] }
+        }
+      )
+      const pending = h.backend.cancelDateProbe!(h.tab.id, '2026-08-01', '2026-08-04')
+      const rejection = expect(pending).rejects.toThrow()
+      if (change === 'stop') h.stop()
+      else if (change === 'navigate') h.setUrl(LOTTE)
+      else h.setBusy()
+      wait.resolve()
+      await rejection
+    }
+  )
   it('rejects future, pre-history, invalid and over-four-day cancellation probes before calling a service', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-07T05:00:00Z'))

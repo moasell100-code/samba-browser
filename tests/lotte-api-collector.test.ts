@@ -5,6 +5,7 @@ const auth = vi.hoisted(() => vi.fn())
 vi.mock('../src/main/browser/page-bridge', () => ({ pageBridge: { cardSession: auth } }))
 import {
   collectLotteApi,
+  collectLotteCancellationApi,
   parseLotteApiResponse,
   requestLotteApiPage,
   type LotteApiForm
@@ -454,6 +455,263 @@ function collectorFixture(responses: unknown[] = [envelope()]): {
   }
 }
 
+describe('Lotte original-date cancellation-only collector', () => {
+  function cancellationFixture(responses: unknown[]): ReturnType<typeof collectorFixture> {
+    const h = collectorFixture(responses)
+    h.dom.window.document.body.innerHTML +=
+      '<label><input type="radio" name="stDvRadio" value="2">취소</label>'
+    return h
+  }
+
+  it('uses only the explicit status-2 option across all pages and keeps late-cancellation dates', async () => {
+    const h = cancellationFixture([
+      envelope(1, 2, content({ kind: 'cancelled', cancelDate: '2026.10.06' })),
+      envelope(
+        2,
+        2,
+        content({ approval: 'SYNTH-002', kind: 'cancelled', cancelDate: '2026.10.08' })
+      )
+    ])
+    const before = h.dom.window.document.body.innerHTML
+    const result = await collectLotteCancellationApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(2)
+    expect(result.receipt.issues).toEqual([])
+    expect(result.rows.map((row) => row.eventDate)).toEqual(['2026-10-06', '2026-10-08'])
+    expect(result.rows.every((row) => row.kind === 'status' && row.cancellationEvidence)).toBe(true)
+    expect(result.receipt).toMatchObject({
+      pages: 2,
+      rowCount: 2,
+      cancellationQueryComplete: true,
+      cancellationQueryBasis: 'original_approval_date',
+      approvalComplete: false,
+      statusComplete: false,
+      cancellationComplete: false,
+      complete: false
+    })
+    for (const [index, call] of h.fetch.mock.calls.entries())
+      expect(Object.fromEntries(new URLSearchParams(call[1].body))).toMatchObject({
+        stDv: '2',
+        encCdno: '',
+        startDt: '20260929',
+        endDt: '20261002',
+        pageNo: String(index + 1),
+        useCdDv: 'A_useCdDv',
+        useDv: 'A_useDv',
+        uplDv: 'A_uplDv'
+      })
+    expect(h.dom.window.document.body.innerHTML).toBe(before)
+    expect(JSON.stringify(result.receipt)).not.toMatch(/SYNTH|synthetic|합성|1234|10000/)
+  })
+
+  it('requests and verifies the normal P103 labelled details for a lazy cancellation row', async () => {
+    const lazy = lazyContent()
+      .replace('<li class="toggle">', '<li class="toggle cancel">')
+      .replace('<span>일시불</span></div>', '<span>일시불</span><span>취소</span></div>')
+    const h = cancellationFixture([
+      envelope(1, 1, lazy),
+      detailEnvelope({ kind: 'cancelled', cancelDate: '2026.10.08' })
+    ])
+    const result = await collectLotteCancellationApi(h.current, RANGE)
+    expect(result.rows[0]).toMatchObject({
+      kind: 'status',
+      status: 'cancelled',
+      eventDate: '2026-10-08',
+      cancellationAmount: 10000,
+      cancellationEvidence: true,
+      cancellationAmountType: 'cumulative',
+      needsReview: []
+    })
+    expect(result.receipt.cancellationQueryComplete).toBe(true)
+    expect(h.fetch.mock.calls.map((call) => call[0])).toEqual([
+      'https://www.lottecard.co.kr/app/LPMCDAA_A102.lc',
+      'https://www.lottecard.co.kr/app/LPMCDAA_P103.lc'
+    ])
+    expect(new URLSearchParams(h.fetch.mock.calls[0][1].body).get('stDv')).toBe('2')
+  })
+  it('certifies complete list coverage while the exact six-pair cancellation has no verified refund amount', async () => {
+    const lazy = lazyContent({ aprDtti: '20261002123456123' })
+      .replace('<li class="toggle">', '<li class="toggle cancel">')
+      .replace('<span>일시불</span></div>', '<span>일시불</span><span>취소</span></div>')
+      .replace('합성카드(1234)', '합성카드')
+    const h = cancellationFixture([
+      envelope(1, 1, lazy),
+      response(
+        '<ul><li>거래유형<span>신용</span></li><li>승인번호<span>SYNTH-001</span></li><li>취소여부<span>Y</span></li><li>포인트사용<span>750원</span></li><li></li><li>취소일시<span>2026.10.08</span></li></ul><div></div>'
+      )
+    ])
+    h.dom.window.document.body.innerHTML +=
+      '<li><input id="useCarditem0" name="useCarditem" data-idx="0"><label for="useCarditem0">합성카드(123*)</label><img data-enccdno="synthetic-private-card" data-idx="0"></li>'
+    const result = await collectLotteCancellationApi(h.current, RANGE)
+    expect(result.rows[0]).toMatchObject({
+      approvalNumber: 'SYNTH-001',
+      approvedAt: '2026-10-02T12:34:56+09:00',
+      cardLast4: '123*',
+      cancellationAmount: null,
+      netAmount: null
+    })
+    expect(result.rows[0].cancellationEvidence).toBeUndefined()
+    expect(result.rows[0].eventDate).toBe('2026-10-08')
+    expect(result.rows[0].needsReview).toEqual(['cancellation_amount_unverified'])
+    expect(result.rows[0].needsReview).not.toContain('identity_unverified')
+    expect(result.receipt).toMatchObject({
+      cancellationQueryComplete: true,
+      cancellationComplete: false,
+      statusComplete: false,
+      complete: false
+    })
+  })
+  it('does not certify query coverage when detail collection is interrupted after a list page', async () => {
+    const lazy = lazyContent()
+      .replace('<li class="toggle">', '<li class="toggle cancel">')
+      .replace('<span>일시불</span></div>', '<span>일시불</span><span>취소</span></div>')
+    const h = cancellationFixture([envelope(1, 1, lazy)])
+    h.fetch.mockImplementationOnce(async () => new Response(JSON.stringify(envelope(1, 1, lazy))))
+    h.fetch.mockImplementationOnce(async () => {
+      throw new Error('private-detail-failure')
+    })
+    const result = await collectLotteCancellationApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(1)
+    expect(result.receipt.cancellationQueryComplete).toBe(false)
+    expect(result.receipt.issues).toContain('detail_collection_unavailable')
+    expect(result.rows[0].cancellationEvidence).toBeUndefined()
+    expect(JSON.stringify(result.receipt)).not.toContain('private-detail-failure')
+  })
+
+  it.each(['absent', 'other_code', 'duplicate'])(
+    'does not guess the cancellation filter when its explicit contract is %s',
+    async (fault) => {
+      const h = cancellationFixture([envelope(1, 1, content({ kind: 'cancelled' }))])
+      const field = h.dom.window.document.querySelector('input[name="stDvRadio"][value="2"]')!
+      if (fault === 'absent') field.parentElement!.remove()
+      if (fault === 'other_code') field.setAttribute('value', '1')
+      if (fault === 'duplicate')
+        h.dom.window.document.body.innerHTML +=
+          '<label><input type="radio" name="stDvRadio" value="2">취소</label>'
+      const result = await collectLotteCancellationApi(h.current, RANGE)
+      expect(result.receipt.cancellationQueryComplete).toBe(false)
+      expect(result.receipt.issues).toContain('request_schema_unverified')
+      expect(h.fetch).not.toHaveBeenCalled()
+    }
+  )
+
+  it('excludes normal approvals unexpectedly returned by the cancellation filter and refuses complete coverage', async () => {
+    const h = cancellationFixture([
+      envelope(1, 1, content() + content({ approval: 'SYNTH-002', kind: 'cancelled' }))
+    ])
+    const result = await collectLotteCancellationApi(h.current, RANGE)
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0].status).toBe('cancelled')
+    expect(result.receipt).toMatchObject({ rowCount: 1, cancellationQueryComplete: false })
+    expect(result.receipt.issues).toContain('non_cancellation_row')
+  })
+
+  it.each([
+    {
+      name: 'missing details',
+      html: content({ kind: 'cancelled', details: false }),
+      queryComplete: true
+    },
+    {
+      name: 'unproved partial original amount',
+      html: content({ kind: 'partial' }),
+      queryComplete: true
+    },
+    {
+      name: 'conflicting refund',
+      html: content({ kind: 'cancelled', refund: '3,000원' }),
+      queryComplete: true
+    },
+    {
+      name: 'cancellation before approval',
+      html: content({ kind: 'cancelled', cancelDate: '2026.09.28' }),
+      queryComplete: false
+    },
+    {
+      name: 'original outside even when cancellation is inside',
+      html: content({ kind: 'cancelled', cancelDate: '2026.10.02' })
+        .replaceAll('2026.10.02', '2026.09.28')
+        .replace(
+          '취소일자<input value="not-a-business-value"><span>2026.09.28</span>',
+          '취소일자<input value="not-a-business-value"><span>2026.10.02</span>'
+        ),
+      queryComplete: false
+    }
+  ])(
+    'keeps $name for financial review independently of query coverage',
+    async ({ html, queryComplete }) => {
+      const result = await collectLotteCancellationApi(
+        cancellationFixture([envelope(1, 1, html)]).current,
+        RANGE
+      )
+      expect(result.rows).toHaveLength(1)
+      expect(result.receipt.cancellationQueryComplete).toBe(queryComplete)
+      expect(result.rows[0].needsReview.length).toBeGreaterThan(0)
+      expect(result.rows[0].cancellationEvidence).toBeUndefined()
+      expect(result.receipt.cancellationComplete).toBe(false)
+      expect(result.receipt.statusComplete).toBe(false)
+    }
+  )
+
+  it('requires verified pagination and rejects duplicate source identities across pages', async () => {
+    for (const [second, expected] of [
+      [envelope(2, 2, content({ kind: 'cancelled' })), 'duplicate_source_identity'],
+      [envelope(2, 3, content({ kind: 'cancelled', approval: 'SYNTH-002' })), 'pagination_changed'],
+      [
+        envelope(2, 2, content({ kind: 'cancelled', approval: 'SYNTH-002' }), { stDv: '0' }),
+        'response_scope_mismatch'
+      ]
+    ] as const) {
+      const h = cancellationFixture([envelope(1, 2, content({ kind: 'cancelled' })), second])
+      const result = await collectLotteCancellationApi(h.current, RANGE)
+      expect(result.receipt.cancellationQueryComplete).toBe(false)
+      expect(result.receipt.issues).toContain(expected)
+    }
+    const limited = await collectLotteCancellationApi(
+      cancellationFixture([envelope(1, 2, content({ kind: 'cancelled' }))]).current,
+      RANGE,
+      { maxPages: 1 }
+    )
+    expect(limited.receipt.cancellationQueryComplete).toBe(false)
+    expect(limited.receipt.issues).toContain('page_limit')
+  })
+
+  it('certifies only the recognized empty terminal contract', async () => {
+    const empty = '<li class="noData">조회하신 조건에 맞는 내역이 없습니다.</li>'
+    const good = await collectLotteCancellationApi(
+      cancellationFixture([envelope(1, 1, empty, { nextPageNo: 1 })]).current,
+      RANGE
+    )
+    expect(good.rows).toEqual([])
+    expect(good.receipt).toMatchObject({
+      cancellationQueryComplete: true,
+      approvalComplete: false,
+      statusComplete: false,
+      cancellationComplete: false,
+      complete: false
+    })
+    for (const sample of [envelope(1, 0, ''), envelope(1, 1, empty, { nextPageNo: 2 })]) {
+      const result = await collectLotteCancellationApi(cancellationFixture([sample]).current, RANGE)
+      expect(result.receipt.cancellationQueryComplete).toBe(false)
+    }
+  })
+
+  it('enforces the four-day call limit and stops before any request when aborted', async () => {
+    const h = cancellationFixture([envelope(1, 1, content({ kind: 'cancelled' }))])
+    const invalid = await collectLotteCancellationApi(h.current, {
+      from: '2026-07-08',
+      to: '2026-10-08'
+    })
+    expect(invalid.receipt.cancellationQueryComplete).toBe(false)
+    expect(invalid.receipt.issues).toContain('invalid_range')
+    const aborted = await collectLotteCancellationApi(h.current, RANGE, {
+      signal: AbortSignal.abort()
+    })
+    expect(aborted.receipt.cancellationQueryComplete).toBe(false)
+    expect(aborted.receipt.issues).toContain('cancelled')
+    expect(h.fetch).not.toHaveBeenCalled()
+  })
+})
+
 describe('Lotte verified all-option and Param pagination collector', () => {
   function cardChoice(reference: string, tail: string, idx = '0'): string {
     return `<li><input id="useCarditem${idx}" name="useCarditem" data-idx="${idx}"><label for="useCarditem${idx}">합성카드(${tail})</label><img data-enccdno="${reference}" data-idx="${idx}"></li>`
@@ -593,6 +851,235 @@ describe('Lotte verified all-option and Param pagination collector', () => {
     expect(result.receipt.issues).toContain('detail_response_schema_unverified')
     expect(result.receipt.complete).toBe(false)
   })
+  it('reports the bounded public label and sibling schema of an unrecognized six-pair detail', async () => {
+    const detail = response(`<ul>
+      <li><strong>이용일자</strong><span>2026.10.02</span></li>
+      <li>거래유형<span>신용</span></li>
+      <li>승인번호<span>SYNTH-001</span></li>
+      <li>취소여부<span>취소</span></li>
+      <li>포인트사용<span>0원</span></li>
+      <li><span>이용시간</span><em>12:34:56</em></li>
+    </ul><div data-private="synthetic-private">synthetic-private-content</div>`)
+    const h = collectorFixture([envelope(1, 1, lazyContent()), detail])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.rows[0].needsReview).toContain('detail_response_schema_unverified')
+    expect(result.rows[0].approvalNumber).toBeUndefined()
+    expect(result.receipt.issues).toEqual(
+      expect.arrayContaining([
+        'detail_shape_root_count_2',
+        'detail_shape_root_0_ul',
+        'detail_shape_root_1_div',
+        'detail_shape_list_count_1',
+        'detail_shape_list_0_pair_count_6',
+        'detail_shape_list_0_pair_0_direct_label_unrecognized',
+        'detail_shape_list_0_pair_0_children_2',
+        'detail_shape_list_0_pair_0_child_0_strong',
+        'detail_shape_list_0_pair_0_child_0_label_9',
+        'detail_shape_list_0_pair_1_direct_label_1',
+        'detail_shape_list_0_pair_2_direct_label_2',
+        'detail_shape_list_0_pair_3_direct_label_3',
+        'detail_shape_list_0_pair_4_direct_label_4',
+        'detail_shape_list_0_pair_5_child_0_label_10'
+      ])
+    )
+    expect(JSON.stringify(result.receipt)).not.toMatch(
+      /SYNTH|synthetic|2026\.10\.02|12:34:56|data-private|0원|신용/
+    )
+  })
+  it('never emits arbitrary detail labels, tags, attributes or values and caps structural diagnostics', async () => {
+    const detail = response(
+      `<ul>${Array.from(
+        { length: 120 },
+        () =>
+          '<li>private-merchant-label<span data-private="private-card-reference">private-approval-value</span><private-tag>private-financial-value</private-tag><input value="취소일자"><script>취소금액</script></li>'
+      ).join('')}</ul><private-root>private-root-value</private-root>`
+    )
+    const h = collectorFixture([envelope(1, 1, lazyContent()), detail])
+    const result = await collectLotteApi(h.current, RANGE)
+    const structural = result.receipt.issues.filter((issue) => issue.startsWith('detail_shape_'))
+    expect(structural).toContain('detail_shape_root_1_unrecognized')
+    expect(structural).toContain('detail_shape_list_0_pair_count_100')
+    expect(structural).toContain('detail_shape_list_0_pair_0_child_1_unrecognized')
+    expect(structural).toContain('detail_shape_list_0_pair_11_direct_label_unrecognized')
+    expect(structural.some((issue) => issue.startsWith('detail_shape_list_0_pair_12_'))).toBe(false)
+    expect(structural).not.toContain('detail_shape_list_0_pair_0_child_2_label_8')
+    expect(structural).not.toContain('detail_shape_list_0_pair_0_child_3_label_6')
+    expect(structural.length).toBeLessThan(160)
+    expect(JSON.stringify(result.receipt)).not.toMatch(/private-|financial|취소일자|취소금액/)
+    expect(result.rows[0].needsReview).toContain('detail_response_schema_unverified')
+    expect(result.receipt.statusComplete).toBe(false)
+  })
+  it('distinguishes fixed cancellation labels, public notices and value shapes without accepting incomplete proof', async () => {
+    const detail = response(`<ul>
+      <li>거래유형<span>신용</span></li>
+      <li>승인번호<span>SYNTH-001</span></li>
+      <li>취소여부<span>취소</span></li>
+      <li>포인트사용<span>0원</span></li>
+      <li>매입 전 취소</li>
+      <li>취소일시<span>2026.10.08 12:34:56</span></li>
+    </ul><div>private-footer</div>`)
+    const h = collectorFixture([envelope(1, 1, lazyContent()), detail])
+    const result = await collectLotteApi(h.current, RANGE)
+    expect(result.receipt.issues).toEqual(
+      expect.arrayContaining([
+        'detail_shape_list_0_pair_3_money_value_count_1',
+        'detail_shape_list_0_pair_4_direct_public_4',
+        'detail_shape_list_0_pair_5_direct_label_18',
+        'detail_shape_list_0_pair_5_direct_label_token_18',
+        'detail_shape_list_0_pair_5_date_value_count_1',
+        'detail_shape_list_0_pair_5_money_value_count_0'
+      ])
+    )
+    expect(result.rows[0].needsReview).toContain('detail_response_schema_unverified')
+    expect(result.rows[0].cancellationEvidence).toBeUndefined()
+    expect(JSON.stringify(result.receipt)).not.toMatch(/private-footer|SYNTH|12:34:56|2026\.10\.08/)
+    const counterfeit = collectorFixture([
+      envelope(1, 1, lazyContent()),
+      response('<ul><li>취소일시:private-merchant<span>private-date</span></li></ul>')
+    ])
+    const counterfeitResult = await collectLotteApi(counterfeit.current, RANGE)
+    expect(counterfeitResult.receipt.issues).toContain(
+      'detail_shape_list_0_pair_0_direct_label_unrecognized'
+    )
+    expect(counterfeitResult.receipt.issues).toContain(
+      'detail_shape_list_0_pair_0_direct_label_token_18'
+    )
+    expect(JSON.stringify(counterfeitResult.receipt)).not.toMatch(/private-merchant|private-date/)
+    expect(counterfeitResult.rows[0].needsReview).toContain('detail_response_schema_unverified')
+  })
+  it('normalizes only the exact six-pair identity and labelled cancellation timestamp without inferring a refund', async () => {
+    const lazy = lazyContent({ aprDtti: '20261002123456123' })
+      .replace('<li class="toggle">', '<li class="toggle cancel">')
+      .replace('<span>일시불</span></div>', '<span>일시불</span><span>취소</span></div>')
+      .replace('합성카드(1234)', '합성카드')
+    const detail = response(`<ul>
+      <li>거래유형<span>신용 승인</span></li>
+      <li>승인번호<span>SYNTH-001</span></li>
+      <li>취소여부<span>Y</span></li>
+      <li>포인트사용<span>750원</span></li>
+      <li> </li>
+      <li>취소일시<span>2026.10.08 01:02:03</span></li>
+    </ul><div>private-footer</div>`)
+    const h = collectorFixture([envelope(1, 1, lazy), detail])
+    h.dom.window.document.body.innerHTML += cardChoice('synthetic-private-card', '123*')
+    const result = await collectLotteApi(h.current, RANGE)
+    const row = result.rows[0]
+    expect(row).toMatchObject({
+      approvalNumber: 'SYNTH-001',
+      approvedAt: '2026-10-02T12:34:56+09:00',
+      cardLast4: '123*',
+      status: 'cancelled',
+      amount: 10000,
+      cancellationAmount: null,
+      netAmount: null
+    })
+    expect(row.cardKey).toMatch(/^[a-f0-9]{64}$/)
+    expect(row.eventDate).toBe('2026-10-08')
+    expect(row.cancellationEvidence).toBeUndefined()
+    expect(row.needsReview).not.toContain('identity_unverified')
+    expect(row.needsReview).not.toContain('details_unverified')
+    expect(row.needsReview).toEqual(['cancellation_amount_unverified'])
+    expect(result.receipt.statusComplete).toBe(false)
+    expect(JSON.stringify(result.receipt)).not.toMatch(/SYNTH|synthetic|123\*|750|private-footer/)
+    expect(new URLSearchParams(h.fetch.mock.calls[1][1].body).get('aprDtti')).toBe(
+      '20261002123456123'
+    )
+  })
+  it.each(['missing_selector', 'conflicting_selector', 'different_approval', 'reordered_core'])(
+    'keeps an incomplete detail identity unverified with %s',
+    async (fault) => {
+      let html = `<ul><li>거래유형<span>신용</span></li><li>승인번호<span>SYNTH-001</span></li><li>취소여부<span>Y</span></li><li>포인트사용<span>0원</span></li><li></li><li>취소일시<span>2026.10.08</span></li></ul><div></div>`
+      if (fault === 'different_approval') html = html.replace('SYNTH-001', 'SYNTH-OTHER')
+      if (fault === 'reordered_core') html = html.replace('거래유형', '승인번호')
+      const h = collectorFixture([
+        envelope(1, 1, lazyContent().replace('합성카드(1234)', '합성카드')),
+        response(html)
+      ])
+      if (fault !== 'missing_selector')
+        h.dom.window.document.body.innerHTML += cardChoice('synthetic-private-card', '1234')
+      if (fault === 'conflicting_selector')
+        h.dom.window.document.body.innerHTML += cardChoice('synthetic-private-card', '5678', '1')
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.rows[0].approvalNumber).toBeUndefined()
+      expect(result.rows[0].cardKey).toBeUndefined()
+      expect(result.rows[0].cardLast4).toBeUndefined()
+      expect(result.rows[0].needsReview).toEqual(
+        expect.arrayContaining(['identity_unverified', 'detail_response_schema_unverified'])
+      )
+      expect(result.receipt.statusComplete).toBe(false)
+    }
+  )
+  it.each(['normal', 'partial'])(
+    'never gives six-pair %s headers inferred refund amount or stronger completion',
+    async (kind) => {
+      let lazy = lazyContent().replace('합성카드(1234)', '합성카드')
+      if (kind === 'partial')
+        lazy = lazy
+          .replace(
+            '<span>일시불</span></div>',
+            '<span>일시불</span><span>부분취소(-3,000원)</span></div>'
+          )
+          .replace('<em>', '<em class="parttot">')
+          .replace('<span>10,000원</span></em>', '<span>10,000원</span><span>7,000원</span></em>')
+      const h = collectorFixture([
+        envelope(1, 1, lazy),
+        response(
+          '<ul><li>거래유형<span>신용</span></li><li>승인번호<span>SYNTH-001</span></li><li>취소여부<span>Y</span></li><li>포인트사용<span>0원</span></li><li></li><li>취소일시<span>2026.10.08</span></li></ul><div></div>'
+        )
+      ])
+      h.dom.window.document.body.innerHTML += cardChoice('synthetic-private-card', '123*')
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.rows[0]).toMatchObject({
+        approvalNumber: 'SYNTH-001',
+        cardLast4: '123*',
+        eventDate: '2026-10-08',
+        cancellationAmount: null,
+        netAmount: null,
+        status: kind === 'normal' ? 'unknown' : 'partially_cancelled'
+      })
+      expect(result.rows[0].cancellationEvidence).toBeUndefined()
+      expect(result.receipt.statusComplete).toBe(false)
+      if (kind === 'normal') {
+        expect(result.rows[0].needsReview).toContain('status_unverified')
+        expect(result.rows[0].needsReview).toContain('cancellation_state_conflict')
+      } else {
+        expect(result.rows[0].needsReview).not.toContain('status_unverified')
+        expect(result.rows[0].needsReview).toContain('cancellation_amount_unverified')
+        expect(result.rows[0].needsReview).toContain('partial_original_amount_unverified')
+      }
+    }
+  )
+  it.each([
+    'notice_separator',
+    'unknown_date_label',
+    'bad_date',
+    'multiple_date_spans',
+    'extra_pair'
+  ])(
+    'refuses an ambiguous six-pair template with %s despite matching selector and original payload',
+    async (fault) => {
+      let html =
+        '<ul><li>거래유형<span>신용</span></li><li>승인번호<span>SYNTH-001</span></li><li>취소여부<span>Y</span></li><li>포인트사용<span>0원</span></li><li></li><li>취소일시<span>2026.10.08</span></li></ul><div></div>'
+      if (fault === 'notice_separator') html = html.replace('<li></li>', '<li>매입 전 취소</li>')
+      if (fault === 'unknown_date_label') html = html.replace('취소일시', 'private-unknown-label')
+      if (fault === 'bad_date') html = html.replace('2026.10.08', '2026.02.30')
+      if (fault === 'multiple_date_spans')
+        html = html.replace('2026.10.08</span>', '2026.10.08</span><span>2026.10.09</span>')
+      if (fault === 'extra_pair')
+        html = html.replace('</ul>', '<li>취소금액<span>10,000원</span></li></ul>')
+      const h = collectorFixture([
+        envelope(1, 1, lazyContent().replace('합성카드(1234)', '합성카드')),
+        response(html)
+      ])
+      h.dom.window.document.body.innerHTML += cardChoice('synthetic-private-card', '123*')
+      const result = await collectLotteApi(h.current, RANGE)
+      expect(result.rows[0].approvalNumber).toBeUndefined()
+      expect(result.rows[0].eventDate).toBeUndefined()
+      expect(result.rows[0].cancellationEvidence).toBeUndefined()
+      expect(result.rows[0].needsReview).toContain('detail_response_schema_unverified')
+      expect(JSON.stringify(result.receipt)).not.toContain('private-unknown-label')
+    }
+  )
   it.each([
     { name: 'different approval', detail: detailEnvelope({ approval: 'OTHER-SYNTH' }) },
     {

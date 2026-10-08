@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { startCodexMcp, type CodexMcpBridge } from '../agent/codex-mcp'
+import { dailyCardRanges, recentCardDateRange } from './card-date-range'
 
 export const CARD_DIAGNOSTIC_ISSUERS = ['hyundai_card', 'samsung_card', 'lotte_card'] as const
 export type CardDiagnosticIssuer = (typeof CARD_DIAGNOSTIC_ISSUERS)[number]
@@ -19,6 +20,9 @@ export interface CardDiagnosticsBackend {
   collect?(tabId: string, save: boolean): Promise<unknown>
   collectRange?(tabId: string, from: string, to: string): Promise<unknown>
   cancellationContract?(tabId: string, from: string, to: string): Promise<unknown>
+  cancellationRange?(tabId: string, from: string, to: string): Promise<unknown>
+  hyundaiCancellationEvidence?(tabId: string, from: string, to: string): Promise<unknown>
+  cancelDateProbe?(tabId: string, from: string, to: string): Promise<unknown>
   reconcile?(tabId: string): Promise<unknown>
   recoverRegistration?(tabId: string): Promise<unknown>
   dispose(): void
@@ -185,10 +189,55 @@ export async function startCardDiagnosticsMcp(
       ({ tabId, from, to }) =>
         backend.cancellationContract!(String(tabId), String(from), String(to))
     )
+  if (backend.cancelDateProbe)
+    register(
+      'card_cancel_date_probe',
+      'Read-only fixed Samsung S43 and Lotte all/cancellation queries for at most four Korea calendar dates since July 1. Lotte requires unique public status-option mapping. Returns only date-range counts, state-code counts and page termination. No financial rows, amounts, identifiers, cancellation proof or writes. Other issuers are unsupported.',
+      {
+        tabId: z.string().uuid(),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+      },
+      ({ tabId, from, to }) => {
+        const range = { from: String(from), to: String(to) }
+        try {
+          dailyCardRanges(range)
+          if (range.from < '2026-07-01' || range.to > recentCardDateRange().to) throw new Error()
+        } catch {
+          return { state: 'invalid_range' }
+        }
+        return backend.cancelDateProbe!(String(tabId), range.from, range.to)
+      }
+    )
+  for (const [name, callback] of [
+    ['card_collect_cancellations_preview', backend.cancellationRange],
+    ['hyundai_cancellation_evidence', backend.hyundaiCancellationEvidence]
+  ] as const) {
+    if (callback)
+      register(
+        name,
+        'Read a fixed cancellation query for at most four dates since July 1; returns only verification counts. No financial rows, identifiers, credentials or ledger writes.',
+        {
+          tabId: z.string().uuid(),
+          from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+        },
+        ({ tabId, from, to }) => {
+          const range = { from: String(from), to: String(to) }
+          try {
+            dailyCardRanges(range)
+            if (range.from < '2026-07-01' || range.to > recentCardDateRange().to) throw new Error()
+          } catch {
+            return { state: 'invalid_range' }
+          }
+          return callback(String(tabId), range.from, range.to)
+        }
+      )
+  }
   if (backend.reconcile)
     register(
       'card_reconcile_existing',
-      'Recheck only backend-leased dates of existing ledger approvals and save verified cancellation changes. Limited to 31 dates, preserves classifications, and returns only counts and completion codes.',
+      'Query cancellations in the backend-leased rolling three-month window using bounded issuer adapters and save verified changes to existing originals. Preserves classifications and returns only counts and completion codes.',
       { tabId: z.string().uuid() },
       ({ tabId }) => backend.reconcile!(String(tabId)),
       false

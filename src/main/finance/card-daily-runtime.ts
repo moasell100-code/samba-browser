@@ -16,7 +16,7 @@ import { restoreCardSession } from './card-login-session'
 import { CardDailyScheduler } from './card-daily-scheduler'
 import { FileCardDailyStore } from './card-daily-store'
 import { reportCardSchedule } from './card-schedule-report'
-import { reconcileKnownCards } from './card-reconciliation-sync'
+import { reconcileCardCancellations } from './card-cancellation-sync'
 import { recoverCardCoverage } from './card-coverage-sync'
 import { collectHyundaiApi } from './hyundai-api-collector'
 import { collectSamsungApi } from './samsung-api-collector'
@@ -473,6 +473,21 @@ export function createCardDailyRuntime(options: {
         }
       stage = 'collect_save'
       const result = await interrupted(sync(tab), signal)
+      const readyTab = tab
+      const checkCancellations = async (): Promise<CardDailyResult['reconciliation']> => {
+        try {
+          return await interrupted(
+            reconcileCardCancellations(readyTab, {
+              tokenFile: options.settings().financeCollectorTokenFile,
+              transport: options.settings().financeCollectorTransport,
+              signal
+            }),
+            signal
+          )
+        } catch {
+          return { state: 'failed', checkedDays: 0, reviewRows: 0, updatedRows: 0 }
+        }
+      }
       if (!result.ok)
         return {
           issuer,
@@ -487,7 +502,10 @@ export function createCardDailyRuntime(options: {
                 ? 'collection_incomplete'
                 : result.reason === 'interrupted'
                   ? 'interrupted'
-                  : 'sync_unavailable'
+                  : 'sync_unavailable',
+          ...(result.reason === 'collection_incomplete'
+            ? { reconciliation: await checkCancellations() }
+            : {})
         }
       const saved: CardDailyResult = {
         issuer,
@@ -523,19 +541,14 @@ export function createCardDailyRuntime(options: {
               signal
             }
           )
-          saved.reconciliation = await interrupted(
-            reconcileKnownCards(tab, {
-              tokenFile: options.settings().financeCollectorTokenFile,
-              transport: options.settings().financeCollectorTransport,
-              signal
-            }),
-            signal
-          )
         } catch {
-          // A later check must never erase the receipt of an already saved current-period batch.
-          saved.reconciliation = { state: 'failed', checkedDays: 0, reviewRows: 0, updatedRows: 0 }
+          // Approval-gap recovery cannot suppress the independent refund query.
         }
       }
+      stage = 'reconcile'
+      // Refund proof is validated against the existing ledger independently of
+      // the completeness of today's approvals. Preserve that approval receipt.
+      saved.reconciliation = await checkCancellations()
       return { ...saved, verifiedSignedIn }
     } catch (error: unknown) {
       const navigationStage = [

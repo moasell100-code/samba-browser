@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { parse, type HTMLElement, type Node } from 'node-html-parser'
 import { pageBridge } from '../browser/page-bridge'
 import type { Tab } from '../browser/tab-manager'
-import type { CardApiCollector, CardApiResult, CardApiRow } from './card-api-types'
+import type { CardApiCollector, CardApiResult, CardApiRow, CardDateRange } from './card-api-types'
 import { summarizeLotteHistoryContent } from './lotte-response-summary'
 import { lotteResponseShapeIssues } from './lotte-api-diagnostics'
 import { lotteMethodDiagnostics } from './lotte-method-diagnostics'
@@ -263,7 +263,8 @@ function detailListFields(list: HTMLElement): Map<string, string> | null {
 function rowFromHtml(
   row: HTMLElement,
   verifiedDetails?: DetailFields,
-  verifiedCard?: CardIdentity
+  verifiedCard?: CardIdentity,
+  verifiedApprovalDate?: string
 ): CardApiRow | null {
   const children = elements(row)
   const heading = children.find((node) => node.tagName === 'STRONG')!
@@ -305,7 +306,7 @@ function rowFromHtml(
     needsReview.push(...lotteMethodDiagnostics(detailMethod))
   }
   const detailDate = details?.get('이용일시') ? date(details.get('이용일시')!) : null
-  const approvedAt = detailDate ?? headDate
+  const approvedAt = detailDate ?? verifiedApprovalDate ?? headDate
   if (detailDate && detailDate.slice(0, 10) !== headDate.slice(0, 10))
     needsReview.push('approval_date_conflict')
   const approvalText = details?.get('승인번호')
@@ -336,7 +337,8 @@ function rowFromHtml(
   const amount = Math.abs(headAmount)
   let cancellationAmount: number | null = null
   let netAmount: number | null = status === 'approved' ? amount : null
-  const cancellationDate = details?.get('취소일자') ? date(details.get('취소일자')!) : null
+  const cancellationDateText = details?.get('취소일자') ?? details?.get('취소일시')
+  const cancellationDate = cancellationDateText ? date(cancellationDateText) : null
   const detailRefund = krw(details?.get('취소금액'))
   const cancellationLabel = details?.get('취소여부')
   const normalDash =
@@ -344,10 +346,16 @@ function rowFromHtml(
     status === 'approved' &&
     (detailRefund === 0 || ['', '-', '--'].includes(details?.get('취소금액') ?? '')) &&
     ['', '-', '--'].includes(details?.get('취소일자') ?? '')
+  const verifiedSixPairIdentity = verifiedApprovalDate !== undefined && verifiedCard !== undefined
+  const matchedSixPairCancellationFlag =
+    cancellationLabel === 'Y' &&
+    verifiedSixPairIdentity &&
+    (status === 'cancelled' || status === 'partially_cancelled')
   if (
     details &&
     cancellationLabel !== '정상' &&
     !normalDash &&
+    !matchedSixPairCancellationFlag &&
     !['취소', '취소완료', '부분취소'].includes(cancellationLabel ?? '')
   ) {
     needsReview.push('status_unverified')
@@ -363,7 +371,7 @@ function rowFromHtml(
   }
   if (
     status === 'approved' &&
-    (['취소', '취소완료', '부분취소'].includes(cancellationLabel ?? '') ||
+    (['취소', '취소완료', '부분취소', 'Y'].includes(cancellationLabel ?? '') ||
       (detailRefund !== null && detailRefund !== 0) ||
       cancellationDate)
   ) {
@@ -375,7 +383,9 @@ function rowFromHtml(
   }
   if (status === 'cancelled' || status === 'partially_cancelled') {
     const explicitRefund = krw(details?.get('취소금액'))
-    const statusRefund = /^부분취소\(-((?:\d+|\d{1,3}(?:,\d{3})+))원\)$/.exec(metadata[3] ?? '')
+    const statusRefund = verifiedSixPairIdentity
+      ? null
+      : /^부분취소\(-((?:\d+|\d{1,3}(?:,\d{3})+))원\)$/.exec(metadata[3] ?? '')
     const statusAmount = statusRefund ? krw(statusRefund[1]) : null
     if (explicitRefund !== null) cancellationAmount = Math.abs(explicitRefund)
     else if (statusAmount !== null) cancellationAmount = statusAmount
@@ -440,7 +450,8 @@ export function parseLotteApiResponse(
   parsed: unknown,
   detailOverrides: ReadonlyMap<number, DetailFields> = new Map(),
   detailIssues: ReadonlyMap<number, string> = new Map(),
-  cardOverrides: ReadonlyMap<number, CardIdentity> = new Map()
+  cardOverrides: ReadonlyMap<number, CardIdentity> = new Map(),
+  approvalDateOverrides: ReadonlyMap<number, string> = new Map()
 ): LotteApiPage {
   const status = own(own(parsed, 'Status'), 'code')
   if (status !== 0 && status !== '0')
@@ -455,13 +466,19 @@ export function parseLotteApiResponse(
   const rows: CardApiRow[] = []
   const issues = new Set<string>()
   for (const [index, element] of elements(root).entries()) {
-    const row = rowFromHtml(element, detailOverrides.get(index), cardOverrides.get(index))
+    const row = rowFromHtml(
+      element,
+      detailOverrides.get(index),
+      cardOverrides.get(index),
+      approvalDateOverrides.get(index)
+    )
     if (!row) {
       issues.add('unrecognized_rows')
       continue
     }
     const detailIssue = detailIssues.get(index)
     if (detailIssue) row.needsReview.push(detailIssue)
+    if (row.needsReview.length) delete row.cancellationEvidence
     rows.push(row)
   }
   const seen = new Map<string, CardApiRow>()
@@ -470,6 +487,8 @@ export function parseLotteApiResponse(
     if (previous) {
       previous.needsReview.push('duplicate_identity_in_page')
       row.needsReview.push('duplicate_identity_in_page')
+      delete previous.cancellationEvidence
+      delete row.cancellationEvidence
       issues.add('duplicate_identity_in_page')
     } else seen.set(row.sourceId, row)
   }
@@ -697,6 +716,183 @@ function detailResponseFields(response: unknown): DetailFields | null {
   return detailListFields(lists[0])
 }
 
+/** Official six-pair P103 fields; missing refund amount never gains inferred semantics. */
+function sixPairDetailResponseFields(response: unknown): DetailFields | null {
+  const status = own(own(response, 'Status'), 'code')
+  const content = own(response, 'Content')
+  if (
+    (status !== 0 && status !== '0') ||
+    typeof content !== 'string' ||
+    Buffer.byteLength(content) > MAX_RESPONSE_BYTES
+  )
+    return null
+  const doc = parse(content)
+  const roots = elements(doc)
+  const lists = doc.querySelectorAll('ul')
+  if (
+    roots.length < 1 ||
+    roots.length > 2 ||
+    roots.some((root) => root.tagName !== 'UL' && root.tagName !== 'DIV') ||
+    lists.length !== 1 ||
+    !roots.includes(lists[0]) ||
+    doc.childNodes.some((node) => node.nodeType === 3 && node.text.trim())
+  )
+    return null
+  const pairs = elements(lists[0])
+  if (pairs.length !== 6 || pairs.some((pair) => pair.tagName !== 'LI')) return null
+  const coreLabels = DETAIL_LABELS.slice(1, 5)
+  const fields = new Map<string, string>()
+  for (const [index, expectedLabel] of coreLabels.entries()) {
+    const pair = pairs[index]
+    const label = pair.childNodes
+      .filter((node) => node.nodeType === 3)
+      .map((node) => node.text)
+      .join('')
+      .replace(/\s+/g, '')
+      .trim()
+    const values = elements(pair)
+    if (label !== expectedLabel || values.length !== 1 || values[0].tagName !== 'SPAN') return null
+    const value = text(values[0])
+    if (value === null) return null
+    fields.set(expectedLabel, value)
+  }
+  const separator = pairs[4]
+  if (elements(separator).length || text(separator) !== '') return null
+  const cancellationPair = pairs[5]
+  const cancellationLabel = cancellationPair.childNodes
+    .filter((node) => node.nodeType === 3)
+    .map((node) => node.text)
+    .join('')
+    .replace(/\s+/g, '')
+    .trim()
+  const cancellationValues = elements(cancellationPair)
+  if (
+    cancellationLabel !== '취소일시' ||
+    cancellationValues.length !== 1 ||
+    cancellationValues[0].tagName !== 'SPAN'
+  )
+    return null
+  const cancellationDate = text(cancellationValues[0])
+  if (!cancellationDate || !date(cancellationDate)) return null
+  fields.set('취소일시', cancellationDate)
+  return fields
+}
+
+const DETAIL_SHAPE_LABELS = [
+  ...DETAIL_LABELS,
+  '이용일자',
+  '이용시간',
+  '시간',
+  '카드번호',
+  '이용금액',
+  '승인금액',
+  '승인일시',
+  '사용카드',
+  '거래일시',
+  '취소일시',
+  '취소일',
+  '취소접수일자',
+  '취소처리일자',
+  '매입취소일자',
+  '매입일자',
+  '매입일시',
+  '승인일자',
+  '이용구분',
+  '승인구분',
+  '처리일자',
+  '취소내역',
+  '취소정보',
+  '취소승인일자'
+] as const
+const DETAIL_SHAPE_PUBLIC_TEXT = [
+  '',
+  '-',
+  '매입전',
+  '매입후',
+  '매입전취소',
+  '매입후취소',
+  '승인취소',
+  '매출취소',
+  '취소완료',
+  '부분취소',
+  '미매입'
+] as const
+const DETAIL_SHAPE_TAGS = new Set([
+  'UL',
+  'DIV',
+  'LI',
+  'SPAN',
+  'STRONG',
+  'EM',
+  'BR',
+  'DL',
+  'DT',
+  'DD',
+  'P',
+  'A',
+  'BUTTON',
+  'INPUT',
+  'SECTION'
+])
+
+/** Fixed public label indices and structural counts only, never text or attribute values. */
+function detailResponseShapeIssues(response: unknown): string[] {
+  const content = own(response, 'Content')
+  if (typeof content !== 'string' || Buffer.byteLength(content) > MAX_RESPONSE_BYTES)
+    return ['detail_shape_content_unverified']
+  const doc = parse(content)
+  const roots = elements(doc)
+  const tag = (node: HTMLElement): string =>
+    DETAIL_SHAPE_TAGS.has(node.tagName) ? node.tagName.toLowerCase() : 'unrecognized'
+  const label = (value: string): number =>
+    (DETAIL_SHAPE_LABELS as readonly string[]).indexOf(value.replace(/\s+/g, '').trim())
+  const issues = [`detail_shape_root_count_${Math.min(roots.length, 100)}`]
+  for (const [index, root] of roots.slice(0, 8).entries())
+    issues.push(`detail_shape_root_${index}_${tag(root)}`)
+  const lists = doc.querySelectorAll('ul')
+  issues.push(`detail_shape_list_count_${Math.min(lists.length, 100)}`)
+  for (const [listIndex, list] of lists.slice(0, 4).entries()) {
+    const pairs = elements(list)
+    issues.push(`detail_shape_list_${listIndex}_pair_count_${Math.min(pairs.length, 100)}`)
+    for (const [pairIndex, pair] of pairs.slice(0, 12).entries()) {
+      const prefix = `detail_shape_list_${listIndex}_pair_${pairIndex}`
+      const children = elements(pair)
+      issues.push(`${prefix}_tag_${tag(pair)}`)
+      issues.push(`${prefix}_children_${Math.min(children.length, 100)}`)
+      const direct = pair.childNodes
+        .filter((node) => node.nodeType === 3)
+        .map((node) => node.text)
+        .join('')
+      const directLabel = label(direct)
+      issues.push(`${prefix}_direct_label_${directLabel < 0 ? 'unrecognized' : directLabel}`)
+      const normalizedDirect = direct.replace(/\s+/g, '').trim()
+      const publicText = (DETAIL_SHAPE_PUBLIC_TEXT as readonly string[]).indexOf(normalizedDirect)
+      if (publicText >= 0) issues.push(`${prefix}_direct_public_${publicText}`)
+      // A labelled punctuation or an additional private suffix cannot be accepted
+      // as a field label. Fixed token presence is diagnostic only.
+      for (const [labelIndex, publicLabel] of DETAIL_SHAPE_LABELS.entries())
+        if (normalizedDirect.includes(publicLabel))
+          issues.push(`${prefix}_direct_label_token_${labelIndex}`)
+      let dateValues = 0
+      let moneyValues = 0
+      for (const [childIndex, child] of children.slice(0, 6).entries()) {
+        issues.push(`${prefix}_child_${childIndex}_${tag(child)}`)
+        // Descendant text is compared only with fixed public labels; it is never returned.
+        const childText = text(child)
+        const childLabel = childText === null ? -1 : label(childText)
+        if (childLabel >= 0) issues.push(`${prefix}_child_${childIndex}_label_${childLabel}`)
+        if (child.tagName === 'SPAN' && childText !== null) {
+          if (date(childText)) dateValues++
+          if (krw(childText) !== null) moneyValues++
+        }
+      }
+      issues.push(`${prefix}_date_value_count_${dateValues}`)
+      issues.push(`${prefix}_money_value_count_${moneyValues}`)
+    }
+  }
+  return issues
+}
+
 async function enrichLottePage(
   tab: Tab,
   response: unknown,
@@ -712,6 +908,7 @@ async function enrichLottePage(
   const root = doc.querySelector('#useCardList') ?? doc
   const overrides = new Map<number, DetailFields>()
   const cardOverrides = new Map<number, CardIdentity>()
+  const approvalDateOverrides = new Map<number, string>()
   const flags = new Map<number, string>()
   const diagnostics = new Set<string>()
   let interruption: string | undefined
@@ -737,8 +934,18 @@ async function enrichLottePage(
       const detail = await requestLotteForm(tab, form, 'detail', signal)
       const fields = detailResponseFields(detail)
       if (!fields) {
-        flags.set(index, 'detail_response_schema_unverified')
         for (const issue of lotteResponseShapeIssues(detail)) diagnostics.add(issue)
+        for (const issue of detailResponseShapeIssues(detail)) diagnostics.add(issue)
+        const sixPair = sixPairDetailResponseFields(detail)
+        const identity = cardIdentities.get(form.encCdno)
+        const approved = payloadDate(form.aprDtti)
+        if (sixPair && identity && approved && sixPair.get('승인번호') === form.aprno) {
+          // The official row payload supplies the validated original timestamp.
+          // The exact labelled cancellation timestamp supplies only its date.
+          overrides.set(index, sixPair)
+          cardOverrides.set(index, identity)
+          approvalDateOverrides.set(index, approved)
+        } else flags.set(index, 'detail_response_schema_unverified')
         continue
       }
       const approved = fields.get('이용일시') && date(fields.get('이용일시')!)
@@ -775,7 +982,13 @@ async function enrichLottePage(
       break
     }
   }
-  const page = parseLotteApiResponse(response, overrides, flags, cardOverrides)
+  const page = parseLotteApiResponse(
+    response,
+    overrides,
+    flags,
+    cardOverrides,
+    approvalDateOverrides
+  )
   return {
     page,
     diagnostics: [...diagnostics],
@@ -784,7 +997,7 @@ async function enrichLottePage(
 }
 
 /** Official form/radio semantics only; values stay in private main-process memory. No DOM writes. */
-function requestPlanScript(from: string, to: string): string {
+function requestPlanScript(from: string, to: string, cancellationOnly = false): string {
   return `(() => {
     const url = new URL(location.href);
     if (url.origin + url.pathname !== '${HISTORY}' || url.username || url.password) return { ok: false };
@@ -803,8 +1016,11 @@ function requestPlanScript(from: string, to: string): string {
     const filters = {};
     for (const name of ['useCdDv','uplDv','useDv','stDv']) {
       const options = [...document.querySelectorAll('input[type="radio"]')].filter(field => field.name === name + 'Radio');
-      const matched = options.filter(field => [...(field.labels || [])].some(label => label.textContent.replace(/\\s+/g, '').trim() === '전체'));
+      const label = ${cancellationOnly} && name === 'stDv' ? '취소' : '전체';
+      const matched = options.filter(field => [...(field.labels || [])].some(item => item.textContent.replace(/\\s+/g, '').trim() === label));
       if (matched.length !== 1 || !/^[a-zA-Z0-9_-]{0,16}$/.test(matched[0].value)) return { ok: false };
+      // The public stDvRadio contract maps only the explicit 취소 option to 2.
+      if (${cancellationOnly} && name === 'stDv' && matched[0].getAttribute('value') !== '2') return { ok: false };
       filters[name] = matched[0].value;
     }
     if (!/^[1-9][0-9]{0,3}$/.test(original.pageRows) || Number(original.pageRows) > 1000) return { ok: false };
@@ -841,12 +1057,18 @@ function integer(value: unknown, max: number): number | null {
   return Number.isSafeInteger(parsed) && parsed <= max ? parsed : null
 }
 
-export const collectLotteApi: CardApiCollector = async (tab, range, options = {}) => {
+const collectLotteWithMode = async (
+  tab: Tab,
+  range: CardDateRange,
+  options: NonNullable<Parameters<CardApiCollector>[2]> = {},
+  cancellationOnly = false
+): Promise<CardApiResult> => {
   const started = Date.now()
   const rows: CardApiRow[] = []
-  const issues = new Set<string>(['cancellation_query_basis_unverified'])
+  const issues = new Set<string>(cancellationOnly ? [] : ['cancellation_query_basis_unverified'])
   let pages = 0
   let approvalComplete = false
+  let cancellationQueryComplete = false
   const result = (more: string[] = []): CardApiResult => ({
     rows,
     receipt: {
@@ -855,9 +1077,16 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
       pages,
       rowCount: rows.length,
       complete: false,
-      approvalComplete,
+      approvalComplete: cancellationOnly ? false : approvalComplete,
       cancellationComplete: false,
-      statusComplete: approvalComplete && rows.every((row) => row.needsReview.length === 0),
+      statusComplete:
+        !cancellationOnly && approvalComplete && rows.every((row) => row.needsReview.length === 0),
+      ...(cancellationOnly
+        ? {
+            cancellationQueryComplete,
+            cancellationQueryBasis: 'original_approval_date' as const
+          }
+        : {}),
       issues: [...new Set([...issues, ...more])],
       elapsedMs: Date.now() - started
     }
@@ -884,7 +1113,7 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
       return result(['authentication_required'])
     const maxPages = Math.min(100, options.maxPages ?? 100)
     if (!Number.isInteger(maxPages) || maxPages < 1) return result(['invalid_page_limit'])
-    const planScript = requestPlanScript(range.from, range.to)
+    const planScript = requestPlanScript(range.from, range.to, cancellationOnly)
     const plan = await bounded(wc.executeJavaScript(planScript, false), options.signal)
     if (own(plan, 'ok') !== true || typeof own(plan, 'scope') !== 'string')
       return result(['request_schema_unverified'])
@@ -1023,12 +1252,24 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
       for (const issue of page.issues) issues.add(issue)
       if (page.rowCount !== page.rows.length || page.issues.length) valid = false
       for (const row of page.rows) {
+        if (cancellationOnly && row.kind === 'approval') {
+          valid = false
+          issues.add('non_cancellation_row')
+          continue
+        }
         if (!(
           (row.approvedAt.slice(0, 10) >= range.from && row.approvedAt.slice(0, 10) <= range.to) ||
-          (row.eventDate && row.eventDate >= range.from && row.eventDate <= range.to)
+          (!cancellationOnly &&
+            row.eventDate &&
+            row.eventDate >= range.from &&
+            row.eventDate <= range.to)
         )) {
           valid = false
           row.needsReview.push('outside_requested_range')
+        }
+        if (cancellationOnly && row.eventDate && row.eventDate < row.approvedAt.slice(0, 10)) {
+          valid = false
+          row.needsReview.push('cancellation_precedes_approval')
         }
         // The history range is an original-approval range. An explicitly labelled
         // refund can be applied to its unique original even though this query
@@ -1040,14 +1281,20 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
             ...new Set([...previous.needsReview, 'duplicate_source_identity'])
           ]
           row.needsReview = [...new Set([...row.needsReview, 'duplicate_source_identity'])]
+          delete previous.cancellationEvidence
           issues.add('duplicate_source_identity')
         } else seen.set(row.sourceId, row)
+        if (row.needsReview.length) delete row.cancellationEvidence
         for (const issue of row.needsReview) issues.add(issue)
         rows.push(row)
       }
       if (interruption) return result([interruption])
       if (totalPages === 0 || currentPage === totalPages) {
         approvalComplete = valid
+        cancellationQueryComplete =
+          cancellationOnly &&
+          valid &&
+          rows.every((row) => ['cancelled', 'partially_cancelled'].includes(row.status))
         return result()
       }
       const next = integer(own(param, 'nextPageNo'), 10000)
@@ -1069,3 +1316,10 @@ export const collectLotteApi: CardApiCollector = async (tab, range, options = {}
     ])
   }
 }
+
+export const collectLotteApi: CardApiCollector = (tab, range, options) =>
+  collectLotteWithMode(tab, range, options)
+
+/** Fixed status-2 cancellations in the issuer's original-approval-date range. */
+export const collectLotteCancellationApi: CardApiCollector = (tab, range, options) =>
+  collectLotteWithMode(tab, range, options, true)

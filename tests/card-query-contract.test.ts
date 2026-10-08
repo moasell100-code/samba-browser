@@ -52,6 +52,28 @@ function fixture(source = ''): {
 }
 
 describe('fixed query contract inspection redaction', () => {
+  it('projects only recognized static status enum attributes without reading mutable values', async () => {
+    const f = fixture()
+    f.dom.window.document.body.innerHTML =
+      '<input id="all" type="radio" name="stDvRadio" value="0"><label for="all">전체</label>' +
+      '<input id="cancel" type="radio" name="stDvRadio" value="2"><label for="cancel">취소</label>' +
+      '<input id="secret" type="radio" name="stDvRadio" value="PRIVATE_CODE"><label for="secret">취소</label>' +
+      '<input id="private" type="radio" name="otherRadio" value="1"><label for="private">PRIVATE_LABEL</label>'
+    const readValue = vi.fn(() => {
+      throw new Error('must not read')
+    })
+    for (const input of f.dom.window.document.querySelectorAll('input'))
+      Object.defineProperty(input, 'value', { get: readValue })
+    const result = (await inspectCardQueryContract(f.tab)) as { publicStatusOptions: unknown[] }
+    expect(result.publicStatusOptions).toEqual([
+      { label: '전체', code: '0' },
+      { label: '취소', code: '2' }
+    ])
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_CODE')
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_LABEL')
+    expect(readValue).not.toHaveBeenCalled()
+  })
+
   it('returns only fixed public Lotte filter labels without reading option values', async () => {
     const f = fixture()
     f.dom.window.document.body.innerHTML =

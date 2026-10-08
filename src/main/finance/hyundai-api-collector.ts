@@ -300,7 +300,7 @@ async function bounded<T>(
 }
 
 /** Only the first DOM plan may be awaiting the site's asynchronous form initialization. */
-async function initialRequestPlan(
+export async function initialRequestPlan(
   tab: Tab,
   wc: Tab['view']['webContents'],
   url: string,
@@ -363,20 +363,20 @@ async function initialRequestPlan(
   }
 }
 
-function own(value: unknown, key: string): unknown {
+export function own(value: unknown, key: string): unknown {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? Object.getOwnPropertyDescriptor(value, key)?.value
     : undefined
 }
 
-function scalar(value: unknown, maximum = 2000): string | null {
+export function scalar(value: unknown, maximum = 2000): string | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null
   if (typeof value === 'number' && !Number.isFinite(value)) return null
   const result = String(value).trim()
   return result.length <= maximum ? result : null
 }
 
-function date(value: unknown): string | null {
+export function date(value: unknown): string | null {
   const input = scalar(value, 40)
   if (!input) return null
   const match = /^(\d{4})[.-]?(\d{2})[.-]?(\d{2})$/.exec(input)
@@ -386,7 +386,7 @@ function date(value: unknown): string | null {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso ? iso : null
 }
 
-function dateTime(value: unknown): string | null {
+export function dateTime(value: unknown): string | null {
   const input = scalar(value, 40)
   if (!input) return null
   const match = /^(\d{4}[.-]?\d{2}[.-]?\d{2})(?:[ T]?(\d{2}):?(\d{2}):?(\d{2}))?$/.exec(input)
@@ -398,14 +398,14 @@ function dateTime(value: unknown): string | null {
   return `${day}T${match[2]}:${match[3]}:${match[4]}+09:00`
 }
 
-function won(value: unknown): number | null {
+export function won(value: unknown): number | null {
   const input = scalar(value, 40)
   if (!input || !/^-?(?:\d+|\d{1,3}(?:,\d{3})+)$/.test(input)) return null
   const amount = Number(input.replaceAll(',', ''))
   return Number.isSafeInteger(amount) && Math.abs(amount) <= 999_999_999_999 ? amount : null
 }
 
-function historyOrigin(value: string): string | null {
+export function historyOrigin(value: string): string | null {
   try {
     const url = new URL(value)
     return !url.username &&
@@ -767,7 +767,7 @@ function transactionShape(row: CardApiRow): string {
   ])
 }
 
-function responseScopeIssue(
+export function responseScopeIssue(
   response: unknown,
   form: HyundaiApiForm,
   iso: string,

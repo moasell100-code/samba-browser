@@ -22,8 +22,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../src/main/finance/card-agent-sync', () => ({ createCardAgentSync: mocks.configure }))
 vi.mock('../src/main/finance/card-login-session', () => ({ restoreCardSession: mocks.restore }))
 vi.mock('../src/main/finance/card-schedule-report', () => ({ reportCardSchedule: mocks.report }))
-vi.mock('../src/main/finance/card-reconciliation-sync', () => ({
-  reconcileKnownCards: mocks.reconcile
+vi.mock('../src/main/finance/card-cancellation-sync', () => ({
+  reconcileCardCancellations: mocks.reconcile
 }))
 vi.mock('../src/main/finance/card-coverage-sync', () => ({ recoverCardCoverage: mocks.recover }))
 vi.mock('../src/main/finance/card-page-diagnostics', () => ({
@@ -226,7 +226,7 @@ describe('deterministic daily card runtime', () => {
     }))
     mocks.reconcile.mockResolvedValue({
       state: 'checked',
-      checkedDays: 31,
+      checkedDays: 93,
       reviewRows: 0,
       updatedRows: 2
     })
@@ -248,7 +248,7 @@ describe('deterministic daily card runtime', () => {
       ])
       expect(
         persisted.run?.results.every(
-          (row) => row.state === 'saved' && row.reconciliation?.checkedDays === 31
+          (row) => row.state === 'saved' && row.reconciliation?.checkedDays === 93
         )
       ).toBe(true)
       expect(
@@ -258,7 +258,7 @@ describe('deterministic daily card runtime', () => {
       ).toBe(true)
       const savedFile = readFileSync(stateFile, 'utf8')
       const invalid = structuredClone(persisted)
-      invalid.run!.results[0].reconciliation!.checkedDays = 32
+      invalid.run!.results[0].reconciliation!.checkedDays = 95
       expect(() => store.write(invalid)).toThrow()
       expect(readFileSync(stateFile, 'utf8')).toBe(savedFile)
       first.runtime.dispose()
@@ -726,7 +726,7 @@ describe('deterministic daily card runtime', () => {
     expect(JSON.stringify(f.statuses)).not.toContain('PRIVATE')
     f.runtime.dispose()
   })
-  it('checks only verified saved issuers and keeps the original receipt when later reconciliation fails', async () => {
+  it('checks refunds independently of partial approvals and preserves the original receipt', async () => {
     const f = setup()
     mocks.sync.mockResolvedValueOnce({
       ok: true,
@@ -739,7 +739,8 @@ describe('deterministic daily card runtime', () => {
     })
     mocks.reconcile.mockRejectedValue(new Error('PRIVATE-CHECK-ERROR'))
     await f.runtime.tick()
-    expect(mocks.reconcile).toHaveBeenCalledTimes(2)
+    expect(mocks.reconcile).toHaveBeenCalledTimes(3)
+    expect(mocks.recover).toHaveBeenCalledTimes(2)
     expect(f.runtime.status().results[1]).toMatchObject({
       state: 'saved',
       insertedRows: 1,
@@ -747,6 +748,30 @@ describe('deterministic daily card runtime', () => {
       reconciliation: { state: 'failed' }
     })
     expect(f.runtime.status().phase).toBe('needs_attention')
+    expect(JSON.stringify(f.statuses)).not.toContain('PRIVATE')
+    f.runtime.dispose()
+  })
+  it('still checks refunds when an empty approval query is incomplete', async () => {
+    const f = setup()
+    mocks.sync.mockResolvedValueOnce({ ok: false, reason: 'collection_incomplete' })
+    await f.runtime.tick()
+    expect(mocks.reconcile).toHaveBeenCalledTimes(3)
+    expect(mocks.recover).toHaveBeenCalledTimes(2)
+    expect(f.runtime.status().results[0]).toMatchObject({
+      state: 'failed',
+      reason: 'collection_incomplete',
+      reconciliation: { state: 'no_work' }
+    })
+    f.runtime.dispose()
+  })
+  it('does not let approval gap recovery failure suppress refund queries', async () => {
+    const f = setup()
+    mocks.recover.mockRejectedValue(new Error('PRIVATE-GAP-ERROR'))
+    await f.runtime.tick()
+    expect(mocks.reconcile).toHaveBeenCalledTimes(3)
+    expect(f.runtime.status().results.every((row) => row.reconciliation?.state === 'no_work')).toBe(
+      true
+    )
     expect(JSON.stringify(f.statuses)).not.toContain('PRIVATE')
     f.runtime.dispose()
   })

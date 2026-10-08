@@ -45,7 +45,7 @@ export interface CardReconciliationResult {
   updatedRows: number
 }
 
-async function exchange(
+export async function exchangeReconciliation(
   command: 'reconcile-lease' | 'reconcile-complete',
   body: string,
   path: string,
@@ -130,7 +130,7 @@ export async function reconcileKnownCards(
       wc.getURL() === initialUrl
     const requestOptions = { ...options, signal }
     const lease = leaseSchema.parse(
-      await exchange(
+      await exchangeReconciliation(
         'reconcile-lease',
         JSON.stringify({ issuer, maxDays: 31 }),
         'lease',
@@ -176,7 +176,7 @@ export async function reconcileKnownCards(
       if (!result.receipt.approvalComplete) return failed
     }
     const reply = receiptSchema.parse(
-      await exchange(
+      await exchangeReconciliation(
         'reconcile-complete',
         JSON.stringify({
           job_id: lease.job_id,

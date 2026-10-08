@@ -2,7 +2,8 @@ import type { Tab } from '../browser/tab-manager'
 import { inspectCardPage } from './card-page-diagnostics'
 
 // Inspection only: do not invoke functions, handlers, or send page requests.
-// Restrict this diagnostic to static query functions. Never read form values.
+// Restrict this diagnostic to static query functions and public option markup.
+// Never read mutable form values or customer/account fields.
 const SCRIPT = String.raw`(() => {
   const pageUrl = new URL(location.href);
   const allowed = !pageUrl.username && !pageUrl.password && (
@@ -29,7 +30,7 @@ const SCRIPT = String.raw`(() => {
     if (literals.has(value) || /^\/(?:cpa\/cb|app)\/[A-Za-z_][A-Za-z0-9_]{1,60}\.(?:hc|lc|json|ajax|do)$/.test(value) && !/\d{8,}/.test(value)) return JSON.stringify(value);
     return '"[literal omitted]"';
   }).replace(/\b\d{4,}\b/g, '[number omitted]');
-  const result = { functions: [], handlers: [], paths: [], filterLabels: [], cardSelectorSchema: [] };
+  const result = { functions: [], handlers: [], paths: [], filterLabels: [], publicStatusOptions: [], cardSelectorSchema: [] };
   if (location.hostname === 'www.lottecard.co.kr') {
     for (const input of Array.from(document.querySelectorAll('input[name="useCarditem"]')).slice(0,20)) {
       const root = input.closest('li') || input.parentElement;
@@ -47,6 +48,14 @@ const SCRIPT = String.raw`(() => {
         return publicLabels.has(label) ? label : 'unrecognized';
       });
       result.filterLabels.push({ name, labels });
+    }
+    // The public status radio's static enum attribute is distinct from current
+    // form state. It is needed to verify the cancellation-only query contract.
+    for (const input of Array.from(document.querySelectorAll('input[type="radio"][name="stDvRadio"]')).slice(0,10)) {
+      const label = Array.from(input.labels || []).map(item=>item.textContent || '').join('').replace(/\s+/g,'');
+      const code = input.getAttribute('value');
+      if (['전체','정상','취소'].includes(label) && typeof code === 'string' && /^(?:[0-9]{1,2}|[A-Z])$/.test(code))
+        result.publicStatusOptions.push({ label, code });
     }
   }
   const sources = Array.from(document.scripts).filter(s => !s.src).map(s => s.textContent || '').filter(s => s.length < 250000);

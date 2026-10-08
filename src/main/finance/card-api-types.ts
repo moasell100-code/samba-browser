@@ -13,6 +13,8 @@ export interface CardApiRow {
   kind: 'approval' | 'cancellation' | 'status'
   approvedAt: string
   eventDate?: string
+  /** Issuer's displayed date used to validate the query; not independent refund-date proof. */
+  queryDate?: string
   approvalNumber?: string
   /** Private stable issuer card reference digest; never a reconstructed card number. */
   cardKey?: string
@@ -24,6 +26,8 @@ export interface CardApiRow {
   merchantIndustry?: string
   /** Original approval amount; a cancellation screen may repeat this rather than its refund. */
   amount: number
+  /** false only for a refund event whose original gross must be resolved in the ledger. */
+  originalAmountKnown?: boolean
   currency: 'KRW'
   status: 'approved' | 'cancelled' | 'partially_cancelled' | 'unknown'
   cancellationAmount: number | null
@@ -45,6 +49,9 @@ export interface CardApiReceipt {
   /** Verified approval coverage only; cancellation reconciliation may still be incomplete. */
   approvalComplete?: boolean
   cancellationComplete?: boolean
+  /** Verified cancellation-query coverage, distinct from a global cancellation-event feed. */
+  cancellationQueryComplete?: boolean
+  cancellationQueryBasis?: 'original_approval_date' | 'issuer_display_date'
   /** All original approvals in this date range have verified current status. */
   statusComplete?: boolean
   issues: string[]
