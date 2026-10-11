@@ -12,7 +12,7 @@ import type {
 import { CARD_DAILY_ISSUERS } from '../../shared/card-daily'
 import { createCardAgentSync } from './card-agent-sync'
 import { CARD_HISTORY_URLS, inspectCardPage, issuerForCardUrl } from './card-page-diagnostics'
-import { restoreCardSession } from './card-login-session'
+import { createSignedInAttemptReconciler, restoreCardSession } from './card-login-session'
 import { CardDailyScheduler } from './card-daily-scheduler'
 import { FileCardDailyStore } from './card-daily-store'
 import { reportCardSchedule } from './card-schedule-report'
@@ -376,7 +376,13 @@ export function createCardDailyRuntime(options: {
       opening = false
       if (issuerForCardUrl(wc.getURL()) !== issuer) throw new Error()
       stage = 'inspect_session'
+      const reconcileAttempts = createSignedInAttemptReconciler({
+        tabs: options.tabs,
+        tabId: tab.id,
+        signal
+      })
       let before = await interrupted(settledAuth(tab, signal), signal)
+      let verifiedSession = before
       if (before.issuer !== issuer) throw new Error()
       if (before.auth !== 'signed_in' && !allowLogin)
         return { issuer, state: 'needs_login', reason: 'attempt_protected', stage, loginAttempted }
@@ -445,6 +451,7 @@ export function createCardDailyRuntime(options: {
             stage,
             loginAttempted
           }
+        verifiedSession = confirmed
       }
       if (
         signal.aborted ||
@@ -455,6 +462,7 @@ export function createCardDailyRuntime(options: {
         issuerForCardUrl(wc.getURL()) !== issuer
       )
         throw new Error()
+      reconcileAttempts(verifiedSession)
       verifiedSignedIn = true
       stage = 'prepare_sync'
       const sync = await createCardAgentSync({

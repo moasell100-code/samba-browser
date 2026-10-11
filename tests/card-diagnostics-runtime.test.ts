@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Tab, TabManager } from '../src/main/browser/tab-manager'
 import type { CardDiagnosticsBackend } from '../src/main/finance/card-diagnostics-mcp'
+import type { VaultService } from '../src/main/vault/service'
+import { DEFAULT_SETTINGS } from '../src/shared/settings'
 
 type MockObserver = {
   issuer: string
@@ -14,6 +16,9 @@ const fixtureState = vi.hoisted(() => ({
   startPause: undefined as Promise<void> | undefined,
   inspectPause: undefined as Promise<void> | undefined,
   inspect: vi.fn(),
+  restore: vi.fn(),
+  collectRecent: vi.fn(),
+  saveCollection: vi.fn(),
   cancellationProbe: vi.fn(),
   cancelDateProbe: vi.fn(),
   lotteCancelDateProbe: vi.fn(),
@@ -88,10 +93,18 @@ vi.mock('../src/main/finance/card-page-diagnostics', () => ({
     }
   },
   inspectCardPage: async (tab: Tab) => {
-    fixtureState.inspect(tab)
+    const result = fixtureState.inspect(tab)
     await fixtureState.inspectPause
-    return { state: 'ready' }
+    return result ?? { state: 'ready' }
   }
+}))
+vi.mock('../src/main/finance/card-login-session', () => ({
+  restoreCardSession: fixtureState.restore,
+  inspectLotteKeypadStatus: vi.fn(async () => ({ state: 'unknown' }))
+}))
+vi.mock('../src/main/finance/card-sync', () => ({
+  collectRecentCard: fixtureState.collectRecent,
+  saveCardCollection: fixtureState.saveCollection
 }))
 vi.mock('../src/main/finance/card-diagnostics-mcp', () => ({
   startCardDiagnosticsMcp: async (backend: CardDiagnosticsBackend, signal: AbortSignal) => {
@@ -124,7 +137,13 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   })
   return { promise, resolve }
 }
-async function fixture(options: { fresh?: boolean } = {}): Promise<{
+async function fixture(
+  options: {
+    fresh?: boolean
+    login?: boolean
+    onVerifiedSignedIn?: Parameters<typeof startCardDiagnosticsRuntime>[0]['onVerifiedSignedIn']
+  } = {}
+): Promise<{
   tab: Tab
   tabs: { get: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> }
   wc: EventEmitter & { loadURL: ReturnType<typeof vi.fn> }
@@ -141,12 +160,14 @@ async function fixture(options: { fresh?: boolean } = {}): Promise<{
   const wc = Object.assign(new EventEmitter(), {
     getURL: () => url,
     isDestroyed: () => destroyed,
+    session: {} as Tab['view']['webContents']['session'],
     loadURL: vi.fn(async (next: string) => {
       url = next
     })
   })
   const tab = {
     id: '00000000-0000-4000-8000-000000000001',
+    profile: 'default',
     view: { webContents: wc }
   } as unknown as Tab
   const tabs = {
@@ -161,7 +182,9 @@ async function fixture(options: { fresh?: boolean } = {}): Promise<{
     tabs: tabs as unknown as TabManager,
     tempDir: 'C:/synthetic-temp',
     sessionName: 'runtime-test-session',
-    isBusy: () => busy
+    isBusy: () => busy,
+    ...(options.login ? { vault: {} as VaultService, settings: () => DEFAULT_SETTINGS } : {}),
+    onVerifiedSignedIn: options.onVerifiedSignedIn
   })
   stops.push(stop)
   return {
@@ -189,6 +212,10 @@ beforeEach(() => {
   fixtureState.observers = []
   fixtureState.startPause = undefined
   fixtureState.inspectPause = undefined
+  fixtureState.inspect.mockReset()
+  fixtureState.restore.mockReset()
+  fixtureState.collectRecent.mockReset()
+  fixtureState.saveCollection.mockReset()
   fixtureState.mkdir.mockResolvedValue(undefined)
   fixtureState.writeFile.mockResolvedValue(undefined)
   fixtureState.unlink.mockResolvedValue(undefined)
@@ -213,6 +240,115 @@ afterEach(async () => {
 })
 
 describe('card diagnostics runtime lifetime', () => {
+  it.each(['signed_in', 'already_signed_in'] as const)(
+    'records a fresh same-session login proof after %s without collecting or retrying',
+    async (state) => {
+      const verified = vi.fn()
+      const h = await fixture({ login: true, onVerifiedSignedIn: verified })
+      fixtureState.restore.mockResolvedValue({ state, auth: 'signed_in' })
+      fixtureState.inspect.mockReturnValue({
+        issuer: 'lotte_card',
+        state: 'ready',
+        auth: 'signed_in'
+      })
+      expect(await h.backend.login!(h.tab.id)).toEqual({ state, auth: 'signed_in' })
+      expect(verified).toHaveBeenCalledExactlyOnceWith('lotte_card', h.tab)
+      expect(fixtureState.restore).toHaveBeenCalledOnce()
+      expect(fixtureState.collectRecent).not.toHaveBeenCalled()
+      expect(fixtureState.saveCollection).not.toHaveBeenCalled()
+    }
+  )
+  it.each(['attempt_protected', 'login_unconfirmed', 'navigation_changed', 'unavailable'])(
+    'does not record external login proof after %s',
+    async (state) => {
+      const verified = vi.fn()
+      const h = await fixture({ login: true, onVerifiedSignedIn: verified })
+      fixtureState.restore.mockResolvedValue({ state, auth: 'unknown' })
+      await h.backend.login!(h.tab.id)
+      expect(fixtureState.inspect).not.toHaveBeenCalled()
+      expect(verified).not.toHaveBeenCalled()
+    }
+  )
+  it.each([
+    'unknown',
+    'signed_out',
+    'navigation_changed',
+    'invalid_result',
+    'error',
+    'wrong_issuer'
+  ])('retains scheduler protection when fresh login inspection reports %s', async (state) => {
+    const verified = vi.fn()
+    const h = await fixture({ login: true, onVerifiedSignedIn: verified })
+    fixtureState.restore.mockResolvedValue({ state: 'signed_in', auth: 'signed_in' })
+    fixtureState.inspect.mockReturnValue({
+      issuer: state === 'wrong_issuer' ? 'samsung_card' : 'lotte_card',
+      state: state === 'wrong_issuer' ? 'ready' : state,
+      auth: ['unknown', 'signed_out'].includes(state) ? state : 'signed_in'
+    })
+    await h.backend.login!(h.tab.id)
+    expect(verified).not.toHaveBeenCalled()
+  })
+  it.each(['profile', 'session', 'origin', 'tab', 'stop', 'busy'] as const)(
+    'does not record proof after %s changes during the fresh session read',
+    async (change) => {
+      const verified = vi.fn()
+      const h = await fixture({ login: true, onVerifiedSignedIn: verified })
+      fixtureState.restore.mockResolvedValue({ state: 'signed_in', auth: 'signed_in' })
+      fixtureState.inspect.mockReturnValue({
+        issuer: 'lotte_card',
+        state: 'ready',
+        auth: 'signed_in'
+      })
+      const wait = deferred()
+      fixtureState.inspectPause = wait.promise
+      const pending = h.backend.login!(h.tab.id)
+      await Promise.resolve()
+      await Promise.resolve()
+      if (change === 'profile') h.tab.profile = 'other-synthetic-account'
+      else if (change === 'session')
+        h.tab.view.webContents.session = {} as typeof h.tab.view.webContents.session
+      else if (change === 'origin') h.setUrl(SAMSUNG)
+      else if (change === 'tab') h.tabs.get.mockReturnValue({ ...h.tab })
+      else if (change === 'stop') h.stop()
+      else h.setBusy()
+      const settled = pending.catch(() => undefined)
+      wait.resolve()
+      await settled
+      expect(verified).not.toHaveBeenCalled()
+    }
+  )
+  it('preserves verified session evidence when a later collection fails', async () => {
+    const verified = vi.fn()
+    const h = await fixture({ onVerifiedSignedIn: verified })
+    fixtureState.inspect.mockReturnValue({
+      issuer: 'lotte_card',
+      state: 'ready',
+      auth: 'signed_in'
+    })
+    fixtureState.collectRecent.mockRejectedValueOnce(new Error('synthetic collection failure'))
+    await expect(h.backend.collect!(h.tab.id, false)).rejects.toThrow(
+      'synthetic collection failure'
+    )
+    expect(verified).toHaveBeenCalledExactlyOnceWith('lotte_card', h.tab)
+    expect(fixtureState.restore).not.toHaveBeenCalled()
+    expect(fixtureState.saveCollection).not.toHaveBeenCalled()
+  })
+  it('records an inspected session without requiring a login or accepting a nondefault profile', async () => {
+    const verified = vi.fn()
+    const h = await fixture({ onVerifiedSignedIn: verified })
+    fixtureState.inspect.mockReturnValue({
+      issuer: 'lotte_card',
+      state: 'ready',
+      auth: 'signed_in'
+    })
+    await h.backend.inspect(h.tab.id)
+    expect(verified).toHaveBeenCalledExactlyOnceWith('lotte_card', h.tab)
+    verified.mockClear()
+    h.tab.profile = 'other-synthetic-account'
+    await h.backend.inspect(h.tab.id)
+    expect(verified).not.toHaveBeenCalled()
+    expect(fixtureState.restore).not.toHaveBeenCalled()
+  })
   it('dispatches Samsung cancel-date counts without creating observers or changing tabs', async () => {
     const h = await fixture()
     expect(await h.backend.cancelDateProbe!(h.tab.id, '2026-08-01', '2026-08-04')).toEqual({

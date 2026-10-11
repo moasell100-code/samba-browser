@@ -90,15 +90,17 @@ export async function startCardDiagnosticsMcp(
   )
   register(
     'card_open_history',
-    'Open the fixed issuer transaction-history page and start passive request observation. Does not log in or submit forms.',
+    'Open the fixed issuer transaction-history page and start passive request observation. A verified same-profile session reconciles the local scheduler login block. Does not log in or submit forms.',
     { issuer: z.enum(CARD_DIAGNOSTIC_ISSUERS) },
-    ({ issuer }) => backend.openHistory(issuer as CardDiagnosticIssuer)
+    ({ issuer }) => backend.openHistory(issuer as CardDiagnosticIssuer),
+    false
   )
   register(
     'card_inspect',
-    'Inspect card login state and value-free history-page structure. Does not return financial rows.',
+    'Inspect card login state and value-free history-page structure. A verified same-profile session reconciles the local scheduler login block; no financial rows are returned or changed.',
     { tabId: z.string().uuid() },
-    ({ tabId }) => backend.inspect(String(tabId))
+    ({ tabId }) => backend.inspect(String(tabId)),
+    false
   )
   register(
     'card_requests',

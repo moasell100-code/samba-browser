@@ -11,6 +11,8 @@ import type { CardDailyStatus } from '../src/shared/card-daily'
 const mocks = vi.hoisted(() => ({
   inspect: vi.fn(),
   restore: vi.fn(),
+  makeReconciler: vi.fn(),
+  clearAttempts: vi.fn(),
   sync: vi.fn(),
   configure: vi.fn(),
   report: vi.fn(),
@@ -20,7 +22,10 @@ const mocks = vi.hoisted(() => ({
   record: undefined as CardDailyFile | undefined
 }))
 vi.mock('../src/main/finance/card-agent-sync', () => ({ createCardAgentSync: mocks.configure }))
-vi.mock('../src/main/finance/card-login-session', () => ({ restoreCardSession: mocks.restore }))
+vi.mock('../src/main/finance/card-login-session', () => ({
+  restoreCardSession: mocks.restore,
+  createSignedInAttemptReconciler: mocks.makeReconciler
+}))
 vi.mock('../src/main/finance/card-schedule-report', () => ({ reportCardSchedule: mocks.report }))
 vi.mock('../src/main/finance/card-cancellation-sync', () => ({
   reconcileCardCancellations: mocks.reconcile
@@ -186,6 +191,7 @@ beforeEach(() => {
     state: 'ready'
   }))
   mocks.restore.mockResolvedValue({ state: 'signed_in', auth: 'signed_in' })
+  mocks.makeReconciler.mockReturnValue(mocks.clearAttempts)
   mocks.sync.mockImplementation(async (tab: Tab) => ({
     ok: true,
     issuer: issuerForCardUrl(tab.view.webContents.getURL()),
@@ -208,6 +214,85 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('deterministic daily card runtime', () => {
+  it.each(['existing', 'restored'] as const)(
+    'reconciles the confirmed Hyundai session in the %s path before a later save failure',
+    async (phase) => {
+      mocks.record = {
+        version: 1,
+        gapDays: 0,
+        lastCovered: {},
+        loginBlocked: { hyundai_card: phase === 'existing' }
+      }
+      let hyundaiReads = 0
+      mocks.inspect.mockImplementation(async (tab: Tab) => {
+        const issuer = issuerForCardUrl(tab.view.webContents.getURL())
+        const signedOut = issuer === 'hyundai_card' && phase === 'restored' && hyundaiReads++ === 0
+        return {
+          issuer,
+          state: signedOut ? 'signed_out' : 'ready',
+          auth: signedOut ? 'signed_out' : 'signed_in'
+        }
+      })
+      mocks.sync.mockImplementation(async (tab: Tab) => {
+        if (issuerForCardUrl(tab.view.webContents.getURL()) === 'hyundai_card') {
+          expect(mocks.clearAttempts).toHaveBeenCalledWith({
+            issuer: 'hyundai_card',
+            state: 'ready',
+            auth: 'signed_in'
+          })
+          throw new Error('SYNTHETIC_PRIVATE_SAVE_ERROR')
+        }
+        return { ok: true, approvalComplete: true, totalRows: 0, insertedRows: 0, updatedRows: 0 }
+      })
+      const f = setup()
+      await f.runtime.tick()
+      expect(mocks.restore).toHaveBeenCalledTimes(phase === 'restored' ? 1 : 0)
+      expect(mocks.makeReconciler).toHaveBeenCalledWith({
+        tabs: f.tabs,
+        tabId: 'dedicated-1',
+        signal: expect.any(AbortSignal)
+      })
+      expect(
+        mocks.clearAttempts.mock.calls.filter(([row]) => row.issuer === 'hyundai_card')
+      ).toHaveLength(1)
+      expect(mocks.record.loginBlocked?.hyundai_card).toBe(false)
+      expect(f.runtime.status().results[0]).toMatchObject({
+        state: 'failed',
+        stage: 'collect_save'
+      })
+      expect(JSON.stringify(f.statuses)).not.toContain('PRIVATE')
+      f.runtime.dispose()
+    }
+  )
+  it('never reconciles Hyundai protection when its blocked session is still signed out', async () => {
+    mocks.record = {
+      version: 1,
+      gapDays: 0,
+      lastCovered: {},
+      loginBlocked: { hyundai_card: true }
+    }
+    mocks.inspect.mockImplementation(async (tab: Tab) => {
+      const issuer = issuerForCardUrl(tab.view.webContents.getURL())
+      return {
+        issuer,
+        state: issuer === 'hyundai_card' ? 'signed_out' : 'ready',
+        auth: issuer === 'hyundai_card' ? 'signed_out' : 'signed_in'
+      }
+    })
+    const f = setup()
+    await f.runtime.tick()
+    expect(mocks.clearAttempts.mock.calls.some(([row]) => row.issuer === 'hyundai_card')).toBe(
+      false
+    )
+    expect(mocks.restore).not.toHaveBeenCalled()
+    expect(mocks.record.loginBlocked?.hyundai_card).toBe(true)
+    expect(f.runtime.status().results[0]).toMatchObject({
+      state: 'needs_login',
+      reason: 'attempt_protected',
+      loginAttempted: false
+    })
+    f.runtime.dispose()
+  })
   it('persists all issuer receipts and 31-day checks to disk and restores them without repeating a run', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'card-daily-runtime-'))
     const stateFile = join(directory, 'runs.json')

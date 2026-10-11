@@ -252,7 +252,18 @@ app
           collectorTokenFile: process.env.FINANCE_BROWSER_IMPORT_TOKEN_FILE,
           collectorTransport:
             process.env.FINANCE_BROWSER_IMPORT_TRANSPORT ??
-            ipc.settings.get().financeCollectorTransport
+            ipc.settings.get().financeCollectorTransport,
+          onVerifiedSignedIn: (issuer, tab) => {
+            // Daily collection uses only this workspace's persistent default profile.
+            // An unrelated account tab must never clear its credential protection.
+            const workspaceId = ipc.settings.get().activeWorkspaceId
+            if (
+              tab.profile === 'default' &&
+              tab.view.webContents.session ===
+                session.fromPartition(`persist:ws${workspaceId}-default`)
+            )
+              ipc.cardDaily.recordVerifiedSignedIn(issuer)
+          }
         })
         if (shuttingDown) stopCardDiagnostics()
       } catch {

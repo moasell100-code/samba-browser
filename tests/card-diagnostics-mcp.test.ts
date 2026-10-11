@@ -134,7 +134,12 @@ describe('read-only card MCP boundary', () => {
       'card_inspect',
       'card_requests'
     ])
-    expect(listed.tools.every((tool) => tool.annotations?.readOnlyHint)).toBe(true)
+    expect(listed.tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint])).toEqual([
+      ['card_tabs', true],
+      ['card_open_history', false],
+      ['card_inspect', false],
+      ['card_requests', true]
+    ])
     expect(
       await client.callTool({ name: 'card_open_history', arguments: { issuer: 'lotte_card' } })
     ).toMatchObject({

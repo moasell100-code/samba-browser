@@ -79,6 +79,24 @@ export class CardDailyScheduler {
     this.controller?.abort()
     this.deps.onDispose?.()
   }
+  /** Internal verified-session hook. Never reclaims today's run or schedules another login. */
+  recordVerifiedSignedIn(issuer: CardDailyIssuer): boolean {
+    if (this.disposed || this.storageFailed || this.running || !CARD_DAILY_ISSUERS.includes(issuer))
+      return false
+    if (this.record.loginBlocked?.[issuer] === false) return true
+    const previous = this.record.loginBlocked
+    this.record.loginBlocked = { ...previous, [issuer]: false }
+    try {
+      this.persist()
+      this.emit()
+      return true
+    } catch {
+      // A failed durable write must not re-arm a login through in-memory state.
+      this.record.loginBlocked = previous
+      this.emit()
+      return false
+    }
+  }
   status(): CardDailyStatus {
     const settings = this.deps.settings()
     const run = this.record.run

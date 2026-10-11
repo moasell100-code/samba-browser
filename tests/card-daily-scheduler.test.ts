@@ -53,6 +53,61 @@ afterEach(() => {
 })
 
 describe('KST fixed daily schedule', () => {
+  it("persists an external verified session without changing or repeating today's receipts", async () => {
+    const f = fixture()
+    f.run.mockResolvedValueOnce({
+      issuer: 'hyundai_card',
+      state: 'needs_login',
+      reason: 'attempt_protected'
+    })
+    await f.scheduler.tick()
+    const before = structuredClone(f.getRecord())
+    const writes = f.write.mock.calls.length
+    expect(f.scheduler.recordVerifiedSignedIn('hyundai_card')).toBe(true)
+    expect(f.getRecord()).toEqual({
+      ...before,
+      loginBlocked: { ...before.loginBlocked, hyundai_card: false }
+    })
+    expect(f.write).toHaveBeenCalledTimes(writes + 1)
+    expect(f.scheduler.recordVerifiedSignedIn('hyundai_card')).toBe(true)
+    expect(f.write).toHaveBeenCalledTimes(writes + 1)
+    await f.scheduler.tick()
+    expect(f.run).toHaveBeenCalledTimes(3)
+    const restarted = fixture(f.getRecord())
+    await restarted.scheduler.tick()
+    expect(restarted.run).not.toHaveBeenCalled()
+    expect(restarted.getRecord().loginBlocked?.hyundai_card).toBe(false)
+    vi.setSystemTime(new Date('2026-10-06T00:00:00Z'))
+    await restarted.scheduler.tick()
+    expect(restarted.run.mock.calls[0][2]).toBe(true)
+  })
+  it('retains external login protection on failed storage and never reclaims a running issuer', async () => {
+    const f = fixture({
+      version: 1,
+      gapDays: 0,
+      lastCovered: {},
+      loginBlocked: { hyundai_card: true }
+    })
+    f.write.mockImplementationOnce(() => {
+      throw new Error('synthetic storage failure')
+    })
+    expect(f.scheduler.recordVerifiedSignedIn('hyundai_card')).toBe(false)
+    expect(f.getRecord().loginBlocked?.hyundai_card).toBe(true)
+    await f.scheduler.tick()
+    expect(f.run).not.toHaveBeenCalled()
+    expect(f.scheduler.status().reason).toBe('storage_unavailable')
+
+    const active = fixture()
+    active.run.mockImplementation(async (issuer): Promise<CardDailyResult> => {
+      expect(active.scheduler.recordVerifiedSignedIn(issuer)).toBe(false)
+      expect(active.getRecord().loginBlocked?.[issuer]).toBe(true)
+      return { issuer, state: 'needs_login', reason: 'attempt_protected' }
+    })
+    await active.scheduler.tick()
+    expect(active.run).toHaveBeenCalledTimes(3)
+    active.scheduler.dispose()
+    expect(active.scheduler.recordVerifiedSignedIn('hyundai_card')).toBe(false)
+  })
   it.each([false, true])(
     'preserves an existing login block=%s after an explicitly proven pre-login failure',
     async (previouslyBlocked) => {

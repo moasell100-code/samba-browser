@@ -12,6 +12,7 @@ import {
 import { observeSamsungLoginAlerts } from './samsung-login-outcome'
 import { lotteAttempts } from './lotte-login'
 import { lotteKeypadAttempts } from './lotte-keypad-login'
+import { hyundaiAttempts } from './hyundai-attempts'
 
 const KEYPAD_STATES: readonly LotteKeypadSnapshot['state'][] = [
   'open',
@@ -71,6 +72,48 @@ export interface CardSessionRestoreResult {
   auth: string
   stage?: LoginStage
   reason?: LoginReason
+}
+
+/** Existing failure latches may only be reconciled by a trusted, unchanged signed-in session. */
+export function createSignedInAttemptReconciler(options: {
+  tabs: TabManager
+  tabId: string
+  signal: AbortSignal
+}): (session: CardPageDiagnostics) => void {
+  const { tabs, tabId, signal } = options
+  const tab = tabs.get(tabId)
+  const wc = tab?.view.webContents
+  const profile = tab?.profile
+  const issuer = wc && !wc.isDestroyed() ? issuerForCardUrl(wc.getURL()) : null
+  const origin = issuer && wc ? new URL(wc.getURL()).origin : null
+  return (session): void => {
+    if (
+      !tab ||
+      !wc ||
+      !issuer ||
+      typeof profile !== 'string' ||
+      !profile ||
+      signal.aborted ||
+      tabs.get(tabId) !== tab ||
+      tab.view.webContents !== wc ||
+      tab.profile !== profile ||
+      wc.isDestroyed() ||
+      session.issuer !== issuer ||
+      session.auth !== 'signed_in' ||
+      !['ready', 'not_history_page'].includes(session.state)
+    )
+      return
+    try {
+      if (issuerForCardUrl(wc.getURL()) !== issuer || new URL(wc.getURL()).origin !== origin) return
+      if (issuer === 'hyundai_card') hyundaiAttempts().clearSignedInProfile(profile)
+      else if (issuer === 'lotte_card') {
+        lotteAttempts().clearSignedInProfile(profile)
+        lotteKeypadAttempts().clearSignedInProfile(profile)
+      }
+    } catch {
+      // Storage or navigation failures retain protection; never replace an uncertain record.
+    }
+  }
 }
 
 /** Fixed status projection only: never expose the filled length, mode, keys or layout. */
@@ -184,7 +227,6 @@ export async function restoreCardSession(options: {
   const wc = tab?.view.webContents
   const issuer = wc && !wc.isDestroyed() && issuerForCardUrl(wc.getURL())
   const profile = tab?.profile
-  const origin = issuer && wc ? new URL(wc.getURL()).origin : null
   const valid = (): boolean =>
     !!tab &&
     !!wc &&
@@ -197,28 +239,12 @@ export async function restoreCardSession(options: {
     !signal.aborted &&
     issuerForCardUrl(wc.getURL()) === issuer
   if (!tab || !issuer || !valid()) return { state: 'unavailable', auth: 'unknown' }
-  const clearConfirmedLotteAttempts = (): void => {
-    if (
-      issuer !== 'lotte_card' ||
-      !valid() ||
-      typeof profile !== 'string' ||
-      new URL(wc!.getURL()).origin !== origin
-    )
-      return
-    try {
-      // The keypad's short wait can finish before the site establishes its session.
-      // Only the later verified session may reconcile both existing failure namespaces.
-      lotteAttempts().clearSignedInProfile(profile)
-      lotteKeypadAttempts().clearSignedInProfile(profile)
-    } catch {
-      // Storage failure retains protection; never reset or replace a failed record.
-    }
-  }
+  const reconcileAttempts = createSignedInAttemptReconciler({ tabs, tabId, signal })
   const before = await inspectCardPage(tab)
   if (!valid() || before.state === 'navigation_changed' || before.issuer !== issuer)
     return { state: 'navigation_changed', auth: 'unknown' }
   if (before.auth === 'signed_in') {
-    clearConfirmedLotteAttempts()
+    reconcileAttempts(before)
     return { state: 'already_signed_in', auth: 'signed_in' }
   }
   if (settings.permissionMode === 'read_only') return { state: 'read_only', auth: before.auth }
@@ -278,7 +304,7 @@ export async function restoreCardSession(options: {
       if (after && after.state !== 'navigation_changed') {
         auth = after.auth
         if (after.auth === 'signed_in') {
-          clearConfirmedLotteAttempts()
+          reconcileAttempts(after)
           return { state: 'signed_in', auth: 'signed_in' }
         }
       }

@@ -8,6 +8,7 @@ import { inspectCardPage } from '../src/main/finance/card-page-diagnostics'
 import { observeSamsungLoginAlerts } from '../src/main/finance/samsung-login-outcome'
 import { lotteAttempts } from '../src/main/finance/lotte-login'
 import { lotteKeypadAttempts } from '../src/main/finance/lotte-keypad-login'
+import { hyundaiAttempts } from '../src/main/finance/hyundai-attempts'
 import {
   inspectLotteKeypadStatus,
   restoreCardSession
@@ -16,6 +17,7 @@ import {
 vi.mock('../src/main/agent/tools', () => ({ createSambaTools: vi.fn() }))
 vi.mock('../src/main/finance/lotte-login', () => ({ lotteAttempts: vi.fn() }))
 vi.mock('../src/main/finance/lotte-keypad-login', () => ({ lotteKeypadAttempts: vi.fn() }))
+vi.mock('../src/main/finance/hyundai-attempts', () => ({ hyundaiAttempts: vi.fn() }))
 vi.mock('../src/main/finance/samsung-login-outcome', () => ({ observeSamsungLoginAlerts: vi.fn() }))
 vi.mock('../src/main/finance/card-page-diagnostics', async (load) => {
   const actual = await load<typeof import('../src/main/finance/card-page-diagnostics')>()
@@ -81,6 +83,101 @@ function fixture(overrides: Partial<Settings> = {}): {
 }
 
 describe('card session restoration through existing KeyMaster login gates', () => {
+  it.each(['before', 'after'] as const)(
+    'reconciles the existing Hyundai PIN latch only after a verified signed-in session (%s)',
+    async (phase) => {
+      const f = fixture()
+      f.setUrl('https://www.hyundaicard.com/index.jsp')
+      const clear = vi.fn()
+      vi.mocked(hyundaiAttempts).mockReturnValue({ clearSignedInProfile: clear } as ReturnType<
+        typeof hyundaiAttempts
+      >)
+      const signedIn = {
+        issuer: 'hyundai_card',
+        state: 'not_history_page',
+        auth: 'signed_in'
+      } as const
+      if (phase === 'before') vi.mocked(inspectCardPage).mockResolvedValue(signedIn)
+      else
+        vi.mocked(inspectCardPage)
+          .mockResolvedValueOnce({
+            issuer: 'hyundai_card',
+            state: 'signed_out',
+            auth: 'signed_out'
+          })
+          .mockResolvedValueOnce(signedIn)
+      expect(await restoreCardSession(f.options)).toEqual({
+        state: phase === 'before' ? 'already_signed_in' : 'signed_in',
+        auth: 'signed_in'
+      })
+      expect(clear).toHaveBeenCalledExactlyOnceWith('default')
+      expect(lotteAttempts).not.toHaveBeenCalled()
+      expect(lotteKeypadAttempts).not.toHaveBeenCalled()
+      expect(f.login).toHaveBeenCalledTimes(phase === 'before' ? 0 : 1)
+    }
+  )
+  it.each([
+    'failed',
+    'unknown',
+    'navigation',
+    'profile',
+    'tab',
+    'cancelled',
+    'origin',
+    'invalid_result',
+    'error',
+    'issuer'
+  ] as const)(
+    'retains the Hyundai PIN latch on %s instead of reconciling an uncertain session',
+    async (kind) => {
+      const f = fixture()
+      f.setUrl('https://www.hyundaicard.com/index.jsp')
+      const current = f.options.tabs.get(f.options.tabId)!
+      const controller = new AbortController()
+      const out = { issuer: 'hyundai_card', state: 'signed_out', auth: 'signed_out' } as const
+      vi.mocked(inspectCardPage)
+        .mockResolvedValueOnce(out)
+        .mockImplementationOnce(async () => {
+          if (kind === 'failed') return out
+          if (kind === 'unknown')
+            return { issuer: 'hyundai_card', state: 'unknown', auth: 'unknown' }
+          if (kind === 'profile') current.profile = 'other-synthetic-profile'
+          if (kind === 'tab') vi.spyOn(f.options.tabs, 'get').mockReturnValue({ ...current })
+          if (kind === 'cancelled') controller.abort()
+          if (kind === 'origin') f.setUrl('https://hyundaicard.com/index.jsp')
+          return {
+            issuer: kind === 'issuer' ? 'samsung_card' : 'hyundai_card',
+            state:
+              kind === 'navigation'
+                ? 'navigation_changed'
+                : kind === 'invalid_result' || kind === 'error'
+                  ? kind
+                  : 'ready',
+            auth: 'signed_in'
+          }
+        })
+      await restoreCardSession({ ...f.options, signal: controller.signal })
+      expect(hyundaiAttempts).not.toHaveBeenCalled()
+      expect(lotteAttempts).not.toHaveBeenCalled()
+      expect(lotteKeypadAttempts).not.toHaveBeenCalled()
+    }
+  )
+  it('keeps Hyundai storage failure private and never retries a verified session login', async () => {
+    const f = fixture()
+    f.setUrl('https://www.hyundaicard.com/index.jsp')
+    vi.mocked(inspectCardPage).mockResolvedValue({
+      issuer: 'hyundai_card',
+      state: 'ready',
+      auth: 'signed_in'
+    })
+    vi.mocked(hyundaiAttempts).mockImplementation(() => {
+      throw new Error('SYNTHETIC_PRIVATE_STORAGE_ERROR')
+    })
+    const result = await restoreCardSession(f.options)
+    expect(result).toEqual({ state: 'already_signed_in', auth: 'signed_in' })
+    expect(JSON.stringify(result)).not.toContain('PRIVATE')
+    expect(f.login).not.toHaveBeenCalled()
+  })
   it.each(['before', 'after'] as const)(
     'reconciles both Lotte attempt stores only after a verified signed-in session (%s)',
     async (phase) => {

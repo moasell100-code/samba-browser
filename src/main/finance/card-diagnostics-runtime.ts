@@ -8,7 +8,12 @@ import { exportHyundaiWorkbook, HyundaiExportValidationError } from './hyundai-e
 import type { Tab, TabManager } from '../browser/tab-manager'
 import { isTabAlive } from '../browser/tab-manager'
 import { CardNetworkObserver } from './card-network-observer'
-import { CARD_HISTORY_URLS, inspectCardPage, issuerForCardUrl } from './card-page-diagnostics'
+import {
+  CARD_HISTORY_URLS,
+  inspectCardPage,
+  issuerForCardUrl,
+  type CardPageDiagnostics
+} from './card-page-diagnostics'
 import { startCardDiagnosticsMcp, type CardDiagnosticIssuer } from './card-diagnostics-mcp'
 import { inspectCardQueryContract } from './card-query-contract'
 import { inspectCardExportContract } from './card-export-diagnostics'
@@ -46,6 +51,7 @@ export async function startCardDiagnosticsRuntime(options: {
   settings?: () => Settings
   collectorTokenFile?: string
   collectorTransport?: string
+  onVerifiedSignedIn?(issuer: CardDiagnosticIssuer, tab: Tab): void
 }): Promise<() => void> {
   if (!/^[a-z0-9-]{12,64}$/.test(options.sessionName)) throw new Error('Invalid diagnostic session')
   const dir = join(options.tempDir, `jaja-card-mcp-${options.sessionName}`)
@@ -108,6 +114,55 @@ export async function startCardDiagnosticsRuntime(options: {
       throw new Error('Card tab unavailable')
     }
     return tab
+  }
+  const sessionContext = (
+    tab: Tab
+  ): {
+    tab: Tab
+    wc: Tab['view']['webContents']
+    profile: string
+    session: Tab['view']['webContents']['session']
+    issuer: CardDiagnosticIssuer | null
+    origin: string
+  } => ({
+    tab,
+    wc: tab.view.webContents,
+    profile: tab.profile,
+    session: tab.view.webContents.session,
+    issuer: issuerForCardUrl(tab.view.webContents.getURL()),
+    origin: new URL(tab.view.webContents.getURL()).origin
+  })
+  const recordVerifiedSession = (
+    context: ReturnType<typeof sessionContext>,
+    proof: CardPageDiagnostics
+  ): void => {
+    const { tab, wc, profile, session, issuer, origin } = context
+    if (
+      !options.onVerifiedSignedIn ||
+      !issuer ||
+      profile !== 'default' ||
+      !session ||
+      proof.issuer !== issuer ||
+      proof.auth !== 'signed_in' ||
+      !['ready', 'not_history_page'].includes(proof.state)
+    )
+      return
+    assertLiveTab(tab)
+    if (
+      tab.view.webContents !== wc ||
+      tab.profile !== profile ||
+      wc.session !== session ||
+      issuerForCardUrl(wc.getURL()) !== issuer ||
+      new URL(wc.getURL()).origin !== origin
+    )
+      return
+    // Only a same-session native proof reaches the application-owned scheduler.
+    // Receipt publication/storage failure must not change the login tool's outcome.
+    try {
+      options.onVerifiedSignedIn(issuer, tab)
+    } catch {
+      /* keep existing scheduler protection on a failed durable callback */
+    }
   }
   const observe = async (
     tab: Tab,
@@ -213,18 +268,22 @@ export async function startCardDiagnosticsRuntime(options: {
       const loadedUrl = tab.view.webContents.getURL()
       if (issuerForCardUrl(loadedUrl) !== issuer) throw new Error('Card tab changed')
       assertTabContext(tab, loadedUrl)
+      const context = sessionContext(tab)
       const result = await inspectCardPage(tab)
       assertTabContext(tab, loadedUrl)
+      recordVerifiedSession(context, result)
       return { tabId: id, ...result }
     },
     async inspect(id: string) {
       const tab = getTab(id)
       const initialUrl = tab.view.webContents.getURL()
+      const context = sessionContext(tab)
       const issuer = issuerForCardUrl(initialUrl)!
       await observe(tab, issuer, initialUrl)
       assertTabContext(tab, initialUrl)
       const result = await inspectCardPage(tab)
       assertTabContext(tab, initialUrl)
+      recordVerifiedSession(context, result)
       const keypad = issuer === 'lotte_card' ? await inspectLotteKeypadStatus(tab) : undefined
       const loginForm = issuer === 'samsung_card' ? await inspectSamsungIdLogin(tab) : undefined
       const scope = issuer === 'hyundai_card' ? await inspectHyundaiScope(tab) : undefined
@@ -269,6 +328,12 @@ export async function startCardDiagnosticsRuntime(options: {
           !options.collectorTokenFile)
       )
         return { state: 'finance_not_configured' }
+      if (options.onVerifiedSignedIn) {
+        const context = sessionContext(tab)
+        const proof = await inspectCardPage(tab)
+        assertTabContext(tab, url)
+        recordVerifiedSession(context, proof)
+      }
       const result = await collectRecentCard({ tab, collect, signal: controller.signal })
       assertTabContext(tab, url)
       if (!save) return { state: 'preview', receipt: result.receipt }
@@ -508,6 +573,7 @@ export async function startCardDiagnosticsRuntime(options: {
       ? {
           async login(id: string) {
             const tab = getTab(id)
+            const context = sessionContext(tab)
             const result = await restoreCardSession({
               tabs: options.tabs,
               tabId: tab.id,
@@ -516,6 +582,13 @@ export async function startCardDiagnosticsRuntime(options: {
               signal: controller.signal
             })
             assertLiveTab(tab)
+            if (
+              result.auth === 'signed_in' &&
+              ['signed_in', 'already_signed_in'].includes(result.state)
+            ) {
+              const proof = await inspectCardPage(tab)
+              recordVerifiedSession(context, proof)
+            }
             return result
           }
         }
